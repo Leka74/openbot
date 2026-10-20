@@ -197,6 +197,10 @@ export function Composer(props: ComposerProps): ReactNode {
   const dictating = dictation.phase !== "idle"
   const canSend = !props.disabled && !uploading && (dictating || text.trim().length > 0 || ready.length > 0)
   const sendingDictation = useRef(false)
+  const current = useRef({ uploads, uploading, replyTo: props.replyTo })
+  useLayoutEffect(() => {
+    current.current = { uploads, uploading, replyTo: props.replyTo }
+  })
 
   const submit = async () => {
     if (!canSend) return
@@ -212,21 +216,24 @@ export function Composer(props: ComposerProps): ReactNode {
   }
 
   const send = async (draft: string) => {
+    const { uploads: attached, uploading: stillUploading, replyTo } = current.current
+    if (stillUploading) return
+    const sentUploads = attached.filter((u) => u.attachment)
     const body = draft.trim()
-    if (body.length === 0 && ready.length === 0) return
+    if (body.length === 0 && sentUploads.length === 0) return
     const scope = members ?? []
     const addressed = scope.filter((b) => new RegExp(`(^|\\s)@${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$|[.,!?:;])`, "u").test(body)).map((b) => b.id)
     const everyone = allowEveryone && /(^|\s)@everyone\b/.test(body)
     setText("")
     drafts.delete(draftKey)
-    setUploads([])
+    setUploads((all) => all.filter((u) => !sentUploads.includes(u)))
     setMention(undefined)
     await props.onSubmit({
       text: body,
-      attachmentIds: ready.map((u) => u.attachment!.id),
+      attachmentIds: sentUploads.map((u) => u.attachment!.id),
       addressedBotIds: addressed,
       addressEveryone: everyone,
-      replyToId: props.replyTo?.id,
+      replyToId: replyTo?.id,
     })
   }
 

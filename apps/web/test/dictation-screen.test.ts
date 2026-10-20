@@ -15,8 +15,9 @@ const draftIs = (page: Page, expected: string) =>
 const mockStt = async (mock: RunningMock): Promise<{ readonly status: SttStatus; readonly discards: number }> =>
   (await fetch(`${mock.url}/api/mock/stt`)).json() as Promise<{ readonly status: SttStatus; readonly discards: number }>
 
-const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: boolean; readonly resetToReady?: boolean }) => {
-  await fetch(`${mock.url}/api/mock/stt?failsAppend=${state.failsAppend ? 1 : 0}&resetToReady=${state.resetToReady ? 1 : 0}`, { method: "POST" })
+const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: boolean; readonly resetToReady?: boolean; readonly finishDelayMs?: number }) => {
+  const query = `failsAppend=${state.failsAppend ? 1 : 0}&resetToReady=${state.resetToReady ? 1 : 0}&finishDelayMs=${state.finishDelayMs ?? 0}`
+  await fetch(`${mock.url}/api/mock/stt?${query}`, { method: "POST" })
 }
 
 const trackMicrophoneTracks = (page: Page) =>
@@ -112,6 +113,25 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     await page.getByTestId("transcript").getByText(`Button ${FINAL}`, { exact: true }).waitFor()
     await draftIs(page, "")
     await microphoneReleased(page)
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("an attachment removed while the transcript finishes is not sent with the message", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await page.locator('input[type="file"]').first().setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") })
+    const remove = page.getByRole("button", { name: "Remove notes.txt" })
+    await remove.waitFor()
+    await page.waitForFunction(() => document.querySelector('[aria-label="Remove notes.txt"]')?.parentElement?.querySelector('[role="status"]') == null)
+    await box.fill("Note")
+    await setMockStt(mock, { failsAppend: false, finishDelayMs: 1_500 })
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Note ${LIVE}`)
+    await box.press("Enter")
+    await remove.click()
+    const transcript = page.getByTestId("transcript")
+    await transcript.getByText(`Note ${FINAL}`, { exact: true }).waitFor()
+    await page.waitForTimeout(300)
+    expect(await transcript.getByRole("link", { name: "notes.txt" }).count()).toBe(0)
     expect(errors).toEqual([])
   }, 30_000)
 

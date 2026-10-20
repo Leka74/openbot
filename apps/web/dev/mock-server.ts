@@ -102,6 +102,7 @@ export const startMockServer = async (options: { port?: number; hostname?: strin
         const request = yield* HttpServerRequest.HttpServerRequest
         const query = new URL(request.url, "http://mock").searchParams
         brain.sttFailsAppend = query.get("failsAppend") === "1"
+        brain.sttFinishDelayMs = Number(query.get("finishDelayMs") ?? 0)
         if (query.get("resetToReady") === "1") brain.stt = { state: "ready", model: brain.stt.model }
         return HttpServerResponse.empty()
       }),

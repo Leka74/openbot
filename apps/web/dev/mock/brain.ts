@@ -141,6 +141,7 @@ export class MockBrain {
   slack: SlackStatus = { connected: false, events: "off" }
   stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
   sttFailsAppend = false
+  sttFinishDelayMs = 0
   sttDiscards = 0
   /** Hark (D3.5): any `whk_` webhook connects the mock. */
   hark: HarkStatus = { connected: false, sends: "all" }
@@ -1449,7 +1450,7 @@ export class MockBrain {
           if (this.sttFailsAppend) throw new Unavailable({ message: "Voice input could not transcribe; the details are in the brain's log." })
           return { text: "Check the staging deploy" }
         })(),
-      "stt.finish": () => Effect.succeed({ text: "Check the staging deploy and tell me if it is green." }),
+      "stt.finish": () => Effect.as(Effect.sleep(this.sttFinishDelayMs), { text: "Check the staging deploy and tell me if it is green." }),
       "stt.discard": () =>
         sync(() => {
           this.sttDiscards++
