@@ -5,11 +5,20 @@ export const microphoneAvailable = (): boolean =>
 
 const TAP_PROCESSOR = "openbot-dictation-tap"
 const TAP_BUFFER_SAMPLES = 4096
+const FLUSH = "flush"
+const FLUSHED = "flushed"
+const FLUSH_TIMEOUT_MS = 300
 const TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWorkletProcessor {
   constructor() {
     super()
     this.buffer = new Float32Array(${TAP_BUFFER_SAMPLES})
     this.filled = 0
+    this.port.onmessage = (event) => {
+      if (event.data !== "${FLUSH}") return
+      if (this.filled > 0) this.port.postMessage(this.buffer.slice(0, this.filled))
+      this.filled = 0
+      this.port.postMessage("${FLUSHED}")
+    }
   }
   process(inputs) {
     const channel = inputs[0] && inputs[0][0]
@@ -32,7 +41,7 @@ const TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWor
 
 export interface Microphone {
   readonly sampleRate: number
-  readonly stop: () => void
+  readonly stop: () => Promise<void>
 }
 
 export const startMicrophone = async (onAudio: (samples: Float32Array) => void, onLimitReached: () => void): Promise<Microphone> => {
@@ -40,25 +49,35 @@ export const startMicrophone = async (onAudio: (samples: Float32Array) => void, 
   const context = new AudioContext()
   const moduleUrl = URL.createObjectURL(new Blob([TAP_MODULE], { type: "text/javascript" }))
   const limit = setTimeout(onLimitReached, MAX_DICTATION_SECONDS * 1000)
-  let stopped = false
-  const stop = () => {
-    if (stopped) return
-    stopped = true
-    clearTimeout(limit)
-    stream.getTracks().forEach((track) => track.stop())
-    void context.close()
-    URL.revokeObjectURL(moduleUrl)
-  }
+  let tap: AudioWorkletNode | undefined
+  let onFlushed = () => {}
+  const flushTap = (port: MessagePort) =>
+    Promise.race([
+      new Promise<void>((resolve) => {
+        onFlushed = resolve
+        port.postMessage(FLUSH)
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, FLUSH_TIMEOUT_MS)),
+    ])
+  let stopping: Promise<void> | undefined
+  const stop = () =>
+    (stopping ??= (async () => {
+      clearTimeout(limit)
+      if (tap !== undefined) await flushTap(tap.port)
+      stream.getTracks().forEach((track) => track.stop())
+      void context.close()
+      URL.revokeObjectURL(moduleUrl)
+    })())
   try {
     await context.audioWorklet.addModule(moduleUrl)
     const source = context.createMediaStreamSource(stream)
-    const tap = new AudioWorkletNode(context, TAP_PROCESSOR)
+    tap = new AudioWorkletNode(context, TAP_PROCESSOR)
     const silence = context.createGain()
     silence.gain.value = 0
-    tap.port.onmessage = (event: MessageEvent<Float32Array>) => onAudio(event.data)
+    tap.port.onmessage = (event: MessageEvent<Float32Array | string>) => (event.data === FLUSHED ? onFlushed() : typeof event.data === "string" ? undefined : onAudio(event.data))
     source.connect(tap).connect(silence).connect(context.destination)
   } catch (error) {
-    stop()
+    await stop()
     throw error
   }
   return { sampleRate: context.sampleRate, stop }

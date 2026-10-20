@@ -12,11 +12,11 @@ const FINAL = "Check the staging deploy and tell me if it is green."
 const draftIs = (page: Page, expected: string) =>
   page.waitForFunction(({ selector, value }) => document.querySelector<HTMLTextAreaElement>(selector)?.value === value, { selector: EXPENSE_BOX, value: expected })
 
-const mockStt = async (mock: RunningMock): Promise<{ readonly status: SttStatus; readonly discarded: number }> =>
-  (await fetch(`${mock.url}/api/mock/stt`)).json() as Promise<{ readonly status: SttStatus; readonly discarded: number }>
+const mockStt = async (mock: RunningMock): Promise<{ readonly status: SttStatus; readonly discards: number }> =>
+  (await fetch(`${mock.url}/api/mock/stt`)).json() as Promise<{ readonly status: SttStatus; readonly discards: number }>
 
-const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: boolean; readonly ready: boolean }) => {
-  await fetch(`${mock.url}/api/mock/stt?failsAppend=${state.failsAppend ? 1 : 0}&ready=${state.ready ? 1 : 0}`, { method: "POST" })
+const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: boolean; readonly resetToReady?: boolean }) => {
+  await fetch(`${mock.url}/api/mock/stt?failsAppend=${state.failsAppend ? 1 : 0}&resetToReady=${state.resetToReady ? 1 : 0}`, { method: "POST" })
 }
 
 const openExpenseChat = async (browser: Browser, url: string) => {
@@ -36,7 +36,7 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     await browser?.close()
     await mock?.stop()
   })
-  beforeEach(() => setMockStt(mock, { failsAppend: false, ready: true }))
+  beforeEach(() => setMockStt(mock, { failsAppend: false, resetToReady: true }))
 
   test("shows the transcript while you speak, finalizes it on stop and leaves the caret after it", async () => {
     const { page, errors, box } = await openExpenseChat(browser, mock.url)
@@ -80,17 +80,22 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     expect(errors).toEqual([])
   }, 30_000)
 
-  test("a transcription failure stops the microphone, keeps what was heard, says so and discards the dictation", async () => {
+  test("a transcription failure stops the microphone, keeps what was heard, says so, discards the dictation and allows another", async () => {
     const { page, box } = await openExpenseChat(browser, mock.url)
     await box.fill("Before")
-    const discardedBefore = (await mockStt(mock)).discarded
+    const discardsBefore = (await mockStt(mock)).discards
     await page.getByRole("button", { name: "Dictate" }).click()
     await draftIs(page, `Before ${LIVE}`)
-    await setMockStt(mock, { failsAppend: true, ready: false })
+    await setMockStt(mock, { failsAppend: true })
     await page.getByText("Voice input could not transcribe", { exact: false }).waitFor()
     await page.getByRole("button", { name: "Dictate" }).waitFor()
     expect(await box.inputValue()).toBe(`Before ${LIVE}`)
-    expect((await mockStt(mock)).discarded).toBe(discardedBefore + 1)
+    expect((await mockStt(mock)).discards).toBe(discardsBefore + 1)
+    await setMockStt(mock, { failsAppend: false })
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Before ${LIVE} ${LIVE}`)
+    await page.getByRole("button", { name: "Stop dictation" }).click()
+    await draftIs(page, `Before ${LIVE} ${FINAL}`)
   }, 30_000)
 
   test("switching conversation mid-dictation stops it and leaves both drafts as they were", async () => {

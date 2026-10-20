@@ -65,7 +65,7 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
 
   const release = useCallback((active: Recording) => {
     clearInterval(active.pump)
-    active.microphone?.stop()
+    void active.microphone?.stop()
     if (recording.current === active) recording.current = undefined
   }, [])
 
@@ -102,8 +102,8 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     const active = recording.current
     if (active === undefined || active.microphone === undefined) return
     clearInterval(active.pump)
-    active.microphone.stop()
     setPhase("finishing")
+    await active.microphone.stop()
     await active.inFlight
     const sessionId = await active.sessionId
     if (sessionId === undefined || active.attempt !== attempt.current) return
@@ -131,7 +131,7 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     try {
       const microphone = await startMicrophone((samples) => active.chunks.push(samples), () => void finish())
       active.microphone = microphone
-      if (thisAttempt !== attempt.current) return microphone.stop()
+      if (thisAttempt !== attempt.current) return void microphone.stop()
       active.pump = setInterval(() => pumpOnce(active), PUMP_INTERVAL_MS)
       setStartedAt(Date.now())
       setNow(Date.now())

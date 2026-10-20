@@ -41,6 +41,7 @@ export const toBase64 = (bytes: Uint8Array): string => {
 }
 
 export const insertDictation = (draft: string, caret: number, spoken: string): { readonly text: string; readonly caret: number } => {
+  if (spoken.length === 0) return { text: draft, caret }
   const before = draft.slice(0, caret)
   const after = draft.slice(caret)
   const leading = before.length > 0 && !/\s$/.test(before) ? " " : ""

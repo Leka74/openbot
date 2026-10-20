@@ -140,7 +140,7 @@ export class MockBrain {
   slack: SlackStatus = { connected: false, events: "off" }
   stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
   sttFailsAppend = false
-  readonly sttDiscarded: Array<string> = []
+  sttDiscards = 0
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>()
   readonly sends = new Map<string, SendResult>()
   readonly usage = new Map<string, BotUsage>()
@@ -821,7 +821,6 @@ export class MockBrain {
     this.replyTo(conversationId, turn.botId, "retry", turn.inputEntryId)
   }
 
-  /** A Slack draft card (by entry): Send (with the owner's edits) or Discard. */
   advanceSttInstall(): SttStatus {
     if (this.stt.state !== "installing") return this.stt
     const downloadedBytes = Math.min(STT_DOWNLOAD_BYTES, (this.stt.downloadedBytes ?? 0) + STT_DOWNLOAD_STEP_BYTES)
@@ -831,6 +830,7 @@ export class MockBrain {
     return this.stt
   }
 
+  /** A Slack draft card (by entry): Send (with the owner's edits) or Discard. */
   answerSlackDraft(entryId: string, text: string | undefined) {
     const conv = [...this.convs.values()].find((c) => c.state.entries.has(entryId as EntryId))
     const entry = conv?.state.entries.get(entryId as EntryId)
@@ -1402,7 +1402,10 @@ export class MockBrain {
           return { text: "Check the staging deploy" }
         })(),
       "stt.finish": () => Effect.succeed({ text: "Check the staging deploy and tell me if it is green." }),
-      "stt.discard": ({ sessionId }) => sync(() => void this.sttDiscarded.push(sessionId))(),
+      "stt.discard": () =>
+        sync(() => {
+          this.sttDiscards++
+        })(),
       "settings.get": () => Effect.succeed(this.settings),
       "settings.update": ({ patch }) =>
         sync(() => {

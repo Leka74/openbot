@@ -32,5 +32,6 @@ describe("inserting dictated text", () => {
     expect(insertDictation("Please now", 6, "check it")).toEqual({ text: "Please check it now", caret: 15 })
     expect(insertDictation("Please ", 7, "check")).toEqual({ text: "Please check", caret: 12 })
     expect(insertDictation("ok", 0, "So")).toEqual({ text: "So ok", caret: 3 })
+    expect(insertDictation("helloworld", 5, "")).toEqual({ text: "helloworld", caret: 5 })
   })
 })

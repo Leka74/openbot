@@ -89,9 +89,12 @@ export function Composer(props: ComposerProps): ReactNode {
   const { toast } = useToast()
   const phone = useIsPhone()
 
+  const [dictatingInto, setDictatingInto] = useState<{ readonly base: string; readonly caret: number } | undefined>()
   // Switch drafts with the conversation (derived state, reset during render).
   const [shownKey, setShownKey] = useState(draftKey)
   if (shownKey !== draftKey) {
+    if (dictatingInto !== undefined) drafts.set(shownKey, dictatingInto.base)
+    setDictatingInto(undefined)
     setShownKey(draftKey)
     setText(drafts.get(draftKey) ?? "")
     setUploads([])
@@ -163,7 +166,6 @@ export function Composer(props: ComposerProps): ReactNode {
     ta.setSelectionRange(pos, pos)
   }, [text])
 
-  const [dictatingInto, setDictatingInto] = useState<{ readonly base: string; readonly caret: number } | undefined>()
   const showDraft = (value: string) => {
     setText(value)
     drafts.set(draftKey, value)

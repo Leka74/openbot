@@ -91,7 +91,7 @@ export const startMockServer = async (options: { port?: number; hostname?: strin
       "GET",
       "/api/mock/stt",
       Effect.sync(() =>
-        HttpServerResponse.text(JSON.stringify({ status: brain.stt, failsAppend: brain.sttFailsAppend, discarded: brain.sttDiscarded.length }), {
+        HttpServerResponse.text(JSON.stringify({ status: brain.stt, discards: brain.sttDiscards }), {
           contentType: "application/json",
         })),
     ),
@@ -102,7 +102,7 @@ export const startMockServer = async (options: { port?: number; hostname?: strin
         const request = yield* HttpServerRequest.HttpServerRequest
         const query = new URL(request.url, "http://mock").searchParams
         brain.sttFailsAppend = query.get("failsAppend") === "1"
-        if (query.get("ready") === "1") brain.stt = { state: "ready", model: brain.stt.model }
+        if (query.get("resetToReady") === "1") brain.stt = { state: "ready", model: brain.stt.model }
         return HttpServerResponse.empty()
       }),
     ),
