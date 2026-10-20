@@ -194,11 +194,26 @@ export function Composer(props: ComposerProps): ReactNode {
   })
 
   const ready = uploads.filter((u) => u.attachment)
-  const canSend = !props.disabled && !uploading && dictation.phase === "idle" && (text.trim().length > 0 || ready.length > 0)
+  const dictating = dictation.phase !== "idle"
+  const canSend = !props.disabled && !uploading && (dictating || text.trim().length > 0 || ready.length > 0)
+  const sendingDictation = useRef(false)
 
   const submit = async () => {
     if (!canSend) return
-    const body = text.trim()
+    if (!dictating) return send(text)
+    if (sendingDictation.current || dictatingInto === undefined) return
+    sendingDictation.current = true
+    try {
+      const spoken = await dictation.finish()
+      if (spoken !== undefined) await send(insertDictation(dictatingInto.base, dictatingInto.caret, spoken).text)
+    } finally {
+      sendingDictation.current = false
+    }
+  }
+
+  const send = async (draft: string) => {
+    const body = draft.trim()
+    if (body.length === 0 && ready.length === 0) return
     const scope = members ?? []
     const addressed = scope.filter((b) => new RegExp(`(^|\\s)@${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$|[.,!?:;])`, "u").test(body)).map((b) => b.id)
     const everyone = allowEveryone && /(^|\s)@everyone\b/.test(body)

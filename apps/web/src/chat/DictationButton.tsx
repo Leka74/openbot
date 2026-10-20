@@ -20,7 +20,7 @@ export function DictationButton({ dictation, size }: { readonly dictation: Dicta
           <span className="size-2 animate-pulse rounded-full bg-danger" aria-hidden />
           {formatElapsed(dictation.elapsedSeconds)}
         </span>
-        <IconButton icon={Square} label="Stop dictation" title="Stop and transcribe" size={size} variant="primary" iconSize="xs" onClick={dictation.finish} className="[&_svg]:fill-current" />
+        <IconButton icon={Square} label="Stop dictation" title="Stop and transcribe" size={size} variant="primary" iconSize="xs" onClick={() => void dictation.finish()} className="[&_svg]:fill-current" />
       </span>
     )
   }
