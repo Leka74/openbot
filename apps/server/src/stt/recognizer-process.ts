@@ -19,7 +19,7 @@ const CONFIG_OFFSETS = {
 const FEATURE_DIM = 80
 const MAX_ACTIVE_PATHS = 4
 
-const launch = JSON.parse(process.argv[2] ?? "{}") as RecognizerLaunch
+const launch = JSON.parse(process.argv[2]!) as RecognizerLaunch
 const reply = (message: RecognizerReply) => process.send?.(message)
 
 const sherpa = dlopen(launch.library, {

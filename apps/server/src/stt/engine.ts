@@ -28,7 +28,6 @@ interface InstalledMarker {
 }
 
 export const RECOGNIZER_PROCESS_ENTRY = fileURLToPath(new URL("./recognizer-process.ts", import.meta.url))
-const RECOGNIZER_STARTUP_TIMEOUT_MS = 60_000
 const RECOGNIZER_STOP_GRACE_MS = 2_000
 const UNPACK_TIMEOUT_MS = 600_000
 const MAX_RECOGNIZER_THREADS = 4
@@ -37,6 +36,11 @@ const ERROR_TAIL_LINES = 3
 const PCM16_SCALE = 0x8000
 
 const lastLines = (text: string): string => text.trim().split("\n").slice(-ERROR_TAIL_LINES).join(" ")
+
+const errorReason = (stderr: string): string => {
+  const lines = stderr.trim().split("\n").map((line) => line.trim())
+  return lines.findLast((line) => /^error\b/i.test(line)) ?? lastLines(stderr)
+}
 
 export const isInstalled = async (layout: SttLayout, runtime: SttArchive, model: SttModel): Promise<boolean> => {
   try {
@@ -142,12 +146,13 @@ export interface Recognizer {
   readonly alive: () => boolean
 }
 
-export interface RecognizerOptions {
+interface RecognizerOptions {
   readonly entry: string
   readonly layout: SttLayout
   readonly model: SttModel
   readonly sampleRate: number
   readonly decodeTimeoutMs: number
+  readonly startupTimeoutMs: number
 }
 
 const sharedLibraryName = (): string => (process.platform === "darwin" ? "libsherpa-onnx-c-api.dylib" : "libsherpa-onnx-c-api.so")
@@ -213,13 +218,13 @@ export const startRecognizer = (options: RecognizerOptions): Promise<Recognizer>
     const startupTimer = setTimeout(() => {
       broken = true
       killGroup(child.pid, "SIGKILL")
-      rejectStarted(new Error(`The speech recognizer did not start within ${RECOGNIZER_STARTUP_TIMEOUT_MS / 1000} s.`))
-    }, RECOGNIZER_STARTUP_TIMEOUT_MS)
+      rejectStarted(new Error(`The speech recognizer did not start within ${options.startupTimeoutMs / 1000} s.`))
+    }, options.startupTimeoutMs)
 
     void child.exited.then((exitCode) => {
       clearTimeout(startupTimer)
       broken = true
-      const tail = stderrTail.trim().length > 0 ? ` ${lastLines(stderrTail)}` : ""
+      const tail = stderrTail.trim().length > 0 ? ` ${errorReason(stderrTail)}` : ""
       const exited = new Error(`The speech recognizer exited with code ${exitCode}.${tail}`)
       for (const settle of waiting.values()) settle(exited)
       waiting.clear()

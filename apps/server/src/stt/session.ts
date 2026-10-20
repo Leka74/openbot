@@ -3,7 +3,6 @@ import { containsSpeech, findSegmentEnd, frameLevels, leadingSilenceToDrop, spee
 type Decode = (samples: Float32Array) => Promise<string>
 
 const CATCH_UP_CHUNK_SECONDS = 1
-const CATCH_UP_PENDING_SECONDS = 12
 
 const concatSamples = (first: Float32Array, second: Float32Array): Float32Array => {
   const joined = new Float32Array(first.length + second.length)
@@ -18,6 +17,7 @@ export class DictationSession {
   private readonly committed: Array<string> = []
   private readonly levelHistory: Array<number> = []
   private pending: Float32Array = new Float32Array(0)
+  private lastPartial = ""
   private receivedSamples = 0
 
   constructor(
@@ -36,11 +36,12 @@ export class DictationSession {
   async append(samples: Float32Array): Promise<string> {
     const threshold = this.take(samples)
     if (this.fallingBehind(samples)) {
-      await this.commitFinishedSegments(threshold)
-      return joinTranscript(this.committed)
+      if (await this.commitFinishedSegments(threshold)) this.lastPartial = ""
+      return joinTranscript([...this.committed, this.lastPartial])
     }
     await this.commitNextSegment(threshold)
-    return joinTranscript([...this.committed, await this.decodePending(threshold)])
+    this.lastPartial = await this.decodePending(threshold)
+    return joinTranscript([...this.committed, this.lastPartial])
   }
 
   async finish(samples: Float32Array): Promise<string> {
@@ -57,7 +58,7 @@ export class DictationSession {
   }
 
   private fallingBehind(samples: Float32Array): boolean {
-    return samples.length > this.sampleRate * CATCH_UP_CHUNK_SECONDS || this.pendingSeconds > CATCH_UP_PENDING_SECONDS
+    return samples.length > this.sampleRate * CATCH_UP_CHUNK_SECONDS
   }
 
   private async commitNextSegment(threshold: number): Promise<boolean> {
@@ -71,8 +72,10 @@ export class DictationSession {
     return segmentEnd !== undefined
   }
 
-  private async commitFinishedSegments(threshold: number) {
-    while (await this.commitNextSegment(threshold)) continue
+  private async commitFinishedSegments(threshold: number): Promise<boolean> {
+    let committedAny = false
+    while (await this.commitNextSegment(threshold)) committedAny = true
+    return committedAny
   }
 
   private async decodePending(threshold: number): Promise<string> {

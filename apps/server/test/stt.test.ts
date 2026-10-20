@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { RECOGNIZER_PROCESS_ENTRY, startRecognizer, sttLayout } from "../src/stt/engine.ts"
 import { type SttArchive, type SttManifest, sttPlatformOf } from "../src/stt/manifest.ts"
 import { containsSpeech, findSegmentEnd, leadingSilenceToDrop, speechThreshold } from "../src/stt/segmenter.ts"
 import { SpeechToText, SpeechToTextLive, type SpeechToTextOptions } from "../src/stt/service.ts"
@@ -16,6 +17,7 @@ import { eventually, login, type OpenBotClient, rpcClient, startServer, type Tes
 
 const RATE = 16_000
 const SPEECH_LEVEL = 0.3
+const DECODE_FAIL_LEVEL = 0.5
 const HANG_LEVEL = 0.7
 const CRASH_LEVEL = 0.95
 const FAKE_RECOGNIZER = fileURLToPath(new URL("./fixtures/fake-recognizer.ts", import.meta.url))
@@ -135,6 +137,12 @@ const recognizersRunningUnder = (dataDir: string) =>
 
 const settled = (status: SttStatus) => status.state !== "installing"
 
+const modelMarker = (dataDir: string, name: string) => join(dataDir, "stt", "model", name)
+const setModelMarker = (dataDir: string, name: string, present: boolean) =>
+  present ? writeFileSync(modelMarker(dataDir, name), "") : rmSync(modelMarker(dataDir, name), { force: true })
+
+const recognizerPids = async (server: TestServer) => (await recognizerLedgerEntries(server)).map((entry) => entry.pid)
+
 const withClient = async <A>(server: TestServer, body: (client: OpenBotClient) => Effect.Effect<A, unknown>) => {
   const cookie = await login(server.base, server.ownerToken)
   return server.run(Effect.flatMap(rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base }), body))
@@ -236,6 +244,57 @@ describe("a dictation session", () => {
     expect(decodedSeconds.reduce((total, seconds) => total + seconds, 0)).toBeLessThan(backlog.length / RATE)
     expect(occurrences(text, "s")).toBe(decodedSeconds.length)
   })
+
+  test("keeps showing the last partial text while catching up, and drops it once that speech is committed", async () => {
+    let decodes = 0
+    const session = new DictationSession(async () => `p${++decodes}`, RATE)
+    const partial = await session.append(tone(0.5))
+    expect(partial).toBe("p1")
+    expect(await session.append(tone(1.5))).toBe("p1")
+    const committed = await session.append(joinChunks([tone(0.25), silence(1.5)]))
+    expect(committed).toBe("p2")
+  })
+
+  test("never decodes more than twelve seconds at once, even when speech arrives in small pieces without a pause", async () => {
+    const decodedSeconds: Array<number> = []
+    const session = new DictationSession(async (samples) => {
+      decodedSeconds.push(samples.length / RATE)
+      return "s"
+    }, RATE)
+    for (const chunk of chunked(tone(11.75), 0.25)) await session.append(chunk)
+    decodedSeconds.length = 0
+    await session.append(tone(0.75))
+    expect(decodedSeconds.every((seconds) => seconds <= 12)).toBe(true)
+    expect(session.pendingSeconds).toBeLessThan(5)
+  })
+
+  test("finish decodes the last piece of speech whatever its length", async () => {
+    const session = new DictationSession(async (samples) => `heard ${Math.round(samples.length / RATE)}s`, RATE)
+    expect(await session.finish(tone(2))).toBe("heard 2s")
+  })
+})
+
+describe("the recognizer process", () => {
+  test("a recognizer that cannot load its library fails at once and says why", async () => {
+    const root = mkdtempSync(join(tmpdir(), "openbot-stt-broken-"))
+    try {
+      mkdirSync(join(root, "runtime", "lib"), { recursive: true })
+      const startedAt = Date.now()
+      const failure = await startRecognizer({
+        entry: RECOGNIZER_PROCESS_ENTRY,
+        layout: sttLayout(root),
+        model: manifestFor(fixtures).model,
+        sampleRate: RATE,
+        decodeTimeoutMs: 5_000,
+        startupTimeoutMs: 30_000,
+      }).then(() => undefined, (error: Error) => error.message)
+      expect(failure).toContain("exited with code 1")
+      expect(failure).toContain("Failed to open library")
+      expect(Date.now() - startedAt).toBeLessThan(10_000)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 20_000)
 })
 
 describe("voice input over RPC", () => {
@@ -355,9 +414,13 @@ describe("voice input over RPC", () => {
           yield* installed(client)
           const { sessionId } = yield* client["stt.open"]()
           const minute = pcm(silence(60))
-          for (let minutes = 0; minutes < MAX_DICTATION_SECONDS / 60; minutes++) yield* client["stt.append"]({ sessionId, pcmBase64: minute })
-          const over = yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: pcm(silence(1)) }))
+          for (let minutes = 1; minutes < MAX_DICTATION_SECONDS / 60; minutes++) yield* client["stt.append"]({ sessionId, pcmBase64: minute })
+          yield* client["stt.append"]({ sessionId, pcmBase64: pcm(silence(59.5)) })
+          const crossingTheCap = yield* client["stt.append"]({ sessionId, pcmBase64: pcm(joinChunks([silence(0.5), tone(0.5)])) })
+          expect(crossingTheCap.text).toBe("")
+          const over = yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: pcm(tone(0.1)) }))
           expect(over).toMatchObject({ _tag: "InvalidInput", message: expect.stringContaining("10 minutes") })
+          expect(yield* client["stt.finish"]({ sessionId, pcmBase64: "" })).toEqual({ text: "" })
         }))
     } finally {
       await server.close()
@@ -407,6 +470,53 @@ describe("voice input over RPC", () => {
     } finally {
       release()
       fixtures.holdDownloads = undefined
+      await server.close()
+    }
+  }, 30_000)
+
+  test("a recognizer that fails to start, or fails one decode, does not break later dictations", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const server = await startWithManifest(manifestFor(fixtures), { dataDir, startupTimeoutMs: 300 })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          setModelMarker(dataDir, "fail-start", true)
+          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          setModelMarker(dataDir, "fail-start", false)
+          const first = yield* client["stt.open"]()
+          expect((yield* client["stt.append"]({ sessionId: first.sessionId, pcmBase64: pcm(tone(1)) })).text).toBe("country")
+          const pidAfterStart = yield* Effect.promise(() => recognizerPids(server))
+          expect(pidAfterStart).toHaveLength(1)
+
+          yield* Effect.sleep("800 millis")
+          const failed = yield* Effect.flip(client["stt.append"]({ sessionId: first.sessionId, pcmBase64: pcm(tone(1, DECODE_FAIL_LEVEL)) }))
+          expect(failed._tag).toBe("Unavailable")
+          const second = yield* client["stt.open"]()
+          expect((yield* client["stt.finish"]({ sessionId: second.sessionId, pcmBase64: pcm(tone(2)) })).text).toBe("country")
+          expect(yield* Effect.promise(() => recognizerPids(server))).toEqual(pidAfterStart)
+        }))
+    } finally {
+      await server.close()
+    }
+  }, 30_000)
+
+  test("a recognizer that ignores SIGTERM is still stopped when voice input is turned off", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const server = await startWithManifest(manifestFor(fixtures), { dataDir })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          setModelMarker(dataDir, "ignore-sigterm", true)
+          yield* client["stt.open"]()
+          expect(recognizersRunningUnder(dataDir)).toBe(1)
+          const removingAt = Date.now()
+          yield* client["stt.remove"]()
+          expect(Date.now() - removingAt).toBeLessThan(3_500)
+          expect(recognizersRunningUnder(dataDir)).toBe(0)
+        }))
+    } finally {
       await server.close()
     }
   }, 30_000)

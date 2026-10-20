@@ -44,11 +44,13 @@ export interface SpeechToTextOptions {
   readonly recognizerIdleMs?: number | undefined
   readonly sessionIdleMs?: number | undefined
   readonly decodeTimeoutMs?: number | undefined
+  readonly startupTimeoutMs?: number | undefined
 }
 
 const RECOGNIZER_IDLE_MS = 5 * 60_000
 const SESSION_IDLE_MS = 2 * 60_000
 const DECODE_TIMEOUT_MS = 60_000
+const STARTUP_TIMEOUT_MS = 60_000
 
 const NOT_SET_UP = "Voice input isn't set up on this OpenBot yet. Turn it on in Settings › General."
 const RECOGNIZER_FAILED = "Voice input could not transcribe; the details are in the brain's log."
@@ -85,7 +87,7 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
       let recognizer: Promise<Recognizer> | undefined
       let idleTimer: ReturnType<typeof setTimeout> | undefined
 
-      const inLedger = (pid: number) =>
+      const recordInLedger = (pid: number) =>
         Option.match(ledger, {
           onNone: () => Promise.resolve(),
           onSome: (processes) =>
@@ -96,7 +98,7 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
                 ),
             ),
         })
-      const outOfLedger = (pid: number) =>
+      const removeFromLedger = (pid: number) =>
         Option.match(ledger, {
           onNone: () => Promise.resolve(),
           onSome: (processes) =>
@@ -110,14 +112,15 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
           model,
           sampleRate,
           decodeTimeoutMs: options.decodeTimeoutMs ?? DECODE_TIMEOUT_MS,
+          startupTimeoutMs: options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS,
         })
-        await inLedger(started.pid)
+        await recordInLedger(started.pid)
         return started
       }
 
       const retire = async (stopping: Recognizer) => {
         await stopping.stop()
-        await outOfLedger(stopping.pid)
+        await removeFromLedger(stopping.pid)
       }
 
       const stopRecognizer = async () => {
@@ -184,10 +187,12 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
           Effect.gen(function*() {
             const active = sessions.get(sessionId)
             if (active === undefined) return yield* new NotFound({ entity: "dictation", id: sessionId })
-            const samples = pcm16Samples(pcm)
-            if (active.session.receivedSeconds + samples.length / DICTATION_SAMPLE_RATE > MAX_DICTATION_SECONDS) {
+            const remainingSamples = Math.max(0, Math.round((MAX_DICTATION_SECONDS - active.session.receivedSeconds) * DICTATION_SAMPLE_RATE))
+            const received = pcm16Samples(pcm)
+            if (received.length > 0 && remainingSamples === 0) {
               return yield* new InvalidInput({ message: `Dictation stops after ${MAX_DICTATION_SECONDS / 60} minutes.` })
             }
+            const samples = received.subarray(0, remainingSamples)
             active.lastUsedAt = Date.now()
             const text = yield* Effect.tryPromise({
               try: () => (final ? active.session.finish(samples) : active.session.append(samples)),
