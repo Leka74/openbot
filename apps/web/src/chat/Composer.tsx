@@ -93,8 +93,6 @@ export function Composer(props: ComposerProps): ReactNode {
   // Switch drafts with the conversation (derived state, reset during render).
   const [shownKey, setShownKey] = useState(draftKey)
   if (shownKey !== draftKey) {
-    if (dictatingInto !== undefined) drafts.set(shownKey, dictatingInto.base)
-    setDictatingInto(undefined)
     setShownKey(draftKey)
     setText(drafts.get(draftKey) ?? "")
     setUploads([])

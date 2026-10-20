@@ -8,7 +8,7 @@ const TAP_BUFFER_SAMPLES = 4096
 const FLUSH = "flush"
 const FLUSHED = "flushed"
 const FLUSH_TIMEOUT_MS = 300
-const TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWorkletProcessor {
+export const DICTATION_TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWorkletProcessor {
   constructor() {
     super()
     this.buffer = new Float32Array(${TAP_BUFFER_SAMPLES})
@@ -39,6 +39,11 @@ const TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWor
   }
 })`
 
+export const tapMessageHandler = (onAudio: (samples: Float32Array) => void, onFlushed: () => void) => (event: MessageEvent<Float32Array | string>) => {
+  if (event.data === FLUSHED) onFlushed()
+  else if (typeof event.data !== "string") onAudio(event.data)
+}
+
 export interface Microphone {
   readonly sampleRate: number
   readonly stop: () => Promise<void>
@@ -47,7 +52,7 @@ export interface Microphone {
 export const startMicrophone = async (onAudio: (samples: Float32Array) => void, onLimitReached: () => void): Promise<Microphone> => {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
   const context = new AudioContext()
-  const moduleUrl = URL.createObjectURL(new Blob([TAP_MODULE], { type: "text/javascript" }))
+  const moduleUrl = URL.createObjectURL(new Blob([DICTATION_TAP_MODULE], { type: "text/javascript" }))
   const limit = setTimeout(onLimitReached, MAX_DICTATION_SECONDS * 1000)
   let tap: AudioWorkletNode | undefined
   let onFlushed = () => {}
@@ -74,7 +79,7 @@ export const startMicrophone = async (onAudio: (samples: Float32Array) => void, 
     tap = new AudioWorkletNode(context, TAP_PROCESSOR)
     const silence = context.createGain()
     silence.gain.value = 0
-    tap.port.onmessage = (event: MessageEvent<Float32Array | string>) => (event.data === FLUSHED ? onFlushed() : typeof event.data === "string" ? undefined : onAudio(event.data))
+    tap.port.onmessage = tapMessageHandler(onAudio, () => onFlushed())
     source.connect(tap).connect(silence).connect(context.destination)
   } catch (error) {
     await stop()

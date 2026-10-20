@@ -189,7 +189,7 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
             if (active === undefined) return yield* new NotFound({ entity: "dictation", id: sessionId })
             const remainingSamples = Math.max(0, Math.round((MAX_DICTATION_SECONDS - active.session.receivedSeconds) * DICTATION_SAMPLE_RATE))
             const received = pcm16Samples(pcm)
-            if (received.length > 0 && remainingSamples === 0) {
+            if (!final && received.length > 0 && remainingSamples === 0) {
               return yield* new InvalidInput({ message: `Dictation stops after ${MAX_DICTATION_SECONDS / 60} minutes.` })
             }
             const samples = received.subarray(0, remainingSamples)

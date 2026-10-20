@@ -19,9 +19,28 @@ const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: bool
   await fetch(`${mock.url}/api/mock/stt?failsAppend=${state.failsAppend ? 1 : 0}&resetToReady=${state.resetToReady ? 1 : 0}`, { method: "POST" })
 }
 
+const trackMicrophoneTracks = (page: Page) =>
+  page.evaluate(() => {
+    const tracks: Array<MediaStreamTrack> = []
+    const requestMicrophone = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      const stream = await requestMicrophone(constraints)
+      tracks.push(...stream.getTracks())
+      return stream
+    }
+    Object.assign(window, { dictationTracks: tracks })
+  })
+
+const microphoneReleased = (page: Page) =>
+  page.waitForFunction(() => {
+    const tracks = (window as unknown as { readonly dictationTracks: ReadonlyArray<MediaStreamTrack> }).dictationTracks
+    return tracks.length > 0 && tracks.every((track) => track.readyState === "ended")
+  })
+
 const openExpenseChat = async (browser: Browser, url: string) => {
   const opened = await openPage(browser, url, "dark", "#/c/cnv_expense")
   await opened.page.context().grantPermissions(["microphone"])
+  await trackMicrophoneTracks(opened.page)
   return { ...opened, box: opened.page.getByRole("textbox", { name: "Message Expense Clerk" }) }
 }
 
@@ -64,6 +83,7 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     await page.keyboard.press("Escape")
     await page.getByRole("button", { name: "Dictate" }).waitFor()
     expect(await box.inputValue()).toBe("keep me")
+    await microphoneReleased(page)
     expect(errors).toEqual([])
   }, 30_000)
 
@@ -89,6 +109,7 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     await setMockStt(mock, { failsAppend: true })
     await page.getByText("Voice input could not transcribe", { exact: false }).waitFor()
     await page.getByRole("button", { name: "Dictate" }).waitFor()
+    await microphoneReleased(page)
     expect(await box.inputValue()).toBe(`Before ${LIVE}`)
     expect((await mockStt(mock)).discards).toBe(discardsBefore + 1)
     await setMockStt(mock, { failsAppend: false })
@@ -106,7 +127,7 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     await page.evaluate(() => {
       location.hash = "#/c/cnv_travel"
     })
-    await page.waitForTimeout(800)
+    await microphoneReleased(page)
     expect(await page.locator("textarea").first().inputValue()).toBe("")
     await page.evaluate(() => {
       location.hash = "#/c/cnv_expense"

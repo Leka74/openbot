@@ -16,6 +16,7 @@ if (existsSync(marker("fail-start"))) {
   process.exit(1)
 }
 if (existsSync(marker("ignore-sigterm"))) process.on("SIGTERM", () => undefined)
+const startsSilently = existsSync(marker("hang-start"))
 const heard = existsSync(marker("misheard.txt")) ? readFileSync(marker("misheard.txt"), "utf8").trim() : "country"
 
 process.on("message", (request: RecognizerRequest) => {
@@ -26,4 +27,4 @@ process.on("message", (request: RecognizerRequest) => {
   reply({ type: "decoded", id: request.id, text: heard })
 })
 process.on("disconnect", () => process.exit(0))
-reply({ type: "ready" })
+if (!startsSilently) reply({ type: "ready" })

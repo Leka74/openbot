@@ -421,6 +421,11 @@ describe("voice input over RPC", () => {
           const over = yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: pcm(tone(0.1)) }))
           expect(over).toMatchObject({ _tag: "InvalidInput", message: expect.stringContaining("10 minutes") })
           expect(yield* client["stt.finish"]({ sessionId, pcmBase64: "" })).toEqual({ text: "" })
+
+          const late = yield* client["stt.open"]()
+          for (let minutes = 1; minutes < MAX_DICTATION_SECONDS / 60; minutes++) yield* client["stt.append"]({ sessionId: late.sessionId, pcmBase64: minute })
+          yield* client["stt.append"]({ sessionId: late.sessionId, pcmBase64: pcm(joinChunks([silence(59), tone(1)])) })
+          expect(yield* client["stt.finish"]({ sessionId: late.sessionId, pcmBase64: pcm(tone(0.5)) })).toEqual({ text: "country" })
         }))
     } finally {
       await server.close()
@@ -496,6 +501,23 @@ describe("voice input over RPC", () => {
           expect((yield* client["stt.finish"]({ sessionId: second.sessionId, pcmBase64: pcm(tone(2)) })).text).toBe("country")
           expect(yield* Effect.promise(() => recognizerPids(server))).toEqual(pidAfterStart)
         }))
+    } finally {
+      await server.close()
+    }
+  }, 30_000)
+
+  test("a recognizer that never becomes ready is killed when its startup time runs out", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const server = await startWithManifest(manifestFor(fixtures), { dataDir, startupTimeoutMs: 300 })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          setModelMarker(dataDir, "hang-start", true)
+          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { timeout: 3_000, label: "hung start killed" })
+        }))
+      expect(await recognizerLedgerEntries(server)).toHaveLength(0)
     } finally {
       await server.close()
     }
