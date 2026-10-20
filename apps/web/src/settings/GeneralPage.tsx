@@ -11,6 +11,7 @@ import { ErrorLine, harnessName, harnessReady, useCommand, useQuery } from "../d
 import { DesktopAppRow, NotificationsRow, QuickSendRow } from "./DesktopApp.tsx"
 import { IphoneAppRow } from "./IphoneApp.tsx"
 import { GroupLabel, PageHeader, SettingsCard, SettingsRow } from "./layout.tsx"
+import { VoiceInputRow } from "./VoiceInput.tsx"
 
 const NO_DEFAULT = "__none__"
 
@@ -160,6 +161,11 @@ export function GeneralPage(): ReactNode {
             />
           }
         />
+      </SettingsCard>
+
+      <GroupLabel>Voice</GroupLabel>
+      <SettingsCard testId="settings-voice">
+        <VoiceInputRow />
       </SettingsCard>
 
       <GroupLabel>Apps</GroupLabel>

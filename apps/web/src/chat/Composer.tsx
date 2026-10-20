@@ -8,13 +8,16 @@ import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo
 import { useAtomSet } from "@effect/atom-react"
 import { Exit } from "effect"
 import type { Attachment, AttachmentId, Bot, BotId } from "@openbot/contracts"
+import { insertDictation } from "@openbot/app-model"
 import { uploadFilesAtom } from "@openbot/client"
 import { Avatar, IconButton, Menu, MenuItem, MenuPanel, Spinner, cn, useToast } from "@openbot/ui"
 import { plainPreview } from "../app/format.ts"
 import { isTouchNow, useIsPhone } from "../app/layout.ts"
 import { describeFailure } from "../cards/useRespond.ts"
 import { ContextRing, type ContextRingProps } from "./ContextRing.tsx"
+import { DictationButton } from "./DictationButton.tsx"
 import type { MessageEntry } from "./grouping.ts"
+import { useDictation } from "./useDictation.ts"
 
 export interface ComposerSubmit {
   readonly text: string
@@ -159,6 +162,39 @@ export function Composer(props: ComposerProps): ReactNode {
     ta.focus()
     ta.setSelectionRange(pos, pos)
   }, [text])
+
+  const [dictatingInto, setDictatingInto] = useState<{ readonly base: string; readonly caret: number; readonly end: number } | undefined>()
+  const showDraft = (value: string) => {
+    setText(value)
+    drafts.set(draftKey, value)
+  }
+  const dictation = useDictation({
+    draftKey,
+    onStart: () => {
+      const caret = taRef.current?.selectionStart ?? text.length
+      setDictatingInto({ base: text, caret, end: caret })
+    },
+    onText: (spoken) => {
+      if (dictatingInto === undefined) return
+      const next = insertDictation(dictatingInto.base, dictatingInto.caret, spoken)
+      showDraft(next.text)
+      setDictatingInto({ ...dictatingInto, end: next.caret })
+    },
+    onDone: () => {
+      const caret = dictatingInto?.end
+      setDictatingInto(undefined)
+      if (caret === undefined) return
+      requestAnimationFrame(() => {
+        taRef.current?.focus()
+        taRef.current?.setSelectionRange(caret, caret)
+      })
+    },
+    onCancel: () => {
+      if (dictatingInto !== undefined) showDraft(dictatingInto.base)
+      setDictatingInto(undefined)
+    },
+    onError: (message) => toast({ title: message, tone: "danger" }),
+  })
 
   const ready = uploads.filter((u) => u.attachment)
   const canSend = !props.disabled && !uploading && (text.trim().length > 0 || ready.length > 0)
@@ -313,6 +349,7 @@ export function Composer(props: ComposerProps): ReactNode {
             rows={1}
             value={text}
             disabled={props.disabled}
+            readOnly={dictation.phase !== "idle"}
             aria-label={placeholder}
             placeholder={placeholder}
             enterKeyHint={phone ? "enter" : "send"}
@@ -336,6 +373,7 @@ export function Composer(props: ComposerProps): ReactNode {
             )}
           />
           {props.context && <ContextRing {...props.context} />}
+          {dictation.available && !props.disabled && <DictationButton dictation={dictation} size={phone ? 36 : 28} />}
           {working && (
             <IconButton icon={Square} label="Stop" title="Stop the Bot" size={phone ? 36 : 28} variant={text.trim() ? "secondary" : "primary"} iconSize="xs" onClick={props.onStop} className="[&_svg]:fill-current" />
           )}
