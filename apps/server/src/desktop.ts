@@ -42,6 +42,10 @@ export const desktopFileName = (target: DesktopTarget): string => {
 const APP_DIR = fileURLToPath(new URL("../../desktop", import.meta.url))
 const RCODESIGN_VERSION = "0.29.0"
 const BUNDLE_ID = "com.leka74.openbot.desktop"
+const MAC_USAGE_DESCRIPTIONS = {
+  NSAppleEventsUsageDescription: "OpenBot reads the page open in your browser when you send it to a Bot.",
+  NSMicrophoneUsageDescription: "OpenBot listens while you dictate a message to a Bot.",
+} as const
 
 const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex")
 
@@ -130,7 +134,7 @@ const buildKey = async (origin: string, electron: string): Promise<string> => {
     .flat()
     .sort()
   const parts = await Promise.all(files.map(async (f) => Buffer.concat([Buffer.from(`${f}\n`), await readFile(path.join(APP_DIR, f))])))
-  return sha256(Buffer.concat([...parts, Buffer.from(`${origin}\n${electron}`)])).slice(0, 12)
+  return sha256(Buffer.concat([...parts, Buffer.from(`${origin}\n${electron}\n${JSON.stringify(MAC_USAGE_DESCRIPTIONS)}`)])).slice(0, 12)
 }
 
 /** The build this brain serves now (`/desktop/latest`): the app compares it with its own to update. */
@@ -163,8 +167,7 @@ const buildTarget = async (cacheDir: string, origin: string, target: DesktopTarg
       plist = setPlistString(plist, "CFBundleDisplayName", "OpenBot")
       plist = setPlistString(plist, "CFBundleIdentifier", BUNDLE_ID)
       plist = setPlistString(plist, "CFBundleShortVersionString", pkg.version)
-      // quick send: the page in the browser in front (AppleScript), and `openbot://send` links
-      plist = setPlistString(plist, "NSAppleEventsUsageDescription", "OpenBot reads the page open in your browser when you send it to a Bot.")
+      for (const [usageKey, description] of Object.entries(MAC_USAGE_DESCRIPTIONS)) plist = setPlistString(plist, usageKey, description)
       if (!plist.includes("CFBundleURLSchemes")) {
         plist = plist.replace(
           /<dict>/,
