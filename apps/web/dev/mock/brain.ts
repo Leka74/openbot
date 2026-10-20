@@ -59,6 +59,7 @@ import {
   type SkillName,
   type SkillPreview,
   type SlackStatus,
+  type SttStatus,
   type ToolKind,
   type Turn,
   type TurnFailure,
@@ -134,6 +135,7 @@ export class MockBrain {
   readonly rules = new Map<string, ApprovalRule>()
   /** Slack (D3.4): any `xoxp-` token connects the mock to workspace "Acme". */
   slack: SlackStatus = { connected: false, events: "off" }
+  stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>()
   readonly sends = new Map<string, SendResult>()
   readonly usage = new Map<string, BotUsage>()
@@ -1364,6 +1366,25 @@ export class MockBrain {
         })(),
       "slack.sendDraft": ({ entryId, text }) => sync(() => this.answerSlackDraft(entryId, text))(),
       "slack.discardDraft": ({ entryId }) => sync(() => this.answerSlackDraft(entryId, undefined))(),
+      "stt.status": () => Effect.succeed(this.stt),
+      "stt.install": () =>
+        sync(() => {
+          this.stt = { state: "ready", model: this.stt.model }
+          return this.stt
+        })(),
+      "stt.remove": () =>
+        sync(() => {
+          this.stt = { state: "absent", model: this.stt.model }
+          return this.stt
+        })(),
+      "stt.open": () =>
+        sync(() => {
+          if (this.stt.state !== "ready") throw new Unavailable({ message: "Voice input isn't set up on this OpenBot yet." })
+          return { sessionId: this.id("dic") }
+        })(),
+      "stt.append": () => Effect.succeed({ text: "Check the staging deploy" }),
+      "stt.finish": () => Effect.succeed({ text: "Check the staging deploy and tell me if it is green." }),
+      "stt.discard": () => Effect.void,
       "settings.get": () => Effect.succeed(this.settings),
       "settings.update": ({ patch }) =>
         sync(() => {

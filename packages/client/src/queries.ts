@@ -37,6 +37,8 @@ export const settingsQueryAtom = OpenBotClient.query("settings.get", undefined, 
 /** The Slack connection (D3.4): workspace, who the owner is there, and whether live messages arrive. */
 export const slackStatusAtom = OpenBotClient.query("slack.status", undefined, { reactivityKeys: [Keys.slack] })
 
+export const sttStatusAtom = OpenBotClient.query("stt.status", undefined, { reactivityKeys: [Keys.stt] })
+
 /** Rendered instructions + memory for the details pane. */
 export const botContextAtom = Atom.family((botId: BotId) => OpenBotClient.query("bots.readContext", { botId }, { reactivityKeys: [Keys.botContext] }))
 

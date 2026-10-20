@@ -33,6 +33,7 @@ export interface DataDirShape {
   readonly brainIdentity: string
   /** `<root>/slack.json` (0600): the owner's Slack tokens (D3.4). */
   readonly slack: string
+  readonly stt: string
 }
 
 /** Joins path segments with `/`, collapsing duplicate separators and dropping a trailing one. */
@@ -59,6 +60,7 @@ export const makeDataDir = (root: string): DataDirShape => {
     carryover: joinPath(base, "carryover.json"),
     brainIdentity: joinPath(base, "brain-identity.json"),
     slack: joinPath(base, "slack.json"),
+    stt: joinPath(base, "stt"),
   }
 }
 

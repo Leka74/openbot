@@ -21,6 +21,7 @@ export const Keys = {
   tasks: "tasks",
   /** The Slack connection (D3.4). */
   slack: "slack",
+  stt: "stt",
 } as const
 export type ReactivityKey = (typeof Keys)[keyof typeof Keys]
 

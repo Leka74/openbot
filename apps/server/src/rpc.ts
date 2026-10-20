@@ -8,6 +8,7 @@ import {
   type HarnessStatus,
   Internal,
   InvalidInput,
+  MAX_DICTATION_CHUNK_BYTES,
   OpenBotRpcs,
   type SessionInfo,
 } from "@openbot/contracts"
@@ -38,6 +39,7 @@ import { Cause, Clock, Effect, Option, Stream } from "effect"
 import { userInfo } from "node:os"
 import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
 import { HarnessProfiles } from "./profiles.ts"
+import { SpeechToText } from "./stt/service.ts"
 
 const INTERNAL_MESSAGE = "Something went wrong on the brain; the details are in its log."
 
@@ -71,6 +73,14 @@ export const decodeBase64 = (input: string): Uint8Array | undefined => {
   if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(compact) || compact.replace(/=+$/, "").length % 4 === 1) return undefined
   return new Uint8Array(Buffer.from(compact.replace(/-/g, "+").replace(/_/g, "/"), "base64"))
 }
+
+const withPcm = <A, E>(pcmBase64: string, use: (pcm: Uint8Array) => Effect.Effect<A, E>): Effect.Effect<A, E | InvalidInput> =>
+  Effect.suspend((): Effect.Effect<A, E | InvalidInput> => {
+    if (pcmBase64.length > Math.ceil((MAX_DICTATION_CHUNK_BYTES * 4) / 3) + 16) return Effect.fail(new InvalidInput({ message: "That piece of audio is too large." }))
+    const pcm = decodeBase64(pcmBase64)
+    if (pcm === undefined) return Effect.fail(new InvalidInput({ message: "pcmBase64 is not valid base64." }))
+    return use(pcm)
+  })
 
 const PROBE_TIMEOUT = "20 seconds"
 
@@ -133,6 +143,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
   const tasks = yield* BackgroundTasks
   const slack = yield* SlackConnector
   const slackDrafts = yield* SlackService
+  const speech = yield* SpeechToText
   const ownerFallback = defaultOwnerName()
 
   return OpenBotRpcs.of({
@@ -285,6 +296,14 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
     "slack.disconnect": () => edge("slack.disconnect", Effect.andThen(slack.disconnect, slack.status)),
     "slack.sendDraft": ({ entryId, text }) => edge("slack.sendDraft", slackDrafts.send({ entryId, text })),
     "slack.discardDraft": ({ entryId }) => edge("slack.discardDraft", slackDrafts.discard(entryId)),
+
+    "stt.status": () => edge("stt.status", speech.status),
+    "stt.install": () => edge("stt.install", speech.install),
+    "stt.remove": () => edge("stt.remove", speech.remove),
+    "stt.open": () => edge("stt.open", speech.open),
+    "stt.append": ({ sessionId, pcmBase64 }) => edge("stt.append", withPcm(pcmBase64, (pcm) => speech.append(sessionId, pcm))),
+    "stt.finish": ({ sessionId, pcmBase64 }) => edge("stt.finish", withPcm(pcmBase64, (pcm) => speech.finish(sessionId, pcm))),
+    "stt.discard": ({ sessionId }) => edge("stt.discard", speech.discard(sessionId)),
 
     // ---------------------------------------------------------------- usage
     "usage.byBot": ({ sinceMs }) => edge("usage.byBot", usage.byBot({ sinceMs })),

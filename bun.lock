@@ -102,6 +102,7 @@
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "catalog:",
+        "@openbot/app-model": "workspace:*",
         "@openbot/tsconfig": "workspace:*",
         "bun-plugin-tailwind": "catalog:",
         "tailwindcss": "catalog:",

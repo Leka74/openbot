@@ -98,6 +98,7 @@ import { RpcHandlersLive } from "./rpc.ts"
 import { setShutdownPhase } from "./shutdown.ts"
 import { SkillsShLive } from "./skillsSh.ts"
 import { SlackConnectorLive } from "./slack/connector.ts"
+import { type SpeechToText, SpeechToTextLive } from "./stt/service.ts"
 
 // ============================================================================ startup errors
 
@@ -332,6 +333,7 @@ export interface ServerOptions {
   readonly profiles?: ProfileOptions | undefined
   /** Replaces skills.sh (tests). */
   readonly skillDirectory?: Layer.Layer<SkillDirectory> | undefined
+  readonly speechToText?: Layer.Layer<SpeechToText> | undefined
   readonly quiet?: boolean | undefined
 }
 
@@ -356,6 +358,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     HostPathsLive,
     // the owner's Slack (D3.4): tokens in <data>/slack.json
     SlackConnectorLive({ file: makeDataDir(config.dataDir).slack, apiUrl: config.slackApiUrl }),
+    options?.speechToText ?? SpeechToTextLive({ dir: makeDataDir(config.dataDir).stt }),
   )
   const level2 = Layer.mergeAll(SettingsServiceLive, UsageServiceLive, NotifierLive, ConversationServiceLive, AttachmentServiceLive)
 

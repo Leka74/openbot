@@ -105,6 +105,13 @@ const V1_RPCS = [
   "slack.disconnect",
   "slack.sendDraft",
   "slack.discardDraft",
+  "stt.status",
+  "stt.install",
+  "stt.remove",
+  "stt.open",
+  "stt.append",
+  "stt.finish",
+  "stt.discard",
   "usage.byBot",
 ] as const satisfies ReadonlyArray<OpenBotRpcTag>
 
