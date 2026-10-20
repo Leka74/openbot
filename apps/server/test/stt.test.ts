@@ -1,59 +1,34 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { MAX_DICTATION_CHUNK_BYTES, type SttStatus } from "@openbot/contracts"
+import { encodePcm16, joinChunks, toBase64 } from "@openbot/app-model"
+import { MAX_DICTATION_SECONDS, type SttStatus } from "@openbot/contracts"
+import { ProcessLedger } from "@openbot/core"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DictationSession } from "../src/stt/session.ts"
+import { fileURLToPath } from "node:url"
+import { type SttArchive, type SttManifest, sttPlatformOf } from "../src/stt/manifest.ts"
 import { containsSpeech, findSegmentEnd, leadingSilenceToDrop, speechThreshold } from "../src/stt/segmenter.ts"
-import { parseRecognizerOutput, type SttArchive, type SttManifest, sttPlatformOf, SpeechToTextLive } from "../src/index.ts"
-import { eventually, login, rpcClient, startServer } from "./helpers.ts"
+import { SpeechToText, SpeechToTextLive, type SpeechToTextOptions } from "../src/stt/service.ts"
+import { DictationSession } from "../src/stt/session.ts"
+import { eventually, login, type OpenBotClient, rpcClient, startServer, type TestServer } from "./helpers.ts"
 
 const RATE = 16_000
 const SPEECH_LEVEL = 0.3
+const HANG_LEVEL = 0.7
 const CRASH_LEVEL = 0.95
-
-const fakeRecognizer = () => `#!${process.execPath}
-const port = Number(process.argv.find((arg) => arg.startsWith("--port=")).slice("--port=".length))
-Bun.serve({
-  hostname: "127.0.0.1",
-  port,
-  fetch: (request, server) => (server.upgrade(request) ? undefined : new Response("websocket only", { status: 400 })),
-  websocket: {
-    message(socket, message) {
-      if (typeof message === "string") return
-      const view = new DataView(message.buffer, message.byteOffset, message.byteLength)
-      const samples = new Float32Array(message.buffer.slice(message.byteOffset + 8, message.byteOffset + 8 + view.getInt32(4, true)))
-      if (samples.some((sample) => Math.abs(sample) > ${(SPEECH_LEVEL + CRASH_LEVEL) / 2})) process.exit(7)
-      socket.send(JSON.stringify({ lang: "", text: " country " }))
-    },
-  },
-})
-`
+const FAKE_RECOGNIZER = fileURLToPath(new URL("./fixtures/fake-recognizer.ts", import.meta.url))
 
 const tone = (seconds: number, level = SPEECH_LEVEL) => Float32Array.from({ length: Math.round(seconds * RATE) }, (_, i) => level * Math.sin(i / 3))
 const silence = (seconds: number) => new Float32Array(Math.round(seconds * RATE))
-const join32 = (...parts: ReadonlyArray<Float32Array>) => {
-  const joined = new Float32Array(parts.reduce((total, part) => total + part.length, 0))
-  let offset = 0
-  for (const part of parts) {
-    joined.set(part, offset)
-    offset += part.length
-  }
-  return joined
-}
 const chunked = (samples: Float32Array, seconds: number) => {
   const size = Math.round(seconds * RATE)
   return Array.from({ length: Math.ceil(samples.length / size) }, (_, i) => samples.subarray(i * size, (i + 1) * size))
 }
-const pcm16Base64 = (samples: Float32Array) => {
-  const view = new DataView(new ArrayBuffer(samples.length * 2))
-  samples.forEach((sample, i) => view.setInt16(i * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true))
-  return Buffer.from(view.buffer).toString("base64")
-}
+const pcm = (samples: Float32Array) => toBase64(encodePcm16(samples))
 const wavBytes = (samples: Float32Array) => {
-  const data = Buffer.from(pcm16Base64(samples), "base64")
+  const data = encodePcm16(samples)
   const header = Buffer.alloc(44)
   header.write("RIFF", 0)
   header.writeUInt32LE(36 + data.length, 4)
@@ -72,53 +47,70 @@ const wavBytes = (samples: Float32Array) => {
 const occurrences = (text: string, word: string) => text.split(word).length - 1
 
 interface Fixtures {
-  readonly runtime: SttArchive
-  readonly model: SttArchive
-  readonly stop: () => void
+  runtime: SttArchive
+  model: SttArchive
+  misheardModel: SttArchive
+  twoFolderRuntime: SttArchive
+  failNextDownload: boolean
+  holdDownloads: Promise<void> | undefined
+  stop: () => void
 }
 
-const packFolder = (root: string, folder: string) => {
-  const file = join(root, `${folder}.tar.bz2`)
-  const packed = Bun.spawnSync(["tar", "-cjf", file, "-C", root, folder])
+const archive = (root: string, origin: string, file: string, ...folders: ReadonlyArray<string>): SttArchive => {
+  const packed = Bun.spawnSync(["tar", "-cjf", join(root, file), "-C", root, ...folders])
   if (packed.exitCode !== 0) throw new Error(packed.stderr.toString())
-  const contents = readFileSync(file)
-  return { sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }
+  const contents = readFileSync(join(root, file))
+  return { url: `${origin}/${file}`, sha256: createHash("sha256").update(contents).digest("hex"), bytes: contents.byteLength }
+}
+
+const writeModel = (root: string, folder: string, misheard?: string) => {
+  mkdirSync(join(root, folder, "test_wavs"), { recursive: true })
+  for (const name of ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]) writeFileSync(join(root, folder, name), name)
+  writeFileSync(join(root, folder, "test_wavs", "en.wav"), wavBytes(tone(1)))
+  if (misheard !== undefined) writeFileSync(join(root, folder, "misheard.txt"), misheard)
 }
 
 const makeFixtures = (): Fixtures => {
   const root = mkdtempSync(join(tmpdir(), "openbot-stt-fixtures-"))
-  const recognizer = join(root, "fake-runtime", "bin", "sherpa-onnx-offline-websocket-server")
-  mkdirSync(join(root, "fake-runtime", "bin"), { recursive: true })
-  writeFileSync(recognizer, fakeRecognizer())
-  chmodSync(recognizer, 0o755)
-  mkdirSync(join(root, "fake-model", "test_wavs"), { recursive: true })
-  for (const name of ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]) writeFileSync(join(root, "fake-model", name), name)
-  writeFileSync(join(root, "fake-model", "test_wavs", "en.wav"), wavBytes(tone(1)))
-  const runtime = packFolder(root, "fake-runtime")
-  const model = packFolder(root, "fake-model")
+  for (const folder of ["fake-runtime", "other-runtime"]) {
+    mkdirSync(join(root, folder, "lib"), { recursive: true })
+    writeFileSync(join(root, folder, "lib", "placeholder"), folder)
+  }
+  writeModel(root, "fake-model")
+  writeModel(root, "misheard-model", "hello")
+  const fixtures = { failNextDownload: false, holdDownloads: undefined } as Fixtures
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: (request) => new Response(Bun.file(join(root, new URL(request.url).pathname.slice(1)))),
+    fetch: async (request) => {
+      await fixtures.holdDownloads
+      if (fixtures.failNextDownload) {
+        fixtures.failNextDownload = false
+        return new Response("try later", { status: 503 })
+      }
+      return new Response(Bun.file(join(root, new URL(request.url).pathname.slice(1))))
+    },
   })
   const origin = `http://127.0.0.1:${server.port}`
-  return {
-    runtime: { url: `${origin}/fake-runtime.tar.bz2`, ...runtime },
-    model: { url: `${origin}/fake-model.tar.bz2`, ...model },
-    stop: () => {
-      void server.stop(true)
-      rmSync(root, { recursive: true, force: true })
-    },
+  fixtures.runtime = archive(root, origin, "fake-runtime.tar.bz2", "fake-runtime")
+  fixtures.model = archive(root, origin, "fake-model.tar.bz2", "fake-model")
+  fixtures.misheardModel = archive(root, origin, "misheard-model.tar.bz2", "misheard-model")
+  fixtures.twoFolderRuntime = archive(root, origin, "two-folders.tar.bz2", "fake-runtime", "other-runtime")
+  fixtures.stop = () => {
+    void server.stop(true)
+    rmSync(root, { recursive: true, force: true })
   }
+  return fixtures
 }
 
-const manifestFor = (fixtures: Fixtures, runtime: SttArchive | null = fixtures.runtime): SttManifest => {
+const manifestFor = (fixtures: Fixtures, parts?: { readonly runtime?: SttArchive | null; readonly model?: SttArchive }): SttManifest => {
   const platform = sttPlatformOf(process.platform, process.arch)
+  const runtime = parts?.runtime === undefined ? fixtures.runtime : parts.runtime
   return {
     runtimes: platform === undefined || runtime === null ? {} : { [platform]: runtime },
     model: {
       label: "Fake Parakeet",
-      archive: fixtures.model,
+      archive: parts?.model ?? fixtures.model,
       modelType: "nemo_transducer",
       encoder: "encoder.int8.onnx",
       decoder: "decoder.int8.onnx",
@@ -130,13 +122,33 @@ const manifestFor = (fixtures: Fixtures, runtime: SttArchive | null = fixtures.r
   }
 }
 
-const startWithManifest = (manifest: SttManifest, dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-")), recognizerIdleMs?: number) =>
-  startServer({ dataDir, server: { speechToText: SpeechToTextLive({ dir: join(dataDir, "stt"), manifest, recognizerIdleMs }) } })
+const startWithManifest = (manifest: SttManifest, extra?: Partial<SpeechToTextOptions> & { readonly dataDir?: string }) => {
+  const dataDir = extra?.dataDir ?? mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+  return startServer({
+    dataDir,
+    server: { speechToText: SpeechToTextLive({ dir: join(dataDir, "stt"), manifest, recognizerEntry: FAKE_RECOGNIZER, ...extra }) },
+  })
+}
 
 const recognizersRunningUnder = (dataDir: string) =>
-  Bun.spawnSync(["pgrep", "-f", join(dataDir, "stt", "runtime")]).stdout.toString().trim().split("\n").filter((line) => line.length > 0).length
+  Bun.spawnSync(["pgrep", "-f", join(dataDir, "stt", "model")]).stdout.toString().trim().split("\n").filter((line) => line.length > 0).length
 
 const settled = (status: SttStatus) => status.state !== "installing"
+
+const withClient = async <A>(server: TestServer, body: (client: OpenBotClient) => Effect.Effect<A, unknown>) => {
+  const cookie = await login(server.base, server.ownerToken)
+  return server.run(Effect.flatMap(rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base }), body))
+}
+
+const installed = (client: OpenBotClient) => client["stt.install"]().pipe(Effect.andThen(eventually(client["stt.status"](), settled, { label: "install" })))
+
+const recognizerLedgerEntries = (server: TestServer) =>
+  server.run(
+    Effect.gen(function*() {
+      const entries = yield* (yield* ProcessLedger).list
+      return entries.filter((entry) => entry.label === "speech recognizer")
+    }),
+  )
 
 let fixtures: Fixtures
 beforeAll(() => {
@@ -152,28 +164,30 @@ describe("segmenting speech at pauses", () => {
     expect(speechThreshold(Array(50).fill(0.5))).toBe(0.04)
   })
 
-  test("ends a segment in the middle of a pause after speech", () => {
-    const end = findSegmentEnd(join32(tone(1), silence(0.7), tone(1)), RATE, 0.01)
+  test("ends a segment in the middle of the first pause after speech", () => {
+    const end = findSegmentEnd(joinChunks([tone(1), silence(0.7), tone(1), silence(0.7), tone(1)]), RATE, 0.01)
     expect(end).toBeGreaterThan(1 * RATE)
     expect(end).toBeLessThan(1.7 * RATE)
   })
 
   test("ends a segment at a trailing pause, so a finished sentence is committed while you wait", () => {
-    const end = findSegmentEnd(join32(tone(1), silence(0.6)), RATE, 0.01)
-    expect(end).toBeGreaterThan(1 * RATE)
+    expect(findSegmentEnd(joinChunks([tone(1), silence(0.6)]), RATE, 0.01)).toBeGreaterThan(1 * RATE)
   })
 
   test("keeps going while speech has no pause, and splits long speech at its quietest point", () => {
-    expect(findSegmentEnd(join32(tone(1), silence(0.3), tone(1)), RATE, 0.01)).toBeUndefined()
+    expect(findSegmentEnd(joinChunks([tone(1), silence(0.3), tone(1)]), RATE, 0.01)).toBeUndefined()
     expect(findSegmentEnd(tone(5), RATE, 0.01)).toBeUndefined()
-    const long = join32(tone(9), tone(0.3, 0.02), tone(4))
-    const end = findSegmentEnd(long, RATE, 0.01)!
+    const end = findSegmentEnd(joinChunks([tone(9), tone(0.3, 0.02), tone(4)]), RATE, 0.01)!
     expect(end).toBeGreaterThanOrEqual(8 * RATE)
     expect(end).toBeLessThanOrEqual(12 * RATE)
   })
 
+  test("never returns a segment longer than twelve seconds, even when the pause comes later", () => {
+    expect(findSegmentEnd(joinChunks([tone(14), silence(1), tone(1)]), RATE, 0.01)).toBeLessThanOrEqual(12 * RATE)
+  })
+
   test("drops leading silence but keeps a little before speech", () => {
-    const dropped = leadingSilenceToDrop(join32(silence(2), tone(1)), RATE, 0.01)
+    const dropped = leadingSilenceToDrop(joinChunks([silence(2), tone(1)]), RATE, 0.01)
     expect(dropped).toBeGreaterThan(1.6 * RATE)
     expect(dropped).toBeLessThanOrEqual(1.7 * RATE)
     expect(leadingSilenceToDrop(tone(1), RATE, 0.01)).toBe(0)
@@ -190,7 +204,7 @@ describe("a dictation session", () => {
       return `part${decoded.length}`
     }, RATE)
     let text = ""
-    for (const chunk of chunked(join32(silence(0.5), tone(1.2), silence(0.8), tone(1)), 0.25)) text = await session.append(chunk)
+    for (const chunk of chunked(joinChunks([silence(0.5), tone(1.2), silence(0.8), tone(1)]), 0.25)) text = await session.append(chunk)
     const [firstSentence, secondSentence] = text.split(" ")
     expect(secondSentence).toBeDefined()
     const commitIndex = Number(firstSentence!.slice("part".length)) - 1
@@ -208,127 +222,199 @@ describe("a dictation session", () => {
     expect(await session.append(silence(3))).toBe("")
     expect(calls).toBe(0)
   })
-})
 
-describe("recognizer output", () => {
-  test("takes the text of the last JSON line, trimmed", () => {
-    expect(parseRecognizerOutput('noise\n{"text": " hello there "}\n')).toBe("hello there")
-    expect(parseRecognizerOutput("no result")).toBeUndefined()
-    expect(parseRecognizerOutput('{"text": 3}')).toBeUndefined()
-  })
-
-  test("maps OS and CPU to a runtime build", () => {
-    expect(sttPlatformOf("darwin", "arm64")).toBe("darwin-arm64")
-    expect(sttPlatformOf("linux", "arm64")).toBe("linux-arm64")
-    expect(sttPlatformOf("win32", "x64")).toBeUndefined()
+  test("drains a backlog instead of re-decoding it when the recognizer falls behind", async () => {
+    const decodedSeconds: Array<number> = []
+    const session = new DictationSession(async (samples) => {
+      decodedSeconds.push(samples.length / RATE)
+      return "s"
+    }, RATE)
+    const backlog = joinChunks(Array.from({ length: 10 }, () => joinChunks([tone(3), silence(0.7)])))
+    const text = await session.append(backlog)
+    expect(session.pendingSeconds).toBeLessThan(4)
+    expect(decodedSeconds.every((seconds) => seconds <= 12)).toBe(true)
+    expect(decodedSeconds.reduce((total, seconds) => total + seconds, 0)).toBeLessThan(backlog.length / RATE)
+    expect(occurrences(text, "s")).toBe(decodedSeconds.length)
   })
 })
 
 describe("voice input over RPC", () => {
-  test(
-    "installs, dictates live, recovers from a recognizer crash, survives a restart and is removed",
-    async () => {
-      const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
-      const first = await startWithManifest(manifestFor(fixtures), dataDir)
-      try {
-        const cookie = await login(first.base, first.ownerToken)
-        await first.run(Effect.gen(function*() {
-          const client = yield* rpcClient(`${first.wsBase}/rpc`, { cookie, origin: first.base })
+  test("installs, dictates live, survives a restart and is removed", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const first = await startWithManifest(manifestFor(fixtures), { dataDir })
+    try {
+      await withClient(first, (client) =>
+        Effect.gen(function*() {
           expect(yield* client["stt.status"]()).toEqual({ state: "absent", model: "Fake Parakeet", downloadBytes: fixtures.runtime.bytes + fixtures.model.bytes })
           expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
-
-          const started = yield* client["stt.install"]()
-          expect(started.state).toBe("installing")
-          expect(yield* eventually(client["stt.status"](), settled, { label: "install" })).toEqual({ state: "ready", model: "Fake Parakeet" })
+          expect(yield* installed(client)).toEqual({ state: "ready", model: "Fake Parakeet" })
+          expect(recognizersRunningUnder(dataDir)).toBe(0)
 
           const { sessionId } = yield* client["stt.open"]()
           const live: Array<string> = []
-          const speech = join32(tone(1.2), silence(0.8), tone(1))
-          for (const chunk of chunked(speech, 0.25)) live.push((yield* client["stt.append"]({ sessionId, pcmBase64: pcm16Base64(chunk) })).text)
+          for (const chunk of chunked(joinChunks([tone(1.2), silence(0.8), tone(1)]), 0.25)) {
+            live.push((yield* client["stt.append"]({ sessionId, pcmBase64: pcm(chunk) })).text)
+          }
           expect(live.some((text) => occurrences(text, "country") === 1)).toBe(true)
-          const final = yield* client["stt.finish"]({ sessionId, pcmBase64: pcm16Base64(silence(0.1)) })
+          const final = yield* client["stt.finish"]({ sessionId, pcmBase64: pcm(silence(0.1)) })
           expect(occurrences(final.text, "country")).toBe(2)
           expect((yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: "" })))._tag).toBe("NotFound")
 
           const other = yield* client["stt.open"]()
-          const tooLarge = "A".repeat(Math.ceil((MAX_DICTATION_CHUNK_BYTES * 4) / 3) + 100)
-          expect((yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: tooLarge })))._tag).toBe("InvalidInput")
+          expect((yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "A".repeat(3_000_000) })))._tag).toBe("InvalidInput")
           expect((yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "%%%" })))._tag).toBe("InvalidInput")
-          const crashed = yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: pcm16Base64(tone(1, CRASH_LEVEL)) }))
-          expect(crashed).toMatchObject({ _tag: "Unavailable", message: expect.stringContaining("log") })
           yield* client["stt.discard"]({ sessionId: other.sessionId })
-
-          const afterCrash = yield* client["stt.open"]()
-          const recovered = yield* client["stt.finish"]({ sessionId: afterCrash.sessionId, pcmBase64: pcm16Base64(tone(1)) })
-          expect(recovered.text).toBe("country")
+          expect((yield* Effect.flip(client["stt.finish"]({ sessionId: other.sessionId, pcmBase64: "" })))._tag).toBe("NotFound")
           expect(recognizersRunningUnder(dataDir)).toBe(1)
         }))
-      } finally {
-        await first.close({ keepData: true })
-      }
-      expect(recognizersRunningUnder(dataDir)).toBe(0)
+      expect(await recognizerLedgerEntries(first)).toHaveLength(1)
+    } finally {
+      await first.close({ keepData: true })
+    }
+    expect(recognizersRunningUnder(dataDir)).toBe(0)
 
-      const second = await startWithManifest(manifestFor(fixtures), dataDir)
-      try {
-        const cookie = await login(second.base, second.ownerToken)
-        await second.run(Effect.gen(function*() {
-          const client = yield* rpcClient(`${second.wsBase}/rpc`, { cookie, origin: second.base })
+    const second = await startWithManifest(manifestFor(fixtures), { dataDir })
+    try {
+      await withClient(second, (client) =>
+        Effect.gen(function*() {
           expect((yield* client["stt.status"]()).state).toBe("ready")
           yield* client["stt.open"]()
           expect(yield* client["stt.remove"]()).toMatchObject({ state: "absent", model: "Fake Parakeet" })
           expect(recognizersRunningUnder(dataDir)).toBe(0)
           expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
         }))
-      } finally {
-        await second.close()
-      }
-    },
-    30_000,
-  )
+      expect(await recognizerLedgerEntries(second)).toHaveLength(0)
+    } finally {
+      await second.close()
+    }
+  }, 30_000)
 
-  test("the recognizer stops after sitting idle and starts again on the next dictation", async () => {
+  test("a crashed or hung recognizer is replaced once, even when two dictations notice at the same time", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
-    const server = await startWithManifest(manifestFor(fixtures), dataDir, 300)
+    const server = await startWithManifest(manifestFor(fixtures), { dataDir, decodeTimeoutMs: 500 })
     try {
-      const cookie = await login(server.base, server.ownerToken)
-      await server.run(Effect.gen(function*() {
-        const client = yield* rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base })
-        yield* client["stt.install"]()
-        yield* eventually(client["stt.status"](), settled, { label: "install" })
-        const { sessionId } = yield* client["stt.open"]()
-        yield* client["stt.finish"]({ sessionId, pcmBase64: pcm16Base64(tone(1)) })
-        expect(recognizersRunningUnder(dataDir)).toBe(1)
-        yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { label: "idle stop" })
-        const again = yield* client["stt.open"]()
-        expect((yield* client["stt.finish"]({ sessionId: again.sessionId, pcmBase64: pcm16Base64(tone(1)) })).text).toBe("country")
-      }))
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          const [a, b, c] = yield* Effect.all([client["stt.open"](), client["stt.open"](), client["stt.open"]()])
+          const crashed = yield* Effect.flip(client["stt.append"]({ sessionId: c.sessionId, pcmBase64: pcm(tone(1, CRASH_LEVEL)) }))
+          expect(crashed).toMatchObject({ _tag: "Unavailable", message: expect.stringContaining("log") })
+          const both = yield* Effect.promise(() =>
+            server.run(
+              Effect.gen(function*() {
+                const speech = yield* SpeechToText
+                return yield* Effect.all([a, b].map(({ sessionId }) => speech.finish(sessionId, encodePcm16(tone(1)))), { concurrency: "unbounded" })
+              }),
+            )
+          )
+          expect(both.map(({ text }) => text)).toEqual(["country", "country"])
+          expect(recognizersRunningUnder(dataDir)).toBe(1)
+
+          const hung = yield* client["stt.open"]()
+          expect((yield* Effect.flip(client["stt.finish"]({ sessionId: hung.sessionId, pcmBase64: pcm(tone(1, HANG_LEVEL)) })))._tag).toBe("Unavailable")
+          const after = yield* client["stt.open"]()
+          expect((yield* client["stt.finish"]({ sessionId: after.sessionId, pcmBase64: pcm(tone(1)) })).text).toBe("country")
+          expect(recognizersRunningUnder(dataDir)).toBe(1)
+        }))
+      expect(await recognizerLedgerEntries(server)).toHaveLength(1)
+    } finally {
+      await server.close()
+    }
+    expect(recognizersRunningUnder(dataDir)).toBe(0)
+  }, 30_000)
+
+  test("the recognizer stops once every dictation has ended or been abandoned", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const server = await startWithManifest(manifestFor(fixtures), { dataDir, recognizerIdleMs: 300, sessionIdleMs: 200 })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          const finished = yield* client["stt.open"]()
+          yield* client["stt.finish"]({ sessionId: finished.sessionId, pcmBase64: pcm(tone(1)) })
+          expect(recognizersRunningUnder(dataDir)).toBe(1)
+          yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { label: "idle stop" })
+
+          const abandoned = yield* client["stt.open"]()
+          yield* client["stt.append"]({ sessionId: abandoned.sessionId, pcmBase64: pcm(tone(1)) })
+          expect(recognizersRunningUnder(dataDir)).toBe(1)
+          yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { label: "abandoned stop" })
+          expect((yield* Effect.flip(client["stt.append"]({ sessionId: abandoned.sessionId, pcmBase64: pcm(tone(1)) })))._tag).toBe("NotFound")
+        }))
+      expect(await recognizerLedgerEntries(server)).toHaveLength(0)
     } finally {
       await server.close()
     }
   }, 30_000)
 
-  test("a download that does not match its pinned checksum fails the install", async () => {
-    const server = await startWithManifest(manifestFor(fixtures, { ...fixtures.runtime, sha256: "0".repeat(64) }))
+  test(`a dictation stops at ${MAX_DICTATION_SECONDS / 60} minutes of audio`, async () => {
+    const server = await startWithManifest(manifestFor(fixtures))
     try {
-      const cookie = await login(server.base, server.ownerToken)
-      await server.run(Effect.gen(function*() {
-        const client = yield* rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base })
-        yield* client["stt.install"]()
-        expect(yield* eventually(client["stt.status"](), settled, { label: "install" })).toMatchObject({ state: "failed", problem: expect.stringContaining("checksum") })
-      }))
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          const { sessionId } = yield* client["stt.open"]()
+          const minute = pcm(silence(60))
+          for (let minutes = 0; minutes < MAX_DICTATION_SECONDS / 60; minutes++) yield* client["stt.append"]({ sessionId, pcmBase64: minute })
+          const over = yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: pcm(silence(1)) }))
+          expect(over).toMatchObject({ _tag: "InvalidInput", message: expect.stringContaining("10 minutes") })
+        }))
     } finally {
       await server.close()
     }
-  })
+  }, 30_000)
+
+  test("install failures are reported and Turn on can be pressed again", async () => {
+    const failsWith = async (manifest: SttManifest, problem: string) => {
+      const server = await startWithManifest(manifest)
+      try {
+        await withClient(server, (client) => Effect.map(installed(client), (status) => expect(status).toMatchObject({ state: "failed", problem: expect.stringContaining(problem) })))
+      } finally {
+        await server.close()
+      }
+    }
+    await failsWith(manifestFor(fixtures, { runtime: fixtures.twoFolderRuntime }), "exactly one folder")
+    await failsWith(manifestFor(fixtures, { model: fixtures.misheardModel }), "misheard")
+    await failsWith(manifestFor(fixtures, { runtime: { ...fixtures.runtime, sha256: "0".repeat(64) } }), "checksum")
+
+    const retried = await startWithManifest(manifestFor(fixtures))
+    try {
+      await withClient(retried, (client) =>
+        Effect.gen(function*() {
+          fixtures.failNextDownload = true
+          expect(yield* installed(client)).toMatchObject({ state: "failed", problem: expect.stringContaining("503") })
+          expect(yield* installed(client)).toEqual({ state: "ready", model: "Fake Parakeet" })
+        }))
+    } finally {
+      await retried.close()
+    }
+  }, 30_000)
+
+  test("voice input cannot be turned off while it installs", async () => {
+    const server = await startWithManifest(manifestFor(fixtures))
+    let release = () => {}
+    fixtures.holdDownloads = new Promise((resolve) => {
+      release = resolve
+    })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          expect((yield* client["stt.install"]()).state).toBe("installing")
+          expect((yield* Effect.flip(client["stt.remove"]()))._tag).toBe("Conflict")
+          release()
+          expect(yield* eventually(client["stt.status"](), settled, { label: "install" })).toEqual({ state: "ready", model: "Fake Parakeet" })
+        }))
+    } finally {
+      release()
+      fixtures.holdDownloads = undefined
+      await server.close()
+    }
+  }, 30_000)
 
   test("a brain without a runtime build reports unsupported and installs nothing", async () => {
-    const server = await startWithManifest(manifestFor(fixtures, null))
+    const server = await startWithManifest(manifestFor(fixtures, { runtime: null }))
     try {
-      const cookie = await login(server.base, server.ownerToken)
-      await server.run(Effect.gen(function*() {
-        const client = yield* rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base })
-        expect(yield* client["stt.install"]()).toEqual({ state: "unsupported", model: "Fake Parakeet" })
-      }))
+      await withClient(server, (client) => Effect.map(client["stt.install"](), (status) => expect(status).toEqual({ state: "unsupported", model: "Fake Parakeet" })))
     } finally {
       await server.close()
     }

@@ -11,7 +11,7 @@ const NOISE_FLOOR_MULTIPLIER = 3
 const NOISE_FLOOR_PERCENTILE = 0.1
 const MIN_FRAMES_FOR_NOISE_FLOOR = 10
 
-export const frameLength = (sampleRate: number): number => Math.round(sampleRate * FRAME_SECONDS)
+const frameLength = (sampleRate: number): number => Math.round(sampleRate * FRAME_SECONDS)
 
 export const frameLevels = (samples: Float32Array, sampleRate: number): Array<number> => {
   const length = frameLength(sampleRate)
@@ -26,7 +26,7 @@ export const frameLevels = (samples: Float32Array, sampleRate: number): Array<nu
 
 export const speechThreshold = (levelHistory: ReadonlyArray<number>): number => {
   if (levelHistory.length < MIN_FRAMES_FOR_NOISE_FLOOR) return MIN_SPEECH_LEVEL
-  const sorted = [...levelHistory].sort((a, b) => a - b)
+  const sorted = Float64Array.from(levelHistory).sort()
   const noiseFloor = sorted[Math.floor((sorted.length - 1) * NOISE_FLOOR_PERCENTILE)]!
   return Math.min(MAX_SPEECH_LEVEL, Math.max(MIN_SPEECH_LEVEL, noiseFloor * NOISE_FLOOR_MULTIPLIER))
 }
@@ -51,10 +51,10 @@ export const findSegmentEnd = (samples: Float32Array, sampleRate: number, thresh
   const levels = frameLevels(samples, sampleRate)
   const pauseFrames = Math.round(PAUSE_SECONDS / FRAME_SECONDS)
   const minSegmentFrames = Math.round(MIN_SEGMENT_SECONDS / FRAME_SECONDS)
+  const maxSegmentFrames = Math.round(MAX_SEGMENT_SECONDS / FRAME_SECONDS)
   let heardSpeech = false
   let quietRun = 0
-  let lastPauseMiddle: number | undefined
-  for (let frame = 0; frame < levels.length; frame++) {
+  for (let frame = 0; frame < Math.min(levels.length, maxSegmentFrames); frame++) {
     if (levels[frame]! >= threshold) {
       heardSpeech = true
       quietRun = 0
@@ -62,10 +62,8 @@ export const findSegmentEnd = (samples: Float32Array, sampleRate: number, thresh
     }
     quietRun++
     const pauseMiddle = frame - Math.floor(pauseFrames / 2)
-    if (heardSpeech && quietRun === pauseFrames && pauseMiddle >= minSegmentFrames) lastPauseMiddle = pauseMiddle
+    if (heardSpeech && quietRun === pauseFrames && pauseMiddle >= minSegmentFrames) return pauseMiddle * frameLength(sampleRate)
   }
-  if (lastPauseMiddle !== undefined) return lastPauseMiddle * frameLength(sampleRate)
-  const maxSegmentFrames = Math.round(MAX_SEGMENT_SECONDS / FRAME_SECONDS)
   if (levels.length < maxSegmentFrames) return undefined
   const searchFrom = maxSegmentFrames - Math.round(FORCED_SPLIT_SEARCH_SECONDS / FRAME_SECONDS)
   return quietestFrame(levels, searchFrom, maxSegmentFrames) * frameLength(sampleRate)

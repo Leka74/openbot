@@ -1,6 +1,9 @@
 import { containsSpeech, findSegmentEnd, frameLevels, leadingSilenceToDrop, speechThreshold } from "./segmenter.ts"
 
-export type Decode = (samples: Float32Array) => Promise<string>
+type Decode = (samples: Float32Array) => Promise<string>
+
+const CATCH_UP_CHUNK_SECONDS = 1
+const CATCH_UP_PENDING_SECONDS = 12
 
 const concatSamples = (first: Float32Array, second: Float32Array): Float32Array => {
   const joined = new Float32Array(first.length + second.length)
@@ -26,24 +29,38 @@ export class DictationSession {
     return this.receivedSamples / this.sampleRate
   }
 
-  async append(samples: Float32Array): Promise<string> {
-    this.take(samples)
-    await this.commitFinishedSegment()
-    return joinTranscript([...this.committed, await this.decodePending()])
+  get pendingSeconds(): number {
+    return this.pending.length / this.sampleRate
   }
 
-  private take(samples: Float32Array) {
+  async append(samples: Float32Array): Promise<string> {
+    const threshold = this.take(samples)
+    if (this.fallingBehind(samples)) {
+      await this.commitFinishedSegments(threshold)
+      return joinTranscript(this.committed)
+    }
+    await this.commitNextSegment(threshold)
+    return joinTranscript([...this.committed, await this.decodePending(threshold)])
+  }
+
+  async finish(samples: Float32Array): Promise<string> {
+    const threshold = this.take(samples)
+    await this.commitFinishedSegments(threshold)
+    return joinTranscript([...this.committed, await this.decodePending(threshold)])
+  }
+
+  private take(samples: Float32Array): number {
     this.receivedSamples += samples.length
     this.levelHistory.push(...frameLevels(samples, this.sampleRate))
     this.pending = concatSamples(this.pending, samples)
-  }
-
-  private threshold(): number {
     return speechThreshold(this.levelHistory)
   }
 
-  private async commitFinishedSegment() {
-    const threshold = this.threshold()
+  private fallingBehind(samples: Float32Array): boolean {
+    return samples.length > this.sampleRate * CATCH_UP_CHUNK_SECONDS || this.pendingSeconds > CATCH_UP_PENDING_SECONDS
+  }
+
+  private async commitNextSegment(threshold: number): Promise<boolean> {
     const segmentEnd = findSegmentEnd(this.pending, this.sampleRate, threshold)
     if (segmentEnd !== undefined) {
       const segment = this.pending.subarray(0, segmentEnd)
@@ -51,9 +68,14 @@ export class DictationSession {
       this.pending = this.pending.slice(segmentEnd)
     }
     this.pending = this.pending.slice(leadingSilenceToDrop(this.pending, this.sampleRate, threshold))
+    return segmentEnd !== undefined
   }
 
-  private async decodePending(): Promise<string> {
-    return containsSpeech(this.pending, this.sampleRate, this.threshold()) ? await this.decode(this.pending) : ""
+  private async commitFinishedSegments(threshold: number) {
+    while (await this.commitNextSegment(threshold)) continue
+  }
+
+  private async decodePending(threshold: number): Promise<string> {
+    return containsSpeech(this.pending, this.sampleRate, threshold) ? await this.decode(this.pending) : ""
   }
 }

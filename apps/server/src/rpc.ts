@@ -74,9 +74,12 @@ export const decodeBase64 = (input: string): Uint8Array | undefined => {
   return new Uint8Array(Buffer.from(compact.replace(/-/g, "+").replace(/_/g, "/"), "base64"))
 }
 
+const BASE64_PADDING_ALLOWANCE = 16
+const MAX_DICTATION_CHUNK_BASE64_LENGTH = Math.ceil((MAX_DICTATION_CHUNK_BYTES * 4) / 3) + BASE64_PADDING_ALLOWANCE
+
 const withPcm = <A, E>(pcmBase64: string, use: (pcm: Uint8Array) => Effect.Effect<A, E>): Effect.Effect<A, E | InvalidInput> =>
   Effect.suspend((): Effect.Effect<A, E | InvalidInput> => {
-    if (pcmBase64.length > Math.ceil((MAX_DICTATION_CHUNK_BYTES * 4) / 3) + 16) return Effect.fail(new InvalidInput({ message: "That piece of audio is too large." }))
+    if (pcmBase64.length > MAX_DICTATION_CHUNK_BASE64_LENGTH) return Effect.fail(new InvalidInput({ message: "That piece of audio is too large." }))
     const pcm = decodeBase64(pcmBase64)
     if (pcm === undefined) return Effect.fail(new InvalidInput({ message: "pcmBase64 is not valid base64." }))
     return use(pcm)

@@ -2,7 +2,6 @@ import {
   Conflict,
   DICTATION_SAMPLE_RATE,
   InvalidInput,
-  MAX_DICTATION_CHUNK_BYTES,
   MAX_DICTATION_SECONDS,
   NotFound,
   type SttStatus,
@@ -12,8 +11,19 @@ import {
 import { ProcessLedger } from "@openbot/core"
 import { Clock, Context, Effect, Layer, Option } from "effect"
 import { randomUUID } from "node:crypto"
-import { rm } from "node:fs/promises"
-import { installStt, isInstalled, type ResidentRecognizer, startResidentRecognizer, sttLayout } from "./engine.ts"
+import { readFile, rm } from "node:fs/promises"
+import path from "node:path"
+import {
+  downloadStt,
+  isInstalled,
+  markInstalled,
+  pcm16Samples,
+  pcm16WavSamples,
+  RECOGNIZER_PROCESS_ENTRY,
+  type Recognizer,
+  startRecognizer,
+  sttLayout,
+} from "./engine.ts"
 import { PARAKEET_MANIFEST, type SttManifest, sttPlatformOf } from "./manifest.ts"
 import { DictationSession } from "./session.ts"
 
@@ -30,24 +40,20 @@ export class SpeechToText extends Context.Service<SpeechToText, {
 export interface SpeechToTextOptions {
   readonly dir: string
   readonly manifest?: SttManifest | undefined
+  readonly recognizerEntry?: string | undefined
   readonly recognizerIdleMs?: number | undefined
+  readonly sessionIdleMs?: number | undefined
+  readonly decodeTimeoutMs?: number | undefined
 }
 
 const RECOGNIZER_IDLE_MS = 5 * 60_000
 const SESSION_IDLE_MS = 2 * 60_000
-const PCM16_SCALE = 0x8000
+const DECODE_TIMEOUT_MS = 60_000
 
 const NOT_SET_UP = "Voice input isn't set up on this OpenBot yet. Turn it on in Settings › General."
 const RECOGNIZER_FAILED = "Voice input could not transcribe; the details are in the brain's log."
 
 const describeError = (error: unknown): string => (error instanceof Error ? error.message : String(error))
-
-export const pcm16Samples = (pcm: Uint8Array): Float32Array => {
-  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
-  const samples = new Float32Array(Math.floor(pcm.byteLength / 2))
-  for (let index = 0; index < samples.length; index++) samples[index] = view.getInt16(index * 2, true) / PCM16_SCALE
-  return samples
-}
 
 interface OpenSession {
   readonly session: DictationSession
@@ -64,6 +70,7 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
       const platform = sttPlatformOf(process.platform, process.arch)
       const runtime = platform === undefined ? undefined : manifest.runtimes[platform]
       const recognizerIdleMs = options.recognizerIdleMs ?? RECOGNIZER_IDLE_MS
+      const sessionIdleMs = options.sessionIdleMs ?? SESSION_IDLE_MS
       const ledger = yield* Effect.serviceOption(ProcessLedger)
       const layerScope = yield* Effect.scope
 
@@ -75,10 +82,10 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
       let status: SttStatus = installedAlready ? { state: "ready", model: model.label } : restingStatus()
 
       const sessions = new Map<string, OpenSession>()
-      let recognizer: Promise<ResidentRecognizer> | undefined
+      let recognizer: Promise<Recognizer> | undefined
       let idleTimer: ReturnType<typeof setTimeout> | undefined
 
-      const recordInLedger = (pid: number) =>
+      const inLedger = (pid: number) =>
         Option.match(ledger, {
           onNone: () => Promise.resolve(),
           onSome: (processes) =>
@@ -89,57 +96,69 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
                 ),
             ),
         })
-      const removeFromLedger = (pid: number) =>
+      const outOfLedger = (pid: number) =>
         Option.match(ledger, {
           onNone: () => Promise.resolve(),
           onSome: (processes) =>
             Effect.runPromise(processes.remove(pid).pipe(Effect.catch((error) => Effect.logWarning(`ProcessLedger.remove failed: ${error.message}`)))),
         })
 
+      const launch = async (sampleRate: number): Promise<Recognizer> => {
+        const started = await startRecognizer({
+          entry: options.recognizerEntry ?? RECOGNIZER_PROCESS_ENTRY,
+          layout,
+          model,
+          sampleRate,
+          decodeTimeoutMs: options.decodeTimeoutMs ?? DECODE_TIMEOUT_MS,
+        })
+        await inLedger(started.pid)
+        return started
+      }
+
+      const retire = async (stopping: Recognizer) => {
+        await stopping.stop()
+        await outOfLedger(stopping.pid)
+      }
+
       const stopRecognizer = async () => {
         clearTimeout(idleTimer)
         const running = recognizer
         recognizer = undefined
-        if (running === undefined) return
-        const started = await running.catch(() => undefined)
-        if (started === undefined) return
-        await started.stop()
-        await removeFromLedger(started.pid)
+        const started = await running?.catch(() => undefined)
+        if (started !== undefined) await retire(started)
+      }
+
+      const runningRecognizer = async (): Promise<Recognizer> => {
+        const current = recognizer ?? (recognizer = launch(DICTATION_SAMPLE_RATE))
+        const started = await current.catch(() => undefined)
+        if (started?.alive()) return started
+        if (recognizer === current) {
+          recognizer = launch(DICTATION_SAMPLE_RATE)
+          if (started !== undefined) void retire(started)
+        }
+        return recognizer
+      }
+
+      const forgetIdleSessions = (now: number) => {
+        for (const [sessionId, active] of sessions) if (now - active.lastUsedAt > sessionIdleMs) sessions.delete(sessionId)
       }
 
       const scheduleIdleStop = () => {
         clearTimeout(idleTimer)
         idleTimer = setTimeout(() => {
+          forgetIdleSessions(Date.now())
           if (sessions.size === 0) void stopRecognizer()
           else scheduleIdleStop()
         }, recognizerIdleMs)
       }
 
-      const runningRecognizer = async (): Promise<ResidentRecognizer> => {
-        const current = recognizer === undefined ? undefined : await recognizer.catch(() => undefined)
-        if (current?.alive()) return current
-        if (current !== undefined) await stopRecognizer()
-        const starting = startResidentRecognizer(layout, model, DICTATION_SAMPLE_RATE).then(async (started) => {
-          await recordInLedger(started.pid)
-          return started
-        })
-        recognizer = starting
-        starting.catch(() => {
-          if (recognizer === starting) recognizer = undefined
-        })
-        return starting
-      }
-
       const decode = async (samples: Float32Array) => {
+        const running = await runningRecognizer()
         scheduleIdleStop()
-        return (await runningRecognizer()).decode(samples)
+        return running.decode(samples, DICTATION_SAMPLE_RATE)
       }
 
       yield* Effect.addFinalizer(() => Effect.promise(stopRecognizer))
-
-      const forgetIdleSessions = (now: number) => {
-        for (const [sessionId, open] of sessions) if (now - open.lastUsedAt > SESSION_IDLE_MS) sessions.delete(sessionId)
-      }
 
       const recognizerFailure = (error: unknown) =>
         Effect.logWarning("Voice input could not transcribe", { error: describeError(error) }).pipe(
@@ -160,45 +179,56 @@ export const SpeechToTextLive = (options: SpeechToTextOptions): Layer.Layer<Spee
         }),
       )
 
-      const transcribeInto = (sessionId: string, pcm: Uint8Array) =>
+      const transcribe = (sessionId: string, pcm: Uint8Array, final: boolean) =>
         whenReady(
           Effect.gen(function*() {
             const active = sessions.get(sessionId)
             if (active === undefined) return yield* new NotFound({ entity: "dictation", id: sessionId })
-            if (pcm.byteLength > MAX_DICTATION_CHUNK_BYTES) return yield* new InvalidInput({ message: "That piece of audio is too large." })
-            if (active.session.receivedSeconds > MAX_DICTATION_SECONDS) {
+            const samples = pcm16Samples(pcm)
+            if (active.session.receivedSeconds + samples.length / DICTATION_SAMPLE_RATE > MAX_DICTATION_SECONDS) {
               return yield* new InvalidInput({ message: `Dictation stops after ${MAX_DICTATION_SECONDS / 60} minutes.` })
             }
             active.lastUsedAt = Date.now()
-            const text = yield* Effect.tryPromise({ try: () => active.session.append(pcm16Samples(pcm)), catch: (error) => error }).pipe(
-              Effect.catch(recognizerFailure),
-            )
+            const text = yield* Effect.tryPromise({
+              try: () => (final ? active.session.finish(samples) : active.session.append(samples)),
+              catch: (error) => error,
+            }).pipe(Effect.catch(recognizerFailure))
             return { text }
           }),
         )
 
-      const append = (sessionId: string, pcm: Uint8Array) => transcribeInto(sessionId, pcm)
+      const append = (sessionId: string, pcm: Uint8Array) => transcribe(sessionId, pcm, false)
       const finish = (sessionId: string, pcm: Uint8Array) =>
-        transcribeInto(sessionId, pcm).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(sessionId))))
+        transcribe(sessionId, pcm, true).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(sessionId))))
       const discard = (sessionId: string) => Effect.sync(() => void sessions.delete(sessionId))
+
+      const checkSample = async () => {
+        const sample = pcm16WavSamples(new Uint8Array(await readFile(path.join(layout.model, model.sampleWav))))
+        const checker = await launch(sample.sampleRate)
+        const heard = await checker.decode(sample.samples, sample.sampleRate).finally(() => retire(checker))
+        if (!heard.toLowerCase().includes(model.sampleExpectedWord)) throw new Error(`The speech model misheard its own sample recording ("${heard}").`)
+      }
 
       const runInstall = (archive: NonNullable<typeof runtime>) =>
         Effect.tryPromise({
-          try: (signal) =>
-            installStt(layout, archive, model, (downloadedBytes, downloadBytes) => {
+          try: async (signal) => {
+            await downloadStt(layout, archive, model, (downloadedBytes, downloadBytes) => {
               status = { state: "installing", model: model.label, downloadBytes, downloadedBytes }
-            }, signal),
-          catch: (error) => new Error(describeError(error)),
+            }, signal)
+            await checkSample()
+            await markInstalled(layout, archive, model)
+          },
+          catch: describeError,
         }).pipe(
           Effect.matchEffect({
             onSuccess: () =>
               Effect.sync(() => {
                 status = { state: "ready", model: model.label }
               }),
-            onFailure: (error) =>
-              Effect.logWarning("Voice input could not be installed", { error: error.message }).pipe(
+            onFailure: (problem) =>
+              Effect.logWarning("Voice input could not be installed", { problem }).pipe(
                 Effect.andThen(Effect.sync(() => {
-                  status = { state: "failed", model: model.label, problem: error.message }
+                  status = { state: "failed", model: model.label, problem }
                 })),
               ),
           }),
