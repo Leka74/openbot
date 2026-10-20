@@ -4,10 +4,28 @@ export const microphoneAvailable = (): boolean =>
   typeof window !== "undefined" && window.isSecureContext && typeof navigator.mediaDevices?.getUserMedia === "function"
 
 const TAP_PROCESSOR = "openbot-dictation-tap"
+const TAP_BUFFER_SAMPLES = 4096
 const TAP_MODULE = `registerProcessor("${TAP_PROCESSOR}", class extends AudioWorkletProcessor {
+  constructor() {
+    super()
+    this.buffer = new Float32Array(${TAP_BUFFER_SAMPLES})
+    this.filled = 0
+  }
   process(inputs) {
     const channel = inputs[0] && inputs[0][0]
-    if (channel) this.port.postMessage(channel.slice(0))
+    if (!channel) return true
+    let read = 0
+    while (read < channel.length) {
+      const taken = Math.min(channel.length - read, this.buffer.length - this.filled)
+      this.buffer.set(channel.subarray(read, read + taken), this.filled)
+      this.filled += taken
+      read += taken
+      if (this.filled === this.buffer.length) {
+        this.port.postMessage(this.buffer, [this.buffer.buffer])
+        this.buffer = new Float32Array(${TAP_BUFFER_SAMPLES})
+        this.filled = 0
+      }
+    }
     return true
   }
 })`

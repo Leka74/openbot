@@ -20,7 +20,7 @@ export interface DictationCallbacks {
   readonly draftKey: string
   readonly onStart: () => void
   readonly onText: (text: string) => void
-  readonly onDone: () => void
+  readonly onDone: (text: string) => void
   readonly onCancel: () => void
   readonly onError: (message: string) => void
 }
@@ -31,12 +31,12 @@ const TIMER_TICK_MS = 250
 
 interface Recording {
   readonly attempt: number
-  readonly draftKey: string
   readonly sessionId: Promise<string | undefined>
   readonly chunks: Array<Float32Array>
   microphone?: Microphone
   inFlight: Promise<void>
   sending: boolean
+  latestText: string
   pump?: ReturnType<typeof setInterval>
 }
 
@@ -72,10 +72,13 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
   const fail = useCallback((active: Recording, message: string) => {
     attempt.current++
     release(active)
+    void active.sessionId.then((sessionId) => {
+      if (sessionId !== undefined) void discardSession({ sessionId })
+    })
     setPhase("idle")
-    latest.current.onDone()
+    latest.current.onDone(active.latestText)
     latest.current.onError(message)
-  }, [release])
+  }, [release, discardSession])
 
   const sendBuffered = useCallback(async (active: Recording) => {
     const sessionId = await active.sessionId
@@ -83,6 +86,7 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     const result = await appendAudio({ sessionId, pcmBase64: takeBufferedAudio(active) })
     if (active.attempt !== attempt.current) return
     if (!result.ok) return fail(active, result.error)
+    active.latestText = result.value.text
     latest.current.onText(result.value.text)
   }, [appendAudio, fail])
 
@@ -108,7 +112,7 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     if (!result.ok) return fail(active, result.error)
     release(active)
     latest.current.onText(result.value.text)
-    latest.current.onDone()
+    latest.current.onDone(result.value.text)
     setPhase("idle")
   }, [finishSession, fail, release])
 
@@ -120,7 +124,7 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
       if (thisAttempt === attempt.current && recording.current !== undefined) fail(recording.current, result.error)
       return undefined
     })
-    const active: Recording = { attempt: thisAttempt, draftKey: latest.current.draftKey, sessionId, chunks: [], inFlight: Promise.resolve(), sending: false }
+    const active: Recording = { attempt: thisAttempt, sessionId, chunks: [], inFlight: Promise.resolve(), sending: false, latestText: "" }
     recording.current = active
     setPhase("starting")
     latest.current.onStart()
@@ -166,11 +170,6 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     window.addEventListener("keydown", cancelOnEscape, true)
     return () => window.removeEventListener("keydown", cancelOnEscape, true)
   }, [phase, cancel])
-
-  const draftKey = callbacks.draftKey
-  useEffect(() => {
-    if (recording.current !== undefined && recording.current.draftKey !== draftKey) cancel()
-  }, [draftKey, cancel])
 
   useEffect(() => cancel, [cancel])
 

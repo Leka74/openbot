@@ -163,7 +163,7 @@ export function Composer(props: ComposerProps): ReactNode {
     ta.setSelectionRange(pos, pos)
   }, [text])
 
-  const [dictatingInto, setDictatingInto] = useState<{ readonly base: string; readonly caret: number; readonly end: number } | undefined>()
+  const [dictatingInto, setDictatingInto] = useState<{ readonly base: string; readonly caret: number } | undefined>()
   const showDraft = (value: string) => {
     setText(value)
     drafts.set(draftKey, value)
@@ -172,18 +172,15 @@ export function Composer(props: ComposerProps): ReactNode {
     draftKey,
     onStart: () => {
       const caret = taRef.current?.selectionStart ?? text.length
-      setDictatingInto({ base: text, caret, end: caret })
+      setDictatingInto({ base: text, caret })
     },
     onText: (spoken) => {
-      if (dictatingInto === undefined) return
-      const next = insertDictation(dictatingInto.base, dictatingInto.caret, spoken)
-      showDraft(next.text)
-      setDictatingInto({ ...dictatingInto, end: next.caret })
+      if (dictatingInto !== undefined) showDraft(insertDictation(dictatingInto.base, dictatingInto.caret, spoken).text)
     },
-    onDone: () => {
-      const caret = dictatingInto?.end
+    onDone: (spoken) => {
+      if (dictatingInto === undefined) return
+      const caret = insertDictation(dictatingInto.base, dictatingInto.caret, spoken).caret
       setDictatingInto(undefined)
-      if (caret === undefined) return
       requestAnimationFrame(() => {
         taRef.current?.focus()
         taRef.current?.setSelectionRange(caret, caret)
@@ -197,7 +194,7 @@ export function Composer(props: ComposerProps): ReactNode {
   })
 
   const ready = uploads.filter((u) => u.attachment)
-  const canSend = !props.disabled && !uploading && (text.trim().length > 0 || ready.length > 0)
+  const canSend = !props.disabled && !uploading && dictation.phase === "idle" && (text.trim().length > 0 || ready.length > 0)
 
   const submit = async () => {
     if (!canSend) return

@@ -121,6 +121,9 @@ export interface ToolStep {
   readonly fail?: string
 }
 
+const STT_DOWNLOAD_BYTES = 500 * 1024 * 1024
+const STT_DOWNLOAD_STEP_BYTES = 200 * 1024 * 1024
+
 export class MockBrain {
   readonly roster = new RosterReplica()
   readonly convs = new Map<string, ConversationReplica>()
@@ -136,6 +139,8 @@ export class MockBrain {
   /** Slack (D3.4): any `xoxp-` token connects the mock to workspace "Acme". */
   slack: SlackStatus = { connected: false, events: "off" }
   stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
+  sttFailsAppend = false
+  readonly sttDiscarded: Array<string> = []
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>()
   readonly sends = new Map<string, SendResult>()
   readonly usage = new Map<string, BotUsage>()
@@ -817,6 +822,15 @@ export class MockBrain {
   }
 
   /** A Slack draft card (by entry): Send (with the owner's edits) or Discard. */
+  advanceSttInstall(): SttStatus {
+    if (this.stt.state !== "installing") return this.stt
+    const downloadedBytes = Math.min(STT_DOWNLOAD_BYTES, (this.stt.downloadedBytes ?? 0) + STT_DOWNLOAD_STEP_BYTES)
+    this.stt = downloadedBytes >= STT_DOWNLOAD_BYTES
+      ? { state: "ready", model: this.stt.model }
+      : { state: "installing", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES, downloadedBytes }
+    return this.stt
+  }
+
   answerSlackDraft(entryId: string, text: string | undefined) {
     const conv = [...this.convs.values()].find((c) => c.state.entries.has(entryId as EntryId))
     const entry = conv?.state.entries.get(entryId as EntryId)
@@ -1366,15 +1380,15 @@ export class MockBrain {
         })(),
       "slack.sendDraft": ({ entryId, text }) => sync(() => this.answerSlackDraft(entryId, text))(),
       "slack.discardDraft": ({ entryId }) => sync(() => this.answerSlackDraft(entryId, undefined))(),
-      "stt.status": () => Effect.succeed(this.stt),
+      "stt.status": () => sync(() => this.advanceSttInstall())(),
       "stt.install": () =>
         sync(() => {
-          this.stt = { state: "ready", model: this.stt.model }
+          this.stt = { state: "installing", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES, downloadedBytes: 0 }
           return this.stt
         })(),
       "stt.remove": () =>
         sync(() => {
-          this.stt = { state: "absent", model: this.stt.model }
+          this.stt = { state: "absent", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES }
           return this.stt
         })(),
       "stt.open": () =>
@@ -1382,9 +1396,13 @@ export class MockBrain {
           if (this.stt.state !== "ready") throw new Unavailable({ message: "Voice input isn't set up on this OpenBot yet." })
           return { sessionId: this.id("dic") }
         })(),
-      "stt.append": () => Effect.succeed({ text: "Check the staging deploy" }),
+      "stt.append": () =>
+        sync(() => {
+          if (this.sttFailsAppend) throw new Unavailable({ message: "Voice input could not transcribe; the details are in the brain's log." })
+          return { text: "Check the staging deploy" }
+        })(),
       "stt.finish": () => Effect.succeed({ text: "Check the staging deploy and tell me if it is green." }),
-      "stt.discard": () => Effect.void,
+      "stt.discard": ({ sessionId }) => sync(() => void this.sttDiscarded.push(sessionId))(),
       "settings.get": () => Effect.succeed(this.settings),
       "settings.update": ({ patch }) =>
         sync(() => {

@@ -1,11 +1,31 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { chromium, type Browser } from "playwright-core"
-import { chromiumPath, openPage, startMock, type RunningMock } from "./shoot.ts"
+import type { SttStatus } from "@openbot/contracts"
+import { chromium, type Browser, type Page } from "playwright-core"
+import { chromiumPath, openPage, type RunningMock, startMock } from "./shoot.ts"
 
 const FAKE_MICROPHONE = ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"]
+const EXPENSE_BOX = 'textarea[aria-label="Message Expense Clerk"]'
+const LIVE = "Check the staging deploy"
+const FINAL = "Check the staging deploy and tell me if it is green."
 
-describe.skipIf(!existsSync(chromiumPath))("dictation in the composer against the dev mock", () => {
+const draftIs = (page: Page, expected: string) =>
+  page.waitForFunction(({ selector, value }) => document.querySelector<HTMLTextAreaElement>(selector)?.value === value, { selector: EXPENSE_BOX, value: expected })
+
+const mockStt = async (mock: RunningMock): Promise<{ readonly status: SttStatus; readonly discarded: number }> =>
+  (await fetch(`${mock.url}/api/mock/stt`)).json() as Promise<{ readonly status: SttStatus; readonly discarded: number }>
+
+const setMockStt = async (mock: RunningMock, state: { readonly failsAppend: boolean; readonly ready: boolean }) => {
+  await fetch(`${mock.url}/api/mock/stt?failsAppend=${state.failsAppend ? 1 : 0}&ready=${state.ready ? 1 : 0}`, { method: "POST" })
+}
+
+const openExpenseChat = async (browser: Browser, url: string) => {
+  const opened = await openPage(browser, url, "dark", "#/c/cnv_expense")
+  await opened.page.context().grantPermissions(["microphone"])
+  return { ...opened, box: opened.page.getByRole("textbox", { name: "Message Expense Clerk" }) }
+}
+
+describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () => {
   let mock: RunningMock
   let browser: Browser
   beforeAll(async () => {
@@ -16,50 +36,93 @@ describe.skipIf(!existsSync(chromiumPath))("dictation in the composer against th
     await browser?.close()
     await mock?.stop()
   })
+  beforeEach(() => setMockStt(mock, { failsAppend: false, ready: true }))
 
-  test(
-    "shows the transcript in the draft while you speak and finalizes it on stop",
-    async () => {
-      const { page, errors } = await openPage(browser, mock.url, "dark", "#/c/cnv_expense")
-      await page.context().grantPermissions(["microphone"])
-      const box = page.getByRole("textbox", { name: "Message Expense Clerk" })
-      await box.fill("Hey,")
-      await page.getByRole("button", { name: "Dictate" }).click()
-      await page.getByTestId("dictation-recording").waitFor()
-      await page.waitForFunction(
-        (expected) => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Expense Clerk"]')?.value === expected,
-        "Hey, Check the staging deploy",
-      )
-      await page.waitForTimeout(1200)
-      await expect(page.getByTestId("dictation-recording").innerText()).resolves.toContain("0:01")
-      await page.getByRole("button", { name: "Stop dictation" }).click()
-      await page.waitForFunction(
-        (expected) => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Expense Clerk"]')?.value === expected,
-        "Hey, Check the staging deploy and tell me if it is green.",
-      )
-      await page.getByRole("button", { name: "Dictate" }).waitFor()
-      expect(errors).toEqual([])
-    },
-    30_000,
-  )
+  test("shows the transcript while you speak, finalizes it on stop and leaves the caret after it", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Hey,")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await page.getByTestId("dictation-recording").waitFor()
+    await draftIs(page, `Hey, ${LIVE}`)
+    await page.waitForTimeout(1200)
+    await expect(page.getByTestId("dictation-recording").innerText()).resolves.toContain("0:01")
+    await page.getByRole("button", { name: "Stop dictation" }).click()
+    await draftIs(page, `Hey, ${FINAL}`)
+    await page.getByRole("button", { name: "Dictate" }).waitFor()
+    await page.waitForFunction((selector) => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(selector)
+      return textarea !== null && document.activeElement === textarea && textarea.selectionStart === textarea.value.length
+    }, EXPENSE_BOX)
+    expect(errors).toEqual([])
+  }, 30_000)
 
-  test(
-    "Escape cancels a recording and restores the draft",
-    async () => {
-      const { page, errors } = await openPage(browser, mock.url, "dark", "#/c/cnv_expense")
-      await page.context().grantPermissions(["microphone"])
-      const box = page.getByRole("textbox", { name: "Message Expense Clerk" })
-      await box.fill("keep me")
-      await page.getByRole("button", { name: "Dictate" }).click()
-      await page.getByTestId("dictation-recording").waitFor()
-      await page.waitForFunction(
-        () => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Expense Clerk"]')?.value.includes("staging") === true,
-      )
-      await page.keyboard.press("Escape")
-      await page.getByRole("button", { name: "Dictate" }).waitFor()
-      expect(await box.inputValue()).toBe("keep me")
-      expect(errors).toEqual([])
-    },
-    30_000,
-  )
+  test("Escape cancels a recording and restores the draft", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("keep me")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `keep me ${LIVE}`)
+    await page.keyboard.press("Escape")
+    await page.getByRole("button", { name: "Dictate" }).waitFor()
+    expect(await box.inputValue()).toBe("keep me")
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("Enter does not send a half-dictated message", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Draft")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Draft ${LIVE}`)
+    await box.press("Enter")
+    await page.waitForTimeout(400)
+    expect(await page.getByTestId("transcript").getByText(`Draft ${LIVE}`, { exact: true }).count()).toBe(0)
+    await page.getByRole("button", { name: "Stop dictation" }).click()
+    await draftIs(page, `Draft ${FINAL}`)
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("a transcription failure stops the microphone, keeps what was heard, says so and discards the dictation", async () => {
+    const { page, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Before")
+    const discardedBefore = (await mockStt(mock)).discarded
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Before ${LIVE}`)
+    await setMockStt(mock, { failsAppend: true, ready: false })
+    await page.getByText("Voice input could not transcribe", { exact: false }).waitFor()
+    await page.getByRole("button", { name: "Dictate" }).waitFor()
+    expect(await box.inputValue()).toBe(`Before ${LIVE}`)
+    expect((await mockStt(mock)).discarded).toBe(discardedBefore + 1)
+  }, 30_000)
+
+  test("switching conversation mid-dictation stops it and leaves both drafts as they were", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("expense draft")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `expense draft ${LIVE}`)
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_travel"
+    })
+    await page.waitForTimeout(800)
+    expect(await page.locator("textarea").first().inputValue()).toBe("")
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_expense"
+    })
+    await draftIs(page, "expense draft")
+    await page.getByRole("button", { name: "Dictate" }).waitFor()
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("Settings turns voice input off and on, showing the download as it progresses", async () => {
+    const { page, errors } = await openPage(browser, mock.url, "dark", "#/c/cnv_expense")
+    await page.getByRole("button", { name: "Account" }).click()
+    await page.getByRole("menuitem", { name: "Computers" }).click()
+    await page.getByTestId("settings-nav-general").click()
+    const voice = page.getByTestId("settings-voice")
+    await voice.getByRole("button", { name: "Turn off" }).click()
+    await voice.getByText("downloads about 500 MB once", { exact: false }).waitFor()
+    await voice.getByRole("button", { name: "Turn on" }).click()
+    await voice.getByText("Downloading Parakeet", { exact: false }).waitFor()
+    await voice.getByRole("button", { name: "Turn off" }).waitFor({ timeout: 10_000 })
+    expect((await mockStt(mock)).status.state).toBe("ready")
+    expect(errors).toEqual([])
+  }, 30_000)
 })
