@@ -182,3 +182,9 @@ test("image: an image inside ** ** still renders as an image (inline marking is 
 
 // The whitelist itself is tested in `packages/app-model/test/links.test.ts` (it moved there with
 // the function); this file only pins the parser's use of it.
+
+test("link: `/\\host` is not a same-origin path, so it renders as text", () => {
+  const out = renderInline("[x](/\\evil.example)")
+  expect(nodeKinds(out)).not.toContain("Link")
+  expect(textOf(out)).toBe("x")
+})

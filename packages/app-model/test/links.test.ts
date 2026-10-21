@@ -66,13 +66,15 @@ describe("safeHref: rejected protocols, the full table", () => {
     expect(safeHref("///evil.example/x")).toBeUndefined()
   })
 
-  test("KNOWN GAP, recorded not fixed: a backslash after the first slash passes", () => {
+  test("a backslash after the first slash is a protocol-relative address too", () => {
     // Browsers normalise `\` to `/` for special schemes, so `<a href="/\evil.example">` resolves to
-    // `//evil.example`. safeHref only excludes a literal second `/`. This is the behaviour before
-    // the move to @openbot/app-model and outside its fix; recorded here so it is not mistaken for
-    // coverage. Reported to the architect for a separate decision.
-    expect(safeHref("/\\evil.example")).toBe("/\\evil.example")
-    expect(safeHref("/\\/evil.example")).toBe("/\\/evil.example")
+    // `//evil.example`.
+    expect(safeHref("/\\evil.example")).toBeUndefined()
+    expect(safeHref("/\\/evil.example")).toBeUndefined()
+    expect(safeHref("/\\\\evil.example")).toBeUndefined()
+    expect(safeHref("  /\\evil.example")).toBeUndefined()
+    // A backslash further along is just part of the path.
+    expect(safeHref("/a\\b")).toBe("/a\\b")
   })
 
   test("bare text and empty input", () => {
