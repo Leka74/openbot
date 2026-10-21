@@ -22,12 +22,16 @@ type PreviewState =
 const errorMessage = (status: number): string =>
   status === 404 ? "Couldn't load this file — it may have been deleted" : `Couldn't load this file (HTTP ${status})`
 
+/** What `readBounded` got: the text, or a stop at the limit. Tagged, so no file content can pass
+ * for the limit (a file that says just "too-large" is still text). */
+export type BoundedRead = { readonly kind: "text"; readonly text: string } | { readonly kind: "too-large" }
+
 /** Reads the body while counting bytes, so a missing `byteSize` still cannot pull in a huge file. */
-const readBounded = async (response: Response): Promise<string | "too-large"> => {
+export const readBounded = async (response: Response): Promise<BoundedRead> => {
   if (response.body === null) {
     const buffer = await response.arrayBuffer()
-    if (buffer.byteLength > MAX_PREVIEW_BYTES) return "too-large"
-    return new TextDecoder("utf-8").decode(buffer)
+    if (buffer.byteLength > MAX_PREVIEW_BYTES) return { kind: "too-large" }
+    return { kind: "text", text: new TextDecoder("utf-8").decode(buffer) }
   }
   const reader = response.body.getReader()
   const chunks: Array<Uint8Array> = []
@@ -38,7 +42,7 @@ const readBounded = async (response: Response): Promise<string | "too-large"> =>
     total += value.byteLength
     if (total > MAX_PREVIEW_BYTES) {
       await reader.cancel()
-      return "too-large"
+      return { kind: "too-large" }
     }
     chunks.push(value)
   }
@@ -50,7 +54,7 @@ const readBounded = async (response: Response): Promise<string | "too-large"> =>
   }
   // Non-fatal on purpose: extension fallback can classify binary as text, and a fatal decoder would
   // throw on the first bad byte — leaving a `ready` state unreachable and a spinner forever.
-  return new TextDecoder("utf-8").decode(bytes)
+  return { kind: "text", text: new TextDecoder("utf-8").decode(bytes) }
 }
 
 export function FilePreview({ attachment, onClose }: {
@@ -83,9 +87,9 @@ export function FilePreview({ attachment, onClose }: {
           setState({ kind: "too-large" })
           return
         }
-        const text = await readBounded(response)
+        const read = await readBounded(response)
         if (!alive) return
-        setState(text === "too-large" ? { kind: "too-large" } : { kind: "ready", text })
+        setState(read.kind === "too-large" ? { kind: "too-large" } : { kind: "ready", text: read.text })
       } catch {
         // AbortError is the close path, not a failure: stay silent when the dialog is already gone.
         if (!alive || controller.signal.aborted) return
