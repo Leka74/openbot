@@ -97,9 +97,13 @@
   -webkit-app-region: drag;
   app-region: drag;
 }
-html[data-desktop] :is(button, a, input, textarea, select, label, [role="button"], [role="tab"], [role="switch"], [role="menuitem"], [contenteditable="true"]) {
+html[data-desktop] :is(button, a, input, textarea, select, label, [role="button"], [role="tab"], [role="switch"], [role="menuitem"], [contenteditable="true"], .ob-pin-drop) {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+/* "Drag here to pin" over the sidebar's top bar, clear of the window buttons */
+html[data-desktop="darwin"] .ob-pin-drop {
+  inset-inline-start: 84px;
 }
 html[data-desktop="darwin"] .ob-sidebar-header,
 html[data-desktop="darwin"] .ob-overlay-top {

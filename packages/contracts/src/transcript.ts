@@ -5,7 +5,6 @@
 import { Schema } from "effect"
 import {
   ApprovalRuleId,
-  AttachmentId,
   Author,
   BotId,
   ConversationId,
@@ -22,6 +21,7 @@ import {
   Usage,
   withUnknownFallback,
 } from "./base.ts"
+import { Attachment } from "./attachment.ts"
 import { Card, CardState } from "./card.ts"
 import { RoutineRunStatus } from "./domain.ts"
 import { BotAutonomy } from "./policy.ts"
@@ -43,17 +43,7 @@ export const EntryBaseFields = {
   harnessRef: Schema.optionalKey(HarnessRef),
 }
 
-export const Attachment = Schema.Struct({
-  id: AttachmentId,
-  name: Schema.String,
-  mime: Schema.String,
-  byteSize: Schema.optionalKey(NonNegativeInt),
-  /** Server URL (`/api/attachments/:id`); attachments are uploaded first. */
-  url: Schema.String,
-  width: Schema.optionalKey(NonNegativeInt),
-  height: Schema.optionalKey(NonNegativeInt),
-})
-export type Attachment = typeof Attachment.Type
+export { Attachment } from "./attachment.ts"
 
 export const MessageDelivery = Schema.Literals(["queued", "accepted", "delivered", "failed"])
 export type MessageDelivery = typeof MessageDelivery.Type

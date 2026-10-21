@@ -19,7 +19,8 @@
  * hand-offs" event. `settings.botMessaging = false` (the global kill switch) refuses every tool.
  * Tools are idempotent on the harness tool-call id (`ToolContext.callId`, D3.3).
  */
-import type { Attachment, Bot, BotId, Conversation, ConversationId, EntryId, KnownConversationEvent, KnownTranscriptEntry } from "@openbot/contracts"
+import type { Attachment, Bot, BotId, Conversation, ConversationId, EntryId, KnownConversationEvent, KnownTranscriptEntry, NodeId } from "@openbot/contracts"
+import type { Invocation } from "@openbot/node-protocol"
 import { HarnessUnavailable, InvalidInput, NotFound } from "@openbot/contracts"
 import { Effect, Layer, Option } from "effect"
 import { CoreIdPrefix, IdGen } from "../../ports/IdGen.ts"
@@ -453,6 +454,58 @@ export const MessagingLive: Layer.Layer<
         return { kind: "direct", conversationId: recipient.directConversationId, recipient } satisfies FileDestination as FileDestination
       })
 
+    /** One file from a node into the attachment store (streamed; the node's path policy applies). */
+    const importOne = (
+      input: { readonly nodeId: NodeId; readonly inv: Invocation; readonly cwd?: string | undefined; readonly progress?: ((message: string) => Effect.Effect<void>) | undefined },
+      path: string,
+      count: number,
+    ) =>
+      Effect.scoped(Effect.gen(function*() {
+        const download = yield* nodeFiles.download({
+          nodeId: input.nodeId,
+          inv: input.inv,
+          path,
+          cwd: input.cwd,
+          maxBytes: sendLimits.maxFileBytes,
+        })
+        const mime = detectMime(download.name, download.head)
+        const size = imageDimensions(mime, download.head)
+        if (input.progress !== undefined) yield* input.progress(`Sending ${download.name} (${formatBytes(download.size)})…`)
+        const attachment: Attachment = yield* storeAttachmentStream(attachmentStore, {
+          name: download.name,
+          mime,
+          chunks: download.chunks,
+          width: size?.width,
+          height: size?.height,
+        })
+        return { attachment, path: download.path } satisfies SentFile
+      })).pipe(
+        Effect.mapError((error) =>
+          new InvalidInput({
+            message: count === 1
+              ? `Could not send ${path}: ${describeSendFailure(error)}`
+              : `Could not send ${path}: ${describeSendFailure(error)}. Nothing was sent; fix it (or leave it out) and try again.`,
+          })
+        ),
+      )
+
+    const importFiles = Effect.fn("Messaging.importFiles")(function*(input: Parameters<Messaging["Service"]["importFiles"]>[0]) {
+      const paths = [...new Set(input.paths.map((p) => p.trim()).filter((p) => p.length > 0))]
+      if (paths.length === 0) return []
+      if (paths.length > sendLimits.maxFiles) {
+        return yield* new InvalidInput({ message: `At most ${sendLimits.maxFiles} files at once; archive the rest (zip/tar) first.` })
+      }
+      const stored: Array<Attachment> = []
+      return yield* Effect.forEach(paths, (path) =>
+        importOne(input, path, paths.length).pipe(
+          Effect.map((file) => file.attachment),
+          Effect.tap((attachment) => Effect.sync(() => stored.push(attachment))),
+        )).pipe(
+          // a later file failed: drop the ones already stored
+          Effect.tapError(() => Effect.forEach(stored, (a) => Effect.ignore(attachmentStore.delete(a.id)), { discard: true })),
+        )
+    })
+
     const sendFiles = Effect.fn("Messaging.sendFiles")(function*(
       ctx: ToolContext,
       input: Parameters<Messaging["Service"]["sendFiles"]>[1],
@@ -501,35 +554,7 @@ export const MessagingLive: Layer.Layer<
         : routeBotMessage({ group: destination.group, members, text: caption, senderBotId: sender.id })
       const chain = targets.length > 0 ? yield* nextChain(ctx, deliveryId, ctx.claims.conversationId) : undefined
 
-      const sendOne = (path: string) =>
-        Effect.scoped(Effect.gen(function*() {
-          const download = yield* nodeFiles.download({
-            nodeId: input.nodeId,
-            inv: input.inv,
-            path,
-            cwd: input.cwd,
-            maxBytes: sendLimits.maxFileBytes,
-          })
-          const mime = detectMime(download.name, download.head)
-          const size = imageDimensions(mime, download.head)
-          if (input.progress !== undefined) yield* input.progress(`Sending ${download.name} (${formatBytes(download.size)})…`)
-          const attachment: Attachment = yield* storeAttachmentStream(attachmentStore, {
-            name: download.name,
-            mime,
-            chunks: download.chunks,
-            width: size?.width,
-            height: size?.height,
-          })
-          return { attachment, path: download.path } satisfies SentFile
-        })).pipe(
-          Effect.mapError((error) =>
-            new InvalidInput({
-              message: paths.length === 1
-                ? `Could not send ${path}: ${describeSendFailure(error)}`
-                : `Could not send ${path}: ${describeSendFailure(error)}. Nothing was sent; fix it (or leave it out) and call send_file again.`,
-            })
-          ),
-        )
+      const sendOne = (path: string) => importOne(input, path, paths.length)
 
       const sent: Array<SentFile> = []
       const stored = yield* Effect.forEach(paths, (path) => Effect.tap(sendOne(path), (file) => Effect.sync(() => sent.push(file)))).pipe(
@@ -602,6 +627,6 @@ export const MessagingLive: Layer.Layer<
       }) satisfies SendFilesResult)
     })
 
-    return Messaging.of({ messageBot, postToGroup, handoffTask, react, sendFiles })
+    return Messaging.of({ messageBot, postToGroup, handoffTask, react, sendFiles, importFiles })
   }),
 )

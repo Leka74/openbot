@@ -5,7 +5,7 @@
  *
  * Text is readable: mentions as `@Name`, channel links as `#name`, links as `label (url)`.
  */
-import type { Conflict, EntryId, InvalidInput, NotFound, SlackConnectInput, SlackStatus, Unavailable } from "@openbot/contracts"
+import type { Attachment, Conflict, EntryId, InvalidInput, NotFound, SlackConnectInput, SlackStatus, Unavailable } from "@openbot/contracts"
 import { Context, type Effect, type Stream } from "effect"
 import type { ToolContext } from "./services.ts"
 
@@ -45,6 +45,17 @@ export interface SlackEvent {
   readonly message: SlackMessage
   /** The owner is @mentioned in it. */
   readonly mentionsOwner: boolean
+}
+
+/**
+ * The owner clicked "Send to OpenBot" on a message in Slack (the message shortcut). Clicks by
+ * anyone else are answered in Slack and never reach here.
+ */
+export interface SlackShortcut {
+  readonly conversation: SlackConversation
+  readonly message: SlackMessage
+  /** A note only the owner sees in Slack, under the message ("Sent to …"). */
+  readonly reply: (text: string) => Effect.Effect<void>
 }
 
 export interface SlackTarget {
@@ -87,13 +98,22 @@ export class SlackConnector extends Context.Service<SlackConnector, {
   >
   /** Where a message to `to` (same forms as `read`) goes, and the thread for `thread` (a `ts` or a link). */
   readonly resolve: (input: { readonly to: string; readonly thread?: string | undefined }) => Effect.Effect<SlackTarget, InvalidInput | Unavailable>
-  /** Posts as the owner. `text` may use `@Name` for people; they are turned into Slack mentions. */
-  readonly send: (input: { readonly channelId: string; readonly text: string; readonly threadTs?: string | undefined }) => Effect.Effect<
-    { readonly ts: string; readonly permalink: string },
-    InvalidInput | Unavailable
-  >
+  /**
+   * Posts as the owner. `text` may use `@Name` for people; they are turned into Slack mentions.
+   * With `files` (on the brain's disk) they are uploaded and `text` is their comment (it may be
+   * empty); Slack posts that message a moment later, so there is no `ts` and the link is the
+   * conversation's (or the thread's).
+   */
+  readonly send: (input: {
+    readonly channelId: string
+    readonly text: string
+    readonly threadTs?: string | undefined
+    readonly files?: ReadonlyArray<{ readonly name: string; readonly path: string; readonly byteSize: number }> | undefined
+  }) => Effect.Effect<{ readonly ts?: string | undefined; readonly permalink: string }, InvalidInput | Unavailable>
   /** Messages as they arrive (while live). */
   readonly events: Stream.Stream<SlackEvent>
+  /** The owner's "Send to OpenBot" clicks (while live). */
+  readonly shortcuts: Stream.Stream<SlackShortcut>
 }>()("openbot/core/SlackConnector") {}
 
 /**
@@ -106,6 +126,8 @@ export class SlackService extends Context.Service<SlackService, {
     readonly to: string
     readonly text: string
     readonly thread?: string | undefined
+    /** Files already in OpenBot (`Messaging.importFiles`), sent with the message. */
+    readonly files?: ReadonlyArray<Attachment> | undefined
   }) => Effect.Effect<{ readonly entryId: EntryId; readonly to: string; readonly inThread: boolean }, InvalidInput | Unavailable>
   /** Sends a pending draft as the owner, with their edits (`text`). */
   readonly send: (input: { readonly entryId: EntryId; readonly text: string }) => Effect.Effect<

@@ -23,7 +23,7 @@ import { useRoster, valueOr } from "../app/data.ts"
 import { formatTimestamp } from "../app/format.ts"
 import { useLayoutMode } from "../app/layout.ts"
 import { useLongPressWithin } from "../app/longPress.ts"
-import { useComputerView, useDetailsPane, usePhoneNav, useSelection } from "../app/uiState.ts"
+import { useComputerView, useDetailsPane, usePhoneNav, useSelection, useSettingsDialog } from "../app/uiState.ts"
 import { CardView, WarnIcon } from "../cards/index.ts"
 import { describeFailure } from "../cards/useRespond.ts"
 import { activityPhrase } from "./activity.ts"
@@ -58,6 +58,7 @@ function GlassButton({ icon, label, onClick, testId }: { readonly icon: LucideIc
 
 export function ChatView({ conversationId }: { readonly conversationId: ConversationId }): ReactNode {
   const roster = useRoster()
+  const settingsDialog = useSettingsDialog()
   const result = useAtomValue(conversationAtom(conversationId))
   const state = valueOr(result, emptyConversationState)
   const outbox = useAtomValue(outboxAtom(conversationId))
@@ -127,9 +128,10 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
   )
   const turns = useMemo(() => [...stateTurns.values()], [stateTurns])
   const showSteps = settings.showSteps
+  const showCompactions = settings.showCompactions
   const rows = useMemo(
-    () => layoutTranscript({ entries, turns: stateTurns, pending, unreadBoundaryAt: boundary, showSteps, direct: !isGroup }),
-    [entries, stateTurns, pending, boundary, showSteps, isGroup],
+    () => layoutTranscript({ entries, turns: stateTurns, pending, unreadBoundaryAt: boundary, showSteps, showCompactions, direct: !isGroup }),
+    [entries, stateTurns, pending, boundary, showSteps, showCompactions, isGroup],
   )
   const byId = useMemo(() => messageIndex(entries), [entries])
 
@@ -449,9 +451,17 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <span className="text-xs font-medium text-fg">{members.length === 1 ? "Bot failed to respond" : `${roster.botById(failed.botId)?.name ?? "A Bot"} failed to respond`}</span>
               <span className="text-sm text-fg-secondary">{failed.failure?.message ?? "Something went wrong while replying."}</span>
-              <PillButton variant="primary" size="sm" className="mt-1.5 w-fit" onClick={() => void retryFailed(failed)}>
-                Retry
-              </PillButton>
+              <div className="mt-1.5 flex gap-2">
+                {failed.failure?.code === "auth" && (
+                  // the harness's login on the brain's computer expired: Settings › Harnesses shows how to sign in
+                  <PillButton variant="primary" size="sm" onClick={() => settingsDialog.show("harnesses")}>
+                    Sign in
+                  </PillButton>
+                )}
+                <PillButton variant={failed.failure?.code === "auth" ? "secondary" : "primary"} size="sm" onClick={() => void retryFailed(failed)}>
+                  Retry
+                </PillButton>
+              </div>
             </div>
             <IconButton icon={X} label="Dismiss" size={24} onClick={() => setDismissed((s) => new Set(s).add(failed.id))} />
           </div>

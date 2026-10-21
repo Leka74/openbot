@@ -31,7 +31,7 @@ import {
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { useAtomSet } from "@effect/atom-react"
 import { Exit } from "effect"
-import { DEFAULT_SETTINGS, type BotId, type BotPatch, type ConversationId, type SectionId } from "@openbot/contracts"
+import { DEFAULT_SETTINGS, type BotId, type BotPatch, type ConversationId, type SectionId, type SidebarPlace } from "@openbot/contracts"
 import { commands, updateSettingsAtom } from "@openbot/client"
 import {
   Avatar,
@@ -61,7 +61,11 @@ import { useConnectApps, useDialogs, useSelection, useSettingsDialog } from "../
 import { APPS, StackedLogos, useAppStatuses } from "../connections/apps.tsx"
 import { describeFailure } from "../cards/useRespond.ts"
 import { modKey } from "../palette/SearchPalette.tsx"
+import { DropLine, useSidebarDrag } from "./drag.tsx"
 import { buildSidebar, type SidebarItem, type SidebarSection } from "./model.ts"
+
+/** The drag source and drop handlers a row or tile takes (drag.tsx). */
+type DragProps = Record<string, unknown>
 
 // ------------------------------------------------------------------------------ collapsed state
 
@@ -313,7 +317,7 @@ const useRowMenu = (onMenu: (p: LongPressPoint, touch?: boolean) => void) => {
   }
 }
 
-function PinnedTile({ item, current, onOpen, onMenu }: { readonly item: SidebarItem & { kind: "bot" }; readonly current: boolean; readonly onOpen: () => void; readonly onMenu: (p: LongPressPoint, touch?: boolean) => void }): ReactNode {
+function PinnedTile({ item, current, onOpen, onMenu, drag, dragged = false }: { readonly item: SidebarItem & { kind: "bot" }; readonly current: boolean; readonly onOpen: () => void; readonly onMenu: (p: LongPressPoint, touch?: boolean) => void; readonly drag?: DragProps; readonly dragged?: boolean }): ReactNode {
   const b = item.bot
   const menu = useRowMenu(onMenu)
   return (
@@ -322,9 +326,10 @@ function PinnedTile({ item, current, onOpen, onMenu }: { readonly item: SidebarI
       aria-current={current ? "page" : undefined}
       onClick={onOpen}
       {...menu}
+      {...drag}
       title={b.name}
       data-bot={b.id}
-      className="flex w-[82px] min-w-0 flex-col items-center rounded-xl px-1.5 pt-2 pb-2 transition-colors duration-100 hover:bg-hover active:bg-active aria-[current=page]:bg-active"
+      className={cn("flex w-[82px] min-w-0 flex-col items-center rounded-xl px-1.5 pt-2 pb-2 transition-colors duration-100 hover:bg-hover active:bg-active aria-[current=page]:bg-active", dragged && "opacity-40")}
     >
       <Avatar
         shape={b.avatar.shape}
@@ -347,6 +352,8 @@ function Row({
   onMenu,
   dimmed = false,
   phone = false,
+  drag,
+  dragged = false,
 }: {
   readonly item: SidebarItem
   readonly current: boolean
@@ -354,6 +361,8 @@ function Row({
   readonly onMenu: (p: LongPressPoint, touch?: boolean) => void
   readonly dimmed?: boolean
   readonly phone?: boolean
+  readonly drag?: DragProps
+  readonly dragged?: boolean
 }): ReactNode {
   const name = item.kind === "bot" ? item.bot.name : item.summary.title || item.bots.map((b) => b.name).join(", ")
   const menu = useRowMenu(onMenu)
@@ -365,11 +374,13 @@ function Row({
       aria-current={current ? "page" : undefined}
       onClick={onOpen}
       {...menu}
+      {...drag}
       data-row={item.key}
       className={cn(
         "relative flex w-full min-w-0 items-center text-start transition-colors duration-100 hover:bg-hover aria-[current=page]:bg-active",
         phone ? "gap-3 rounded-2xl px-2 py-2.5 active:bg-active" : "gap-2.5 rounded-xl p-2",
         dimmed && "opacity-60",
+        dragged && "opacity-40",
       )}
     >
       {item.kind === "bot" ? (
@@ -496,6 +507,28 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
   const model = useMemo(() => buildSidebar(roster.state, open), [roster.state, open])
   const { collapsed, toggle } = useCollapsed()
   const [menu, setMenu] = useState<ContextTarget | undefined>()
+  // drag a chat to reorder it, move it between sections or pin it (desktop)
+  const drag = useSidebarDrag(!phone)
+  /**
+   * One place's rows. Each sits in a padded wrapper that takes the drops (no gaps between rows, so
+   * the pointer is always over one), with a floating line where the dragged chat would land.
+   */
+  const rows = (place: SidebarPlace, items: ReadonlyArray<SidebarItem>) =>
+    items.map((item, index) => (
+      <div key={item.key} className="relative py-0.5" {...drag.row(place, items, index)}>
+        {drag.isTarget(place, index) && <DropLine edge="top" />}
+        <Row
+          item={item}
+          phone={phone}
+          current={isCurrent(item)}
+          onOpen={() => openItem(item)}
+          onMenu={onMenu(item)}
+          drag={drag.source(item)}
+          dragged={drag.dragging?.key === item.key}
+        />
+        {index === items.length - 1 && drag.isTarget(place, items.length) && <DropLine edge="bottom" />}
+      </div>
+    ))
   const openItem = (item: SidebarItem) => select((item.kind === "bot" ? item.bot.directConversationId : item.summary.id) as ConversationId)
   const isCurrent = (item: SidebarItem) => open !== null && (item.kind === "bot" ? item.bot.directConversationId : item.summary.id) === open
   const onMenu = (item: SidebarItem) => (p: LongPressPoint, touch = false) => setMenu({ x: p.x, y: p.y, item, touch })
@@ -508,7 +541,21 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
   if (compact && !phone) return <CompactSidebar model={model} isCurrent={isCurrent} openItem={openItem} onNewChat={onNewChat} onToggleCompact={onToggleCompact} onContext={onContext} menu={menu} closeMenu={() => setMenu(undefined)} />
 
   return (
-    <nav aria-label="Bots" className={cn("flex h-full min-w-0 flex-col", phone ? "bg-chrome" : "bg-sidebar")}>
+    <nav aria-label="Bots" className={cn("relative flex h-full min-w-0 flex-col", phone ? "bg-chrome" : "bg-sidebar")}>
+      {model.pinned.length === 0 && drag.accepts("pinned") && (
+        // no pins yet: the drop area covers the top bar, not the chats (nothing moves under the pointer)
+        <div
+          aria-label="Pinned Bots"
+          role="group"
+          {...drag.zone("pinned", model.pinned)}
+          className={cn(
+            "ob-pin-drop absolute inset-x-2 top-[calc(env(safe-area-inset-top)+8px)] z-20 flex h-11 animate-fade-in items-center justify-center rounded-xl border border-dashed bg-sidebar text-xs",
+            drag.isTarget("pinned", 0) ? "border-accent text-fg" : "border-line-secondary text-fg-secondary",
+          )}
+        >
+          Drag here to pin
+        </div>
+      )}
       {phone ? (
         <div className="flex shrink-0 items-center gap-2 px-4 pt-[env(safe-area-inset-top)]" data-testid="home-header">
           <div className="flex h-[60px] items-center">
@@ -528,9 +575,20 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
       )}
       <div className={cn("min-h-0 flex-1 overflow-y-auto pb-3 scrollbar-thin", phone ? "px-2.5" : "px-2")}>
         {model.pinned.length > 0 && (
-          <div aria-label="Pinned Bots" role="group" className="flex flex-wrap items-start justify-center gap-x-1 gap-y-3 px-1 pt-2.5 pb-4">
-            {model.pinned.map((item) => (
-              <PinnedTile key={item.key} item={item} current={isCurrent(item)} onOpen={() => openItem(item)} onMenu={onMenu(item)} />
+          <div aria-label="Pinned Bots" role="group" {...drag.zone("pinned", model.pinned)} className="flex flex-wrap items-start justify-center gap-x-1 gap-y-3 px-1 pt-2.5 pb-4">
+            {model.pinned.map((item, index) => (
+              <div key={item.key} className="relative" {...drag.row("pinned", model.pinned, index, "x")}>
+                {drag.isTarget("pinned", index) && <DropLine edge="left" />}
+                <PinnedTile
+                  item={item}
+                  current={isCurrent(item)}
+                  onOpen={() => openItem(item)}
+                  onMenu={onMenu(item)}
+                  drag={drag.source(item)}
+                  dragged={drag.dragging?.key === item.key}
+                />
+                {index === model.pinned.length - 1 && drag.isTarget("pinned", model.pinned.length) && <DropLine edge="right" />}
+              </div>
             ))}
           </div>
         )}
@@ -544,25 +602,32 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
           </div>
         )}
         {model.sections.map((section) => {
-          if (section.items.length === 0 && (section.id === "unassigned" || section.id === "groups")) return null
+          const place = section.id as SidebarPlace
+          // Unassigned and Group chats show while empty only as a place to drag a chat to
+          if (section.items.length === 0 && (section.id === "unassigned" || section.id === "groups") && !drag.accepts(place)) return null
           // "Unassigned" is only a heading once the owner has created sections of their own (Grok).
           if (section.id === "unassigned" && !model.sections.some((s) => s.id !== "unassigned" && s.id !== "groups")) {
             return (
-              <div key={section.id} className="flex flex-col gap-1 pb-3" role="group" aria-label="Bots">
-                {section.items.map((item) => <Row key={item.key} item={item} phone={phone} current={isCurrent(item)} onOpen={() => openItem(item)} onMenu={onMenu(item)} />)}
+              <div key={section.id} {...drag.zone(place, section.items)} className="flex min-h-8 flex-col pb-3" role="group" aria-label="Bots">
+                {rows(place, section.items)}
               </div>
             )
           }
           const isCollapsed = collapsed.has(section.id)
           return (
-            <div key={section.id} className="pb-3" role="group" aria-label={section.name}>
+            <div
+              key={section.id}
+              {...drag.zone(place, section.items)}
+              className={cn("rounded-xl pb-3", drag.accepts(place) && isCollapsed && drag.isTarget(place, section.items.length) && "bg-hover")}
+              role="group"
+              aria-label={section.name}
+              data-section={section.id}
+            >
               <SectionHeader section={section} collapsed={isCollapsed} onToggle={() => toggle(section.id)} phone={phone} />
-              {!isCollapsed && section.items.length === 0 && <p className="px-3 pb-2 text-xs text-fg-tertiary">Drag chats here</p>}
-              {!isCollapsed && section.items.length > 0 && (
-                <div className="mt-1 flex flex-col gap-1">
-                  {section.items.map((item) => <Row key={item.key} item={item} phone={phone} current={isCurrent(item)} onOpen={() => openItem(item)} onMenu={onMenu(item)} />)}
-                </div>
+              {!isCollapsed && section.items.length === 0 && (
+                <p className={cn("px-3 pb-2 text-xs", drag.isTarget(place, 0) ? "text-accent-fg" : "text-fg-tertiary")}>Drag chats here</p>
               )}
+              {!isCollapsed && section.items.length > 0 && <div className="mt-0.5 flex flex-col">{rows(place, section.items)}</div>}
             </div>
           )
         })}

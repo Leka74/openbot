@@ -67,6 +67,7 @@ import {
   type SkillDirectory,
   SkillServiceLive,
   SlackServiceLive,
+  SlackShortcutsLive,
   UsageServiceLive,
 } from "@openbot/core"
 import { McpBindingIssuerLive, McpGatewayLive } from "@openbot/gateway"
@@ -99,6 +100,7 @@ import { setShutdownPhase } from "./shutdown.ts"
 import { SkillsShLive } from "./skillsSh.ts"
 import { SlackConnectorLive } from "./slack/connector.ts"
 import { type SpeechToText, SpeechToTextLive } from "./stt/service.ts"
+import { HarkLive } from "./hark.ts"
 
 // ============================================================================ startup errors
 
@@ -383,7 +385,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     Layer.provide(options?.skillDirectory ?? SkillsShLive(config.skillsShUrl === undefined ? undefined : { baseUrl: config.skillsShUrl })), // skills.sh import (D5.5)
     Layer.provideMerge(BotServiceLive),
   ).pipe(
-    Layer.provideMerge(Layer.mergeAll(MessagingLive, RoutineSchedulerLive)), // 10
+    Layer.provideMerge(Layer.mergeAll(MessagingLive, RoutineSchedulerLive, SlackShortcutsLive)), // 10 (+ Slack's "Send to OpenBot")
     Layer.provideMerge(LocalNodeDaemonLive(options?.localNode)), // 9
     Layer.provideMerge(HarnessProfilesLayer(options?.profiles)), // 8b: added accounts (profiles.ts)
     Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
@@ -393,6 +395,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     Layer.provideMerge(InstructionRendererLive),
     Layer.provideMerge(ApprovalServiceLive),
     Layer.provideMerge(SlackServiceLive), // Slack drafts (D3.4)
+    Layer.provideMerge(HarkLive({ file: makeDataDir(config.dataDir).hark, baseUrl: config.harkUrl })), // iPhone notifications (D3.5)
     Layer.provideMerge(MemoryServiceLive),
     Layer.provideMerge(level2),
     Layer.provideMerge(LiveHubLive),

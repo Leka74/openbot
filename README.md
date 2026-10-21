@@ -158,8 +158,23 @@ that you send yourself. It uses a Slack app of your own, so nothing goes through
 The tokens stay on the machine that runs OpenBot (`<data>/slack.json`). Live messages use Slack's
 Socket Mode, which connects out, so OpenBot doesn't need to be reachable from the internet. A Bot never
 writes in Slack by itself: it shows you a **Slack message** draft in the chat, which you edit and send
-(it goes out as you) or discard. To start a Bot when someone DMs you, mentions you or says a phrase,
+(it goes out as you) or discard. A draft can carry files the Bot made (a video, an image, a PDF):
+they're uploaded with the message when you send it. An app created before that existed needs its
+manifest updated once for the `files:write` permission: Connect apps › Slack shows the steps. To start a Bot when someone DMs you, mentions you or says a phrase,
 add a routine with the **Slack** trigger (Details › Routines), or ask the Bot.
+
+To hand a Slack message or thread to a Bot, use **⋯ › Send to OpenBot** on the message in Slack. It
+lands in the chat of the Bot you pick under Connect apps › Slack (or the Bot you chatted with last),
+with its link, and the Bot reads the whole thread. It needs live messages on. An app created before
+this option existed needs its manifest updated once: Connect apps › Slack has the steps.
+
+### Hark: notifications on your iPhone
+
+Until the OpenBot iPhone app has push notifications, [Hark](https://hark.ryan.ceo) can bring them to
+your phone. Install Hark on the iPhone, create a service called OpenBot in Hark's web dashboard
+(hark.ryan.ceo; the app has no such option), and paste its webhook URL under Connect apps › Hark. OpenBot sends a test notification, then pushes every notification it makes (or only the ones
+where a Bot needs you), grouped by Bot. Tapping one opens that chat, through the address you gave
+`--public-origin`.
 
 ## Desktop app
 

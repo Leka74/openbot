@@ -67,7 +67,7 @@ export default function Chat(): ReactNode {
   const pending: ReadonlyArray<PendingMessage> = outbox
     .filter((o) => !nonces.has(o.clientNonce))
     .map((o) => ({ clientNonce: o.clientNonce, text: o.input.text, createdAt: o.createdAt, status: o.status, error: o.error }))
-  const rows = layoutTranscript({ entries, turns: stateTurns, pending, showSteps, direct: !isGroup })
+  const rows = layoutTranscript({ entries, turns: stateTurns, pending, showSteps, showCompactions: settings.showCompactions, direct: !isGroup })
   const turns = [...stateTurns.values()].filter((t) => ACTIVE.has(t.status)).sort((a, b) => a.startedAt - b.startedAt)
   const statuses = chatStatuses({ conversationId, botIds, activities: roster.state.activities, turns, conversations: roster.state.conversations, tasks: roster.state.tasks })
   const streaming = new Set(entries.flatMap((e) => (e.kind === "message" && e.streaming && e.author.kind === "bot" ? [e.author.botId] : [])))

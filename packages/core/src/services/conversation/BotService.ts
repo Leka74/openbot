@@ -6,7 +6,7 @@
  * Names are unique (case-insensitive) because they are how bots are addressed (`@Name`,
  * `message_bot {to}`); "everyone" is reserved for `@everyone`.
  */
-import type { Bot, BotAutonomy, BotCreateInput, BotHarness, BotId, BotPatch, Conversation, NodeId, Section, SectionId } from "@openbot/contracts"
+import type { Bot, BotAutonomy, BotCreateInput, BotHarness, BotId, BotPatch, Conversation, NodeId, Section, SectionId, SidebarItemRef, SidebarPlace } from "@openbot/contracts"
 import {
   Conflict,
   defaultBotAvatar,
@@ -271,6 +271,10 @@ export const BotServiceLive: Layer.Layer<
         }
       }
       if (patch.pinned !== undefined) next = { ...next, pinned: patch.pinned }
+      if (patch.sidebarOrder !== undefined) {
+        const { sidebarOrder: _drop, ...rest } = next
+        next = patch.sidebarOrder === null ? rest : { ...rest, sidebarOrder: patch.sidebarOrder }
+      }
       if (patch.hidden !== undefined) next = { ...next, hidden: patch.hidden }
       if (patch.notify !== undefined) next = { ...next, notify: patch.notify }
       if (patch.autonomy !== undefined) next = { ...next, autonomy: patch.autonomy }
@@ -422,8 +426,37 @@ export const BotServiceLive: Layer.Layer<
         const { sectionId: _drop, ...rest } = bot
         yield* publishBot({ ...rest, updatedAt: now })
       }
+      // its group chats go back to Group chats
+      for (const group of yield* orDie(conversations.list({ kind: "group" }))) {
+        if (group.kind === "group" && group.sectionId === sectionId) {
+          yield* Effect.ignore(conversationService.place(group.id, { sectionId: null }))
+        }
+      }
       yield* orDie(sections.delete(sectionId))
       yield* hub.publishRoster({ type: "section.removed", sectionId })
+    })
+
+    const arrangeSidebar = Effect.fn("BotService.arrangeSidebar")(function*(input: {
+      readonly place: SidebarPlace
+      readonly items: ReadonlyArray<SidebarItemRef>
+    }) {
+      const { place } = input
+      const section = place === "pinned" || place === "unassigned" || place === "groups" ? undefined : place
+      if (section !== undefined) yield* required(sections.get(section), "section", section)
+      for (const [index, item] of input.items.entries()) {
+        if (item.kind === "bot") {
+          if (place === "groups") return yield* new InvalidInput({ message: "Bots go in a section, Unassigned or the pins, not in Group chats." })
+          // pinning keeps the Bot's section: unpinned, it goes back there
+          yield* update(item.botId, {
+            pinned: place === "pinned",
+            sidebarOrder: index,
+            ...(place === "pinned" ? {} : { sectionId: section ?? null }),
+          }).pipe(Effect.catchTag("Conflict", (e) => Effect.fail(new InvalidInput({ message: e.reason }))))
+        } else {
+          if (place === "pinned") return yield* new InvalidInput({ message: "Group chats can't be pinned." })
+          yield* conversationService.place(item.conversationId, { sectionId: section ?? null, sidebarOrder: index })
+        }
+      }
     })
 
     const reorderSections = Effect.fn("BotService.reorderSections")(function*(sectionIds: ReadonlyArray<SectionId>) {
@@ -470,6 +503,7 @@ export const BotServiceLive: Layer.Layer<
       createSection,
       renameSection,
       deleteSection,
+      arrangeSidebar,
       reorderSections,
     })
   }),

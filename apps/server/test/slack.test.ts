@@ -3,12 +3,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { type TranscriptEntry, transcriptOf } from "@openbot/contracts"
 import type { SlackEvent } from "@openbot/core"
 import { Effect, Exit, Fiber, Ref, Scope, Stream } from "effect"
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeSlackConnector, parseSlackLink } from "../src/slack/connector.ts"
 import { readableText, slackText } from "../src/slack/text.ts"
-import { FAKE_APP_TOKEN, FAKE_USER_TOKEN, type FakeSlack, messageEnvelope, startFakeSlack } from "./fixtures/fakeSlack.ts"
+import { ALL_SCOPES, FAKE_APP_TOKEN, FAKE_USER_TOKEN, type FakeSlack, messageEnvelope, SCOPES_WITHOUT_FILES, shortcutEnvelope, startFakeSlack } from "./fixtures/fakeSlack.ts"
 import { eventually, login, rpcClient, startServer, type TestServer, watchConversation } from "./helpers.ts"
 
 describe("Slack text", () => {
@@ -102,6 +102,31 @@ describe("SlackConnector", () => {
       expect(slack.posted.at(-1)).toEqual({ channel: "C_GENERAL", text: "Fixed, thanks <@U_ALICE> &amp; <@U_BOB>", thread_ts: "1729340000.000100" })
       expect(sent.permalink).toBe("https://acme.slack.com/archives/C_GENERAL/p1729340400000100?thread_ts=1729340000.000100&cid=C_GENERAL")
 
+      // files: their bytes go to the URL Slack hands out, then one message carries them with the text as its comment
+      const clip = join(dir, "clip.mp4")
+      const notes = join(dir, "notes.txt")
+      writeFileSync(clip, new Uint8Array(70_000))
+      writeFileSync(notes, "hello")
+      const withFiles = await run(connector.send({
+        channelId: "C_GENERAL",
+        text: "The render, @Bob",
+        files: [{ name: "clip.mp4", path: clip, byteSize: 70_000 }, { name: "notes.txt", path: notes, byteSize: 5 }],
+      }))
+      expect(slack.uploads).toEqual([
+        { fileId: "F_1", filename: "clip.mp4", length: 70_000, bytes: 70_000, authorized: true },
+        { fileId: "F_2", filename: "notes.txt", length: 5, bytes: 5, authorized: true },
+      ])
+      expect(slack.shared).toEqual([{
+        files: JSON.stringify([{ id: "F_1", title: "clip.mp4" }, { id: "F_2", title: "notes.txt" }]),
+        channel_id: "C_GENERAL",
+        initial_comment: "The render, <@U_BOB>",
+      }])
+      expect(withFiles).toEqual({ permalink: "https://acme.slack.com/archives/C_GENERAL" })
+      // no text: just the file, in a thread
+      await run(connector.send({ channelId: "C_GENERAL", text: "", threadTs: "1729340000.000100", files: [{ name: "notes.txt", path: notes, byteSize: 5 }] }))
+      expect(slack.shared.at(-1)).toEqual({ files: JSON.stringify([{ id: "F_3", title: "notes.txt" }]), channel_id: "C_GENERAL", thread_ts: "1729340000.000100" })
+      expect(slack.posted).toHaveLength(1)
+
       // live messages: others' messages arrive (acknowledged), the owner's own and edits do not
       const heard = await Effect.runPromise(Effect.forkDetach(connector.events.pipe(Stream.take(2), Stream.runCollect)))
       await Bun.sleep(20)
@@ -132,6 +157,35 @@ describe("SlackConnector", () => {
       await Effect.runPromise(Scope.close(scope, Exit.void))
     }
   }, 30_000)
+
+  test("an app from the older manifest connects without files:write; updating it in Slack shows without reconnecting", async () => {
+    const older = startFakeSlack({ scopes: SCOPES_WITHOUT_FILES })
+    const scope = Effect.runSync(Scope.make())
+    const file = join(dir, "older.json")
+    try {
+      const connector = await Effect.runPromise(Scope.provide(makeSlackConnector({ file, apiUrl: older.url }), scope))
+      expect(await Effect.runPromise(connector.connect({ userToken: FAKE_USER_TOKEN }))).toMatchObject({ connected: true, missingScopes: ["files:write"] })
+      const tmp = join(dir, "older-upload")
+      mkdirSync(tmp, { recursive: true })
+      writeFileSync(join(tmp, "a.txt"), "a")
+      const refused = await Effect.runPromiseExit(connector.send({ channelId: "C_GENERAL", text: "", files: [{ name: "a.txt", path: join(tmp, "a.txt"), byteSize: 1 }] }))
+      expect(JSON.stringify(refused)).toContain('lacks the \\"files:write\\" permission')
+      // the owner adds the scope and reinstalls: the next call carries it
+      older.setScopes(ALL_SCOPES)
+      await Effect.runPromise(connector.find("gen"))
+      expect((await Effect.runPromise(connector.status)).missingScopes).toBeUndefined()
+      // a brain started with the older token finds out at boot
+      older.setScopes(SCOPES_WITHOUT_FILES)
+      const scope2 = Effect.runSync(Scope.make())
+      const booted = await Effect.runPromise(Scope.provide(makeSlackConnector({ file, apiUrl: older.url }), scope2))
+      for (let i = 0; i < 100 && (await Effect.runPromise(booted.status)).missingScopes === undefined; i++) await Bun.sleep(10)
+      expect((await Effect.runPromise(booted.status)).missingScopes).toEqual(["files:write"])
+      await Effect.runPromise(Scope.close(scope2, Exit.void))
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      older.stop()
+    }
+  })
 
   test("a token without every scope is refused with what is missing", async () => {
     const partial = startFakeSlack({ scopes: "channels:history,users:read" })
@@ -206,5 +260,74 @@ describe("Slack in the brain", () => {
 
       yield* client["slack.disconnect"]()
       expect(yield* client["slack.status"]()).toEqual({ connected: false, events: "off" })
+    })), 60_000)
+
+  test("a draft with a file the Bot made: the card holds it, and it goes to Slack with the message", () =>
+    server.run(Effect.gen(function*() {
+      const client = yield* rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base })
+      yield* client["slack.connect"]({ userToken: FAKE_USER_TOKEN })
+      const bot = yield* client["bots.create"]({ name: "Cutter", harness: { kind: "fake" }, clientNonce: "slack-cutter", introduce: false })
+      const workspace = join(server.dataDir, "bots", bot.id, "workspace")
+      mkdirSync(join(workspace, "output"), { recursive: true })
+      const video = new Uint8Array(200_000)
+      video.set([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d])
+      writeFileSync(join(workspace, "output", "launch.mp4"), video)
+
+      const convo = yield* watchConversation(client, bot.directConversationId)
+      yield* eventually(Ref.get(convo.state), (s) => s.synchronized, { label: "synchronized" })
+      yield* client["messages.send"]({
+        conversationId: bot.directConversationId,
+        text: `tool: slack_draft {"to":"#general","text":"","files":["output/launch.mp4"]}`,
+        clientNonce: "slack-draft-file",
+      })
+      const drafted = yield* eventually(
+        Ref.get(convo.state),
+        (s) => transcriptOf(s).some((e) => e.kind === "card" && e.card.type === "slack-draft"),
+        { label: "draft card", timeout: 20_000 },
+      )
+      const card = transcriptOf(drafted).find((e): e is Extract<TranscriptEntry, { kind: "card" }> => e.kind === "card" && e.card.type === "slack-draft")!
+      expect(card.card).toMatchObject({ type: "slack-draft", to: "#general", text: "", files: [{ name: "launch.mp4", mime: "video/mp4", byteSize: 200_000 }] })
+
+      yield* client["slack.sendDraft"]({ entryId: card.id, text: "Launch video" })
+      expect(slack.uploads.at(-1)).toMatchObject({ filename: "launch.mp4", length: 200_000, bytes: 200_000 })
+      expect(slack.shared.at(-1)).toMatchObject({ channel_id: "C_GENERAL", initial_comment: "Launch video" })
+      yield* eventually(
+        Ref.get(convo.state),
+        (s) => transcriptOf(s).some((e) => e.id === card.id && e.kind === "card" && e.state.status === "resolved" && e.state.link === "https://acme.slack.com/archives/C_GENERAL"),
+        { label: "sent card" },
+      )
+      yield* client["slack.disconnect"]()
+    })), 60_000)
+
+  test("Send to OpenBot: the owner's click puts the message in the chosen Bot's chat; anyone else's is refused", () =>
+    server.run(Effect.gen(function*() {
+      const client = yield* rpcClient(`${server.wsBase}/rpc`, { cookie, origin: server.base })
+      yield* client["slack.connect"]({ userToken: FAKE_USER_TOKEN, appToken: FAKE_APP_TOKEN })
+      yield* eventually(client["slack.status"](), (s) => s.events === "live", { label: "live messages" })
+      expect(yield* client["slack.status"]()).toMatchObject({ appId: "A_OPENBOT" })
+      const bot = yield* client["bots.create"]({ name: "Inbox", harness: { kind: "fake" }, clientNonce: "slack-inbox", introduce: false })
+      yield* client["settings.update"]({ patch: { slackSendTo: bot.id } })
+      const convo = yield* watchConversation(client, bot.directConversationId)
+      yield* eventually(Ref.get(convo.state), (s) => s.synchronized, { label: "synchronized" })
+
+      const thread = { ts: "1729340300.000100", thread_ts: "1729340000.000100", user: "U_BOB", text: "Rollback done, <@U_ALICE> can you confirm?" }
+      slack.push(shortcutEnvelope({ by: "U_ALICE", channel: "C_GENERAL", message: thread, responseUrl: slack.responseUrl }))
+      slack.push(shortcutEnvelope({ by: "U_OWNER", channel: "C_GENERAL", message: thread, responseUrl: slack.responseUrl }))
+      const got = yield* eventually(
+        Ref.get(convo.state),
+        (s) => transcriptOf(s).some((e) => e.kind === "message" && e.role === "user"),
+        { label: "the forwarded message", timeout: 20_000 },
+      )
+      const forwarded = transcriptOf(got).filter((e) => e.kind === "message" && e.role === "user")
+      expect(forwarded).toHaveLength(1)
+      expect(forwarded[0]).toMatchObject({
+        text: "From Slack, #general (Bob):\n> Rollback done, @Alice Smith can you confirm?\nhttps://acme.slack.com/archives/C_GENERAL/p1729340300000100?thread_ts=1729340000.000100&cid=C_GENERAL",
+      })
+      yield* eventually(Effect.sync(() => slack.responses.length), (n) => n === 2, { label: "both replies" })
+      expect(slack.responses).toEqual(expect.arrayContaining([
+        { response_type: "ephemeral", text: "Send to OpenBot belongs to Owner's OpenBot." },
+        { response_type: "ephemeral", text: "Sent to Inbox in OpenBot." },
+      ]))
+      yield* client["slack.disconnect"]()
     })), 60_000)
 })

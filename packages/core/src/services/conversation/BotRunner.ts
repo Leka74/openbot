@@ -161,6 +161,8 @@ export interface RunnerDeps {
   /** The Orchestrator layer's scope: runner fibers and session scopes live under it. */
   readonly scope: Scope.Scope
   readonly options: RunnerOptions
+  /** When each harness account (`kind:profile`) was last reported signed out, shared by every runner. */
+  readonly signedOut?: Map<string, number> | undefined
 }
 
 export interface Runner {
@@ -319,6 +321,18 @@ const isSteerable = (delivery: Delivery): boolean =>
 const denyAll: HarnessRequestResolution = { decision: "deny" satisfies DecisionId }
 
 /** `"secret project"` with straight quotes stripped from the title (keeps the tag on one line). */
+const HARNESS_NAMES: Readonly<Record<string, string>> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" }
+
+/**
+ * An "auth" failure (the harness's login on the brain's computer expired or was revoked) in plain
+ * words, with the fix; the harness's own text stays in brackets.
+ */
+export const signedOutText = (harness: string, botName: string, detail: string): string =>
+  `${HARNESS_NAMES[harness] ?? harness} is signed out on the computer OpenBot runs on, so ${botName} can't reply. Sign in again (Settings › Harnesses shows how), then press Retry. (${detail})`
+
+/** One "signed out" notification per harness account in this window. */
+export const SIGNED_OUT_NOTIFY_MS = 30 * 60_000
+
 const quoted = (title: string) => `"${title.replace(/["\r\n]+/g, " ").trim()}"`
 
 export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner> =>
@@ -995,8 +1009,17 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
           })
         }), { discard: true })
 
-    const finishTurn = (active: ActiveTurn, terminal: TurnTerminal) =>
+    /** A signed-out harness's failure, in plain words with the fix. */
+    const explainFailure = (terminal: TurnTerminal) =>
+      terminal._tag !== "failed" || terminal.code !== "auth"
+        ? Effect.succeed(terminal)
+        : Effect.map(orDie(deps.bots.get(botId)), (bot): TurnTerminal =>
+          Option.isNone(bot) ? terminal : { ...terminal, message: signedOutText(bot.value.harness.kind, bot.value.name, terminal.message) }
+        )
+
+    const finishTurn = (active: ActiveTurn, reported: TurnTerminal) =>
       Effect.gen(function*() {
+        const terminal = yield* explainFailure(reported)
         const conversationId = active.conversationId
         yield* locked(Effect.sync(() => {
           active.ending = true
@@ -1048,7 +1071,8 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         }
         yield* deps.approvals.cancelPending({ turnId: active.turnId, reason: "turn-ended" })
         const requeued = terminal._tag === "completed" ? [] : yield* requeueSteered(active)
-        if (terminal._tag !== "completed" && active.accepted) {
+        // a signed-out harness never ran the turn: nothing for the bot to pick up
+        if (terminal._tag !== "completed" && active.accepted && !(terminal._tag === "failed" && terminal.code === "auth")) {
           const where = conversation0._tag === "Success" && conversation0.success.kind === "group"
             ? ` in the group ${quoted(conversation0.success.title)}`
             : conversation0._tag === "Success" && conversation0.success.kind === "direct"
@@ -1086,6 +1110,20 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
               title: bot.value.name,
               body: previewOf(said),
             })
+          } else if (terminal._tag === "failed" && terminal.code === "auth") {
+            // once per account for a while: every Bot (and routine) on it fails the same way
+            const account = `${bot.value.harness.kind}:${bot.value.harness.profileId ?? "default"}`
+            const last = deps.signedOut?.get(account)
+            if (last === undefined || now - last >= SIGNED_OUT_NOTIFY_MS) {
+              deps.signedOut?.set(account, now)
+              yield* deps.notifier.notify({
+                kind: "error",
+                botId,
+                conversationId,
+                title: `${HARNESS_NAMES[bot.value.harness.kind] ?? bot.value.harness.kind} is signed out`,
+                body: `Bots on this account can't reply until you sign in again on the computer OpenBot runs on (Settings › Harnesses).`,
+              })
+            }
           } else if (terminal._tag === "failed") {
             yield* deps.notifier.notify({ kind: "error", botId, conversationId, title: bot.value.name, body: previewOf(terminal.message) })
           }

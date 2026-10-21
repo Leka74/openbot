@@ -7,21 +7,25 @@
  * - People and the owner's conversations are cached (10 minutes) so text reads with names.
  * - Socket Mode: `apps.connections.open` → WebSocket; every envelope is acknowledged; Slack's
  *   `disconnect` and dropped sockets reconnect (backoff up to a minute). Message events from others
- *   (not edits, joins or the owner's own) become `events`.
+ *   (not edits, joins or the owner's own) become `events`; the owner's "Send to OpenBot" clicks
+ *   (message shortcut) become `shortcuts`, answered in Slack through the click's `response_url`
+ *   (anyone else's click is told it isn't theirs).
  */
 import {
   InvalidInput,
   SLACK_DISCONNECTED,
+  SLACK_SHORTCUT_CALLBACK_ID,
+  SLACK_SHORTCUT_NAME,
   SLACK_USER_SCOPES,
   type SlackConnectInput,
   type SlackStatus,
   Unavailable,
 } from "@openbot/contracts"
-import { SlackConnector, type SlackConversation, type SlackEvent, type SlackMessage, type SlackPerson } from "@openbot/core"
+import { SlackConnector, type SlackConversation, type SlackEvent, type SlackMessage, type SlackPerson, type SlackShortcut } from "@openbot/core"
 import { Effect, Layer, PubSub, Stream } from "effect"
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { describeSlackError, makeSlackApi, SCOPES, type SlackApi, SlackApiError } from "./api.ts"
+import { describeSlackError, makeSlackApi, SCOPES, type SlackApi, SlackApiError, type SlackArgs } from "./api.ts"
 import { readableText, slackText } from "./text.ts"
 
 export interface SlackConnectorOptions {
@@ -42,6 +46,13 @@ interface Saved {
   readonly teamUrl: string
   readonly userId: string
   readonly userName: string
+}
+
+/** A file to attach to a message: on the brain's disk. */
+interface SlackUpload {
+  readonly name: string
+  readonly path: string
+  readonly byteSize: number
 }
 
 interface User {
@@ -100,6 +111,11 @@ export const parseSlackLink = (text: string): { readonly channelId: string; read
   return { channelId: match[1]!, ts: `${match[2]}.${match[3]}`, ...(threadTs === undefined ? {} : { threadTs }) }
 }
 
+/** Scopes only some features need: a token without them still connects (and its status says what's missing). */
+const OPTIONAL_SCOPES: ReadonlySet<string> = new Set(["files:write"])
+
+const UPLOAD_TIMEOUT_MS = 10 * 60_000
+
 const isTs = (text: string): boolean => /^\d{10}\.\d{6}$/.test(text.trim())
 const isConversationId = (text: string): boolean => /^[CDG][A-Z0-9_]{6,}$/.test(text.trim())
 
@@ -107,6 +123,9 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
   Effect.gen(function*() {
     const api: SlackApi = makeSlackApi({ baseUrl: options.apiUrl, fetch: options.fetch })
     const events = yield* PubSub.unbounded<SlackEvent>()
+    const shortcuts = yield* PubSub.unbounded<SlackShortcut>()
+    /** The app's id, from Socket Mode's hello. */
+    let appId: string | undefined
     const statusChanges = yield* PubSub.unbounded<SlackStatus>()
 
     let saved = readSaved(options.file)
@@ -115,6 +134,8 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       status = next
       PubSub.publishUnsafe(statusChanges, next)
     }
+    /** Scopes the user token lacks (an app made from an older manifest), from Slack's `x-oauth-scopes`. */
+    let missingScopes: ReadonlyArray<string> = []
     const connectedStatus = (s: Saved, live: SlackStatus["events"], problem?: string): SlackStatus => ({
       connected: true,
       team: s.team,
@@ -123,7 +144,23 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       userName: s.userName,
       events: live,
       ...(problem === undefined ? {} : { problem }),
+      ...(missingScopes.length === 0 ? {} : { missingScopes }),
+      ...(appId === undefined ? {} : { appId }),
     })
+    const missingOf = (scopes: ReadonlyArray<string>) => SLACK_USER_SCOPES.filter((scope) => !scopes.includes(scope))
+    /** Every call with the user token reports its scopes: an app updated in Slack shows here without reconnecting. */
+    const noteScopes = (result: Record<string, any>): Record<string, any> => {
+      const scopes = result[SCOPES] as ReadonlyArray<string> | undefined
+      if (scopes === undefined) return result
+      const missing = missingOf(scopes)
+      if (missing.join() !== missingScopes.join()) {
+        missingScopes = missing
+        if (saved !== undefined && status.connected) setStatus(connectedStatus(saved, status.events, status.problem))
+      }
+      return result
+    }
+    /** A Web API call as the owner. */
+    const call = (method: string, args?: SlackArgs): Promise<Record<string, any>> => api.call(token(), method, args).then(noteScopes)
 
     // ---------------------------------------------------------------- caches
 
@@ -136,6 +173,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
     const infos = new Map<string, Record<string, any>>() // other conversations seen
 
     const resetCaches = () => {
+      appId = undefined
       users = new Map()
       usersAt = 0
       mine = new Map()
@@ -155,7 +193,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         let cursor: string | undefined
         let pages = 0
         do {
-          const page = await api.call(token(), "users.list", { limit: 200, cursor })
+          const page = await call("users.list", { limit: 200, cursor })
           for (const member of (page.members ?? []) as Array<Record<string, any>>) next.set(String(member.id), toUser(member))
           cursor = page.response_metadata?.next_cursor || undefined
         } while (cursor !== undefined && ++pages < MAX_PAGES)
@@ -173,7 +211,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       const unknown = [...new Set(ids)].filter((id) => !users.has(id)).slice(0, 20)
       await Promise.all(unknown.map(async (id) => {
         try {
-          const found = await api.call(token(), "users.info", { user: id })
+          const found = await call("users.info", { user: id })
           users.set(id, toUser(found.user ?? { id }))
         } catch {
           // a name we cannot get stays "someone"
@@ -190,7 +228,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         let cursor: string | undefined
         let pages = 0
         do {
-          const page = await api.call(token(), "users.conversations", { types: CONVERSATION_TYPES, exclude_archived: true, limit: 200, cursor })
+          const page = await call("users.conversations", { types: CONVERSATION_TYPES, exclude_archived: true, limit: 200, cursor })
           for (const channel of (page.channels ?? []) as Array<Record<string, any>>) next.set(String(channel.id), channel)
           cursor = page.response_metadata?.next_cursor || undefined
         } while (cursor !== undefined && ++pages < MAX_PAGES)
@@ -205,7 +243,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
     const rawConversation = async (id: string): Promise<Record<string, any>> => {
       const known = mine.get(id) ?? infos.get(id)
       if (known !== undefined) return known
-      const found = (await api.call(token(), "conversations.info", { channel: id })).channel as Record<string, any>
+      const found = (await call("conversations.info", { channel: id })).channel as Record<string, any>
       infos.set(id, found)
       return found
     }
@@ -250,6 +288,9 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       const link = `${base.replace(/\/?$/, "/")}archives/${channelId}/p${ts.replace(".", "")}`
       return threadTs === undefined || threadTs === ts ? link : `${link}?thread_ts=${threadTs}&cid=${channelId}`
     }
+
+    /** A conversation itself (where a message without a ts yet went). */
+    const placeLinkOf = (channelId: string): string => `${(saved?.teamUrl ?? "https://slack.com/").replace(/\/?$/, "/")}archives/${channelId}`
 
     const mentionedIds = (text: string): Array<string> => [...text.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!)
 
@@ -309,7 +350,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
     }
 
     const openDm = async (ids: ReadonlyArray<string>): Promise<string> =>
-      String((await api.call(token(), "conversations.open", { users: ids.join(",") })).channel?.id)
+      String((await call("conversations.open", { users: ids.join(",") })).channel?.id)
 
     /** Where `spec` points: a link (with its message), an id, `#name`, people, or a person. */
     const place = async (spec: string): Promise<{ readonly id: string; readonly ts?: string; readonly threadTs?: string }> => {
@@ -336,7 +377,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
     }
 
     const firstMessage = async (channelId: string, ts: string): Promise<SlackMessage> => {
-      const replies = await api.call(token(), "conversations.replies", { channel: channelId, ts, limit: 1, inclusive: true })
+      const replies = await call("conversations.replies", { channel: channelId, ts, limit: 1, inclusive: true })
       const raw = ((replies.messages ?? []) as Array<Record<string, any>>)[0]
       if (raw === undefined) throw new InvalidInput({ message: "That Slack thread was not found." })
       return (await toMessages([raw], channelId))[0]!
@@ -360,6 +401,27 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         message: messages[0]!,
         mentionsOwner: text.includes(`<@${current.userId}>`) || text.includes(`<@${current.userId}|`),
       })
+    }
+
+    /** "Send to OpenBot" on a message: the owner's click becomes a shortcut; anyone else is told no. */
+    const handleShortcut = async (payload: Record<string, any> | undefined) => {
+      const current = saved
+      if (current === undefined || payload?.type !== "message_action" || payload.callback_id !== SLACK_SHORTCUT_CALLBACK_ID) return
+      const responseUrl = typeof payload.response_url === "string" ? payload.response_url : undefined
+      const reply = (text: string): Promise<void> =>
+        responseUrl === undefined ? Promise.resolve() : (options.fetch ?? fetch)(responseUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ response_type: "ephemeral", text }),
+          signal: AbortSignal.timeout(10_000),
+        }).then(() => undefined, (error) => console.warn("[slack] shortcut reply failed:", error))
+      if (payload.user?.id !== current.userId) {
+        await reply(`${SLACK_SHORTCUT_NAME} belongs to ${current.userName}'s OpenBot.`)
+        return
+      }
+      const channelId = String(payload.channel?.id ?? "")
+      const [where, messages] = await Promise.all([conversation(channelId), toMessages([payload.message ?? {}], channelId)])
+      PubSub.publishUnsafe(shortcuts, { conversation: where, message: messages[0]!, reply: (text) => Effect.promise(() => reply(text)) })
     }
 
     const listen = (appToken: string, owner: Saved) => {
@@ -403,11 +465,20 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
           }
           if (data.type === "hello") {
             attempt = 0
+            const id = data.connection_info?.app_id
+            if (typeof id === "string" && id !== "") appId = id
             live("live")
           } else if (data.type === "disconnect") {
             ws.close()
           } else if (data.envelope_id !== undefined) {
             ws.send(JSON.stringify({ envelope_id: data.envelope_id }))
+            if (data.type === "interactive") {
+              const envelopeId = `envelope:${String(data.envelope_id)}`
+              if (seen.has(envelopeId)) return
+              seen.add(envelopeId)
+              void handleShortcut(data.payload).catch((error) => console.warn("[slack] shortcut not handled:", error))
+              return
+            }
             if (data.type !== "events_api") return
             const eventId = String(data.payload?.event_id ?? "")
             if (eventId !== "") {
@@ -449,6 +520,8 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
     }
 
     restartListening()
+    // the saved token's scopes (the app may have been updated in Slack since)
+    if (saved !== undefined) void call("auth.test").catch(() => undefined)
     yield* Effect.addFinalizer(() => Effect.sync(() => listener?.stop()))
 
     // ---------------------------------------------------------------- the port
@@ -481,10 +554,11 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
           throw error
         }
         const scopes = auth[SCOPES] as ReadonlyArray<string> | undefined
-        const missing = scopes === undefined ? [] : SLACK_USER_SCOPES.filter((scope) => !scopes.includes(scope))
-        if (missing.length > 0) {
+        const missing = scopes === undefined ? [] : missingOf(scopes)
+        const required = missing.filter((scope) => !OPTIONAL_SCOPES.has(scope))
+        if (required.length > 0) {
           throw new InvalidInput({
-            message: `The Slack app is missing these permissions: ${missing.join(", ")}. Add them under OAuth & Permissions › User Token Scopes, reinstall the app, and paste the new token.`,
+            message: `The Slack app is missing these permissions: ${required.join(", ")}. Add them under OAuth & Permissions › User Token Scopes, reinstall the app, and paste the new token.`,
           })
         }
         if (appToken !== undefined) {
@@ -514,6 +588,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         writeSaved(options.file, next)
         saved = next
         resetCaches()
+        missingScopes = missing
         restartListening()
         return status
       })
@@ -522,12 +597,13 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       saved = undefined
       rmSync(options.file, { force: true })
       resetCaches()
+      missingScopes = []
       restartListening()
     })
 
     const search = (input: { readonly query: string; readonly limit: number }) =>
       run(async () => {
-        const found = await api.call(token(), "search.messages", { query: input.query, count: input.limit, sort: "timestamp", sort_dir: "desc" })
+        const found = await call("search.messages", { query: input.query, count: input.limit, sort: "timestamp", sort_dir: "desc" })
         const matches = (found.messages?.matches ?? []) as Array<Record<string, any>>
         await ensureUsers(matches.flatMap((m) => (m.channel?.is_im === true && typeof m.channel?.user === "string" ? [m.channel.user] : [])))
         const messages = await Promise.all(matches.map(async (m) => {
@@ -553,11 +629,11 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
           : (parseSlackLink(input.thread)?.threadTs ?? parseSlackLink(input.thread)?.ts ?? input.thread)
         if (thread !== undefined) {
           if (!isTs(thread)) throw new InvalidInput({ message: `"${thread}" is not a Slack message ts (like 1729340000.123456) or link.` })
-          const page = await api.call(token(), "conversations.replies", { channel: target.id, ts: thread, limit: input.limit })
+          const page = await call("conversations.replies", { channel: target.id, ts: thread, limit: input.limit })
           const raws = (page.messages ?? []) as Array<Record<string, any>>
           return { conversation: where, messages: await toMessages(raws, target.id), more: page.has_more === true }
         }
-        const page = await api.call(token(), "conversations.history", {
+        const page = await call("conversations.history", {
           channel: target.id,
           limit: input.limit,
           ...(input.before === undefined ? {} : { latest: input.before, inclusive: false }),
@@ -594,17 +670,54 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         return { conversation: where, thread: await firstMessage(target.id, threadSpec) }
       })
 
-    const send = (input: { readonly channelId: string; readonly text: string; readonly threadTs?: string | undefined }) =>
+    /** Uploads go to a one-time URL Slack hands out; the owner's token only goes to Slack itself. */
+    const apiOrigin = new URL(options.apiUrl ?? "https://slack.com/api").origin
+    const isSlackHost = (url: URL) => url.origin === apiOrigin || url.hostname === "slack.com" || url.hostname.endsWith(".slack.com")
+
+    /** One file's bytes to Slack (`files.getUploadURLExternal`, then a POST to its upload URL): its file id. */
+    const upload = async (file: SlackUpload): Promise<string> => {
+      const target = await call("files.getUploadURLExternal", { filename: file.name, length: file.byteSize })
+      const url = new URL(String(target.upload_url))
+      const fetchImpl = options.fetch ?? fetch
+      let response: Response
+      try {
+        response = await fetchImpl(url, {
+          method: "POST",
+          headers: isSlackHost(url) ? { authorization: `Bearer ${token()}` } : {},
+          body: Bun.file(file.path),
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+        })
+      } catch (cause) {
+        throw new SlackApiError(cause instanceof Error && cause.name === "TimeoutError" ? "timeout" : "unreachable")
+      }
+      if (!response.ok) throw new Unavailable({ message: `Slack didn't take ${file.name} (HTTP ${response.status}).` })
+      return String(target.file_id)
+    }
+
+    const send = (input: { readonly channelId: string; readonly text: string; readonly threadTs?: string | undefined; readonly files?: ReadonlyArray<SlackUpload> | undefined }) =>
       run(async () => {
         await loadUsers()
         const text = slackText(input.text, people().map((u) => ({ id: u.id, names: [u.name, u.realName, u.handle] })))
-        const posted = await api.call(token(), "chat.postMessage", {
-          channel: input.channelId,
-          text,
+        const files = input.files ?? []
+        if (files.length === 0) {
+          const posted = await call("chat.postMessage", {
+            channel: input.channelId,
+            text,
+            ...(input.threadTs === undefined ? {} : { thread_ts: input.threadTs }),
+          })
+          const ts = String(posted.ts)
+          return { ts, permalink: permalinkOf(String(posted.channel ?? input.channelId), ts, input.threadTs) }
+        }
+        // the files share one message, with the text as its comment; Slack posts it a moment later (no ts yet)
+        const ids: Array<string> = []
+        for (const file of files) ids.push(await upload(file))
+        await call("files.completeUploadExternal", {
+          files: JSON.stringify(ids.map((id, i) => ({ id, title: files[i]!.name }))),
+          channel_id: input.channelId,
+          ...(text.trim() === "" ? {} : { initial_comment: text }),
           ...(input.threadTs === undefined ? {} : { thread_ts: input.threadTs }),
         })
-        const ts = String(posted.ts)
-        return { ts, permalink: permalinkOf(String(posted.channel ?? input.channelId), ts, input.threadTs) }
+        return { permalink: input.threadTs === undefined ? placeLinkOf(input.channelId) : permalinkOf(input.channelId, input.threadTs) }
       })
 
     return SlackConnector.of({
@@ -618,6 +731,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       resolve,
       send,
       events: Stream.fromPubSub(events),
+      shortcuts: Stream.fromPubSub(shortcuts),
     })
   })
 

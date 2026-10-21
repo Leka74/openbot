@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import type { EntryId, RoutineSpec, TranscriptEntry } from "@openbot/contracts"
 import { Effect, Exit, Layer } from "effect"
-import { EntryRepo, RoutineScheduler, SlackService, userActor } from "../../src/ports/index.ts"
+import { AttachmentStore, EntryRepo, RoutineScheduler, SlackService, userActor } from "../../src/ports/index.ts"
 import { RoutineSchedulerLive, SlackServiceLive, slackEventsText, slackTriggerMatches } from "../../src/services/automation/index.ts"
 import { SLACK_BATCH_MS } from "../../src/services/automation/RoutineScheduler.ts"
+import { toAttachment } from "../../src/services/conversation/AttachmentService.ts"
 import { renderSlack } from "../../src/services/conversation/InstructionRenderer.ts"
 import {
   advance,
@@ -57,9 +58,9 @@ describe("Slack triggers", () => {
   })
 })
 
-const slackLayer = (connected = true) =>
+const slackLayer = (connected = true, missingScopes?: ReadonlyArray<string>) =>
   Layer.mergeAll(SlackServiceLive, RoutineSchedulerLive).pipe(
-    Layer.provideMerge(SlackConnectorFake.layer({ connected })),
+    Layer.provideMerge(SlackConnectorFake.layer({ connected, ...(missingScopes === undefined ? {} : { missingScopes }) })),
     Layer.provideMerge(baseLayer({ autoComplete: { status: "completed", lastBotMessage: "Drafted a reply." } })),
   )
 
@@ -105,6 +106,32 @@ describe("SlackService", () => {
     expect(Exit.isFailure(out.twice)).toBe(true)
     expect(out.discarded).toMatchObject({ card: { to: "Alice" }, state: { status: "dismissed", detail: "Discarded" } })
     expect(Exit.isFailure(out.unknown)).toBe(true)
+  })
+
+  test("a draft with files: the card keeps them, Send uploads them (text optional); an app without files:write refuses them", async () => {
+    const draftWith = Effect.gen(function*() {
+      yield* seed
+      const record = yield* (yield* AttachmentStore).put({ name: "launch.mp4", mime: "video/mp4", bytes: new Uint8Array(1_000) })
+      const slack = yield* SlackService
+      const drafted = yield* Effect.exit(slack.draft(toolCtx("call-1"), { to: "#general", text: "", files: [toAttachment(record)] }))
+      return { record, slack, drafted }
+    })
+    const out = await runTest(
+      Effect.gen(function*() {
+        const { record, slack, drafted } = yield* draftWith
+        if (Exit.isFailure(drafted)) throw new Error("not drafted")
+        const card = yield* entry(drafted.value.entryId)
+        yield* slack.send({ entryId: drafted.value.entryId, text: "" })
+        return { record, card, sent: yield* (yield* SlackConnectorFake).sent, after: yield* entry(drafted.value.entryId) }
+      }),
+      slackLayer(),
+    )
+    expect(out.card).toMatchObject({ card: { type: "slack-draft", text: "", files: [{ id: out.record.id, name: "launch.mp4", byteSize: 1_000 }] } })
+    expect(out.sent).toEqual([{ channelId: "C_GENERAL", text: "", threadTs: undefined, files: [{ name: "launch.mp4", path: out.record.path, byteSize: 1_000 }] }])
+    expect(out.after).toMatchObject({ state: { status: "resolved", link: "https://acme.slack.com/archives/C_GENERAL" } })
+
+    const older = await runTest(Effect.map(draftWith, (r) => r.drafted), slackLayer(true, ["files:write"]))
+    expect(Exit.isFailure(older) ? JSON.stringify(older.cause) : "").toContain("needs an update")
   })
 
   test("without Slack a draft is refused", async () => {

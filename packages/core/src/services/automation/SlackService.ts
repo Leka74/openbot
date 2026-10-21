@@ -7,10 +7,11 @@
  *   goes out as them) or Discard. Drafts never expire and survive restarts (the card is the state).
  * - The Bot is not told what the owner did with the draft: the card shows it.
  */
-import type { EntryId, KnownTranscriptEntry, RoutineTrigger, SlackDraftCard } from "@openbot/contracts"
+import type { Attachment, EntryId, KnownTranscriptEntry, RoutineTrigger, SlackDraftCard } from "@openbot/contracts"
 import { Conflict, InvalidInput, NotFound, Unavailable } from "@openbot/contracts"
 import { Effect, Layer, Option } from "effect"
 import { BotRepo, EntryRepo } from "../../ports/repos.ts"
+import { AttachmentStore } from "../../ports/stores.ts"
 import { Notifier } from "../../ports/Notifier.ts"
 import { ConversationService, type EntryDraft, type ToolContext } from "../../ports/services.ts"
 import { SlackConnector, type SlackConversation, type SlackEvent, SlackService } from "../../ports/Slack.ts"
@@ -92,6 +93,7 @@ export const makeSlackService = Effect.gen(function*() {
   const entries = yield* EntryRepo
   const bots = yield* BotRepo
   const notifier = yield* Notifier
+  const attachments = yield* AttachmentStore
   const connector = Option.getOrUndefined(yield* Effect.serviceOption(SlackConnector))
 
   /** Tool call id → its draft (D3.3 idempotency), bounded. */
@@ -99,19 +101,28 @@ export const makeSlackService = Effect.gen(function*() {
   /** Drafts being sent right now (a double click sends once). */
   const sending = new Set<EntryId>()
 
-  const draft = (ctx: ToolContext, input: { readonly to: string; readonly text: string; readonly thread?: string | undefined }) =>
+  const draft = (
+    ctx: ToolContext,
+    input: { readonly to: string; readonly text: string; readonly thread?: string | undefined; readonly files?: ReadonlyArray<Attachment> | undefined },
+  ) =>
     Effect.gen(function*() {
       const key = ctx.callId === undefined ? undefined : `${ctx.claims.botId}:${ctx.callId}`
       const known = key === undefined ? undefined : byCall.get(key)
       if (known !== undefined) return known
       if (connector === undefined) return yield* notConnected
       const text = input.text.trim()
-      if (text.length === 0) return yield* new InvalidInput({ message: "The message is empty." })
+      const files = input.files ?? []
+      if (text.length === 0 && files.length === 0) return yield* new InvalidInput({ message: "The message is empty." })
       if (text.length > SLACK_DRAFT_MAX_CHARS) {
         return yield* new InvalidInput({ message: `Keep the message under ${SLACK_DRAFT_MAX_CHARS} characters.` })
       }
       const status = yield* connector.status
       if (!status.connected) return yield* notConnected
+      if (files.length > 0 && (status.missingScopes ?? []).includes("files:write")) {
+        return yield* new InvalidInput({
+          message: "The owner's Slack app can't upload files yet: it needs an update (Connect apps › Slack shows how). Draft the text alone, or tell the owner.",
+        })
+      }
       const target = yield* connector.resolve({ to: input.to, thread: input.thread })
       const card: typeof SlackDraftCard.Type = {
         type: "slack-draft",
@@ -119,6 +130,7 @@ export const makeSlackService = Effect.gen(function*() {
         channelId: target.conversation.id,
         to: target.conversation.label,
         text,
+        ...(files.length === 0 ? {} : { files }),
         ...(target.thread === undefined ? {} : {
           threadTs: target.thread.threadTs ?? target.thread.ts,
           threadLabel: truncate(oneLine(`${target.thread.author}: ${target.thread.text}`), 120),
@@ -165,12 +177,20 @@ export const makeSlackService = Effect.gen(function*() {
     Effect.gen(function*() {
       if (connector === undefined) return yield* notConnected
       const text = input.text.trim()
-      if (text.length === 0) return yield* new InvalidInput({ message: "The message is empty." })
       if (sending.has(input.entryId)) return yield* new Conflict({ reason: "This message is being sent." })
       const entry = yield* pendingDraft(input.entryId)
+      const attached = entry.card.files ?? []
+      if (text.length === 0 && attached.length === 0) return yield* new InvalidInput({ message: "The message is empty." })
+      // the files on the brain's disk (kept in OpenBot since the Bot drafted them)
+      const files: Array<{ readonly name: string; readonly path: string; readonly byteSize: number }> = []
+      for (const file of attached) {
+        const record = yield* attachments.get(file.id).pipe(Effect.orDie)
+        if (Option.isNone(record)) return yield* new InvalidInput({ message: `${file.name} is no longer in OpenBot; ask the Bot to draft it again.` })
+        files.push({ name: record.value.name, path: record.value.path, byteSize: record.value.byteSize })
+      }
       sending.add(input.entryId)
       yield* Effect.gen(function*() {
-        const sent = yield* connector.send({ channelId: entry.card.channelId, text, threadTs: entry.card.threadTs })
+        const sent = yield* connector.send({ channelId: entry.card.channelId, text, threadTs: entry.card.threadTs, ...(files.length === 0 ? {} : { files }) })
         yield* conversations.updateEntry(input.entryId, (current) =>
           isDraft(current)
             ? { ...current, card: { ...current.card, text }, state: { status: "resolved", detail: "Sent", link: sent.permalink } }

@@ -23,6 +23,7 @@ import {
   cn,
 } from "@openbot/ui"
 import { useComputerView, useDetailsPane, useSelection, useSettingsDialog } from "../app/uiState.ts"
+import { Attachments } from "../chat/Attachments.tsx"
 import { renderInline } from "../chat/Markdown.tsx"
 import { ScreenPeek } from "../computer/ScreenThumbnail.tsx"
 import { useComputer } from "../computer/useComputer.ts"
@@ -700,8 +701,9 @@ type SlackDraftModel = Extract<CardModel, { type: "slack-draft" }>
 
 /**
  * "Slack message" (a Bot's `slack_draft`, D3.4; Grok's Slack draft card): Workspace, To, Thread,
- * then the message, editable while pending. **Send message** posts it as the owner; **Discard**
- * drops it. Sent: the message as sent and **Open in Slack**.
+ * then the message, editable while pending, and the files it carries (previewed like a chat's).
+ * **Send message** posts it as the owner (with files, the text may be empty); **Discard** drops it.
+ * Sent: the message as sent and **Open in Slack**.
  */
 function SlackDraftCard({ card, state, entryId, className }: CardViewProps & { readonly card: SlackDraftModel }): ReactNode {
   const status = state.status
@@ -710,6 +712,7 @@ function SlackDraftCard({ card, state, entryId, className }: CardViewProps & { r
   const send = useCommand("slack.sendDraft", entryId ?? "")
   const discard = useCommand("slack.discardDraft", entryId ?? "")
   const busy = send.pending || discard.pending
+  const files = card.files ?? []
   const pill = pending ? (
     <StatusPill tone="success" dot>
       Ready to send
@@ -751,15 +754,18 @@ function SlackDraftCard({ card, state, entryId, className }: CardViewProps & { r
           className="text-base"
         />
       ) : (
-        <p className={cn("text-base break-words whitespace-pre-wrap", status !== "resolved" && "text-fg-secondary line-through decoration-fg-tertiary")}>{card.text}</p>
+        card.text !== "" && (
+          <p className={cn("text-base break-words whitespace-pre-wrap", status !== "resolved" && "text-fg-secondary line-through decoration-fg-tertiary")}>{card.text}</p>
+        )
       )}
+      {files.length > 0 && <Attachments items={files} side="bot" />}
       {error && <p className="text-sm text-danger-fg">{error}</p>}
       {pending && entryId !== undefined && (
         <CardActions>
           <PillButton
             variant="primary"
             size="card"
-            disabled={text.trim() === "" || busy}
+            disabled={(text.trim() === "" && files.length === 0) || busy}
             loading={send.pending}
             onClick={() => void send.run({ entryId, text: text.trim() })}
           >

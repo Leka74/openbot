@@ -354,6 +354,24 @@ describe("ClaudeEventPipeline turn bookkeeping", () => {
     expect(ofTag(max.events, "TurnFailed")[0]!.error.code).toBe("max-turns")
   })
 
+  test("a signed-out CLI's error message is the turn's failure, not something the bot said", () => {
+    const pipeline = new ClaudeEventPipeline({ sessionId: "s" })
+    pipeline.send(turnId(1), "a")
+    const said = pipeline.message({
+      type: "assistant",
+      parent_tool_use_id: null,
+      error: "authentication_failed",
+      message: { id: "m", content: [{ type: "text", text: "Failed to authenticate: OAuth session expired and could not be refreshed" }] },
+    })
+    expect(said.events.filter((e) => e._tag === "ItemUpserted")).toEqual([])
+    const out = pipeline.message({ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed" })
+    expect(ofTag(out.events, "TurnFailed")[0]!.error).toEqual({
+      code: "auth",
+      message: "Failed to authenticate: OAuth session expired and could not be refreshed",
+      retryable: false,
+    })
+  })
+
   test("unexpected close fails accepted turns; deliberate close interrupts them", () => {
     const a = new ClaudeEventPipeline({ sessionId: "s" })
     a.send(turnId(1), "a")

@@ -82,6 +82,8 @@ export interface LayoutInput {
   /** Entries created after this (and not by the user) are "new". Undefined = no divider. */
   readonly unreadBoundaryAt?: number | undefined
   readonly showSteps: boolean
+  /** Show "Compacted context" lines (Settings `showCompactions`; default hidden). */
+  readonly showCompactions?: boolean
   /** Gap that inserts a timestamp row (default 15 minutes). */
   readonly timestampGapMs?: number
   /** A bot's direct conversation: label replies to other Bots ("to @Sender", `addressee`). */
@@ -251,6 +253,8 @@ export const layoutTranscript = (input: LayoutInput): ReadonlyArray<Row> => {
         markTurn(entry)
         break
       case "event":
+        // a Bot compacting its context is housekeeping: shown only when the owner asked for it
+        if (entry.event.type === "session-changed" && entry.event.action === "compacted" && input.showCompactions !== true) break
         beforeVisible(entry.id, entry.createdAt, false)
         rows.push({ type: "event", key: entry.id, entry })
         markTurn(entry)

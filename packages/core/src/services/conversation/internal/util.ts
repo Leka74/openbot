@@ -177,6 +177,12 @@ export const isStreamingEntry = (entry: TranscriptEntry): boolean =>
 export const asKnown = (entry: TranscriptEntry): KnownTranscriptEntry | undefined =>
   entry.kind === "unknown" ? undefined : entry
 
+/**
+ * Housekeeping lines (a Bot compacting its context, a new session): they neither move the
+ * conversation in the sidebar nor become its preview.
+ */
+export const isHousekeeping = (entry: KnownTranscriptEntry): boolean => entry.kind === "event" && entry.event.type === "session-changed"
+
 /** Short human text for an event line (previews, group catch-up lines). */
 export const describeEvent = (event: KnownConversationEvent): string => {
   switch (event.type) {

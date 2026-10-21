@@ -16,6 +16,7 @@
  * | `--desktop-idle <minutes>` | `OPENBOT_DESKTOP_IDLE_MINUTES` | `10` (an unused bot desktop goes to sleep; `0` = never) |
  * | (env only) | `OPENBOT_SKILLS_SH_URL` | `https://skills.sh` (the skills catalog; tests point it at a fake) |
  * | (env only) | `OPENBOT_SLACK_API_URL` | `https://slack.com/api` (Slack's Web API; tests point it at a fake) |
+ * | (env only) | `OPENBOT_HARK_URL` | `https://hark.ryan.ceo` (iPhone notifications; tests point it at a fake) |
  */
 import { KnownHarnessKinds } from "@openbot/contracts"
 import { Context, Layer } from "effect"
@@ -53,6 +54,8 @@ export interface ServerConfigShape {
   readonly skillsShUrl?: string | undefined
   /** Slack Web API base URL (D3.4); absent = https://slack.com/api. */
   readonly slackApiUrl?: string | undefined
+  /** Hark's address (D3.5); absent = https://hark.ryan.ceo. */
+  readonly harkUrl?: string | undefined
   /** An unused bot desktop sleeps after this long, ms (0 = never); absent = 10 min. */
   readonly desktopIdleMs?: number | undefined
 }
@@ -295,6 +298,13 @@ export const parseCommand = (
     slackApiUrl = slackInput.replace(/\/+$/, "")
   }
 
+  const harkInput = env["OPENBOT_HARK_URL"]?.trim()
+  let harkUrl: string | undefined
+  if (harkInput !== undefined && harkInput !== "") {
+    if (!/^https?:\/\/[^/\s]+/i.test(harkInput)) throw new ConfigError(`OPENBOT_HARK_URL: "${harkInput}" is not an http(s) URL`)
+    harkUrl = harkInput.replace(/\/+$/, "")
+  }
+
   return {
     _tag: "Run",
     config: {
@@ -310,6 +320,7 @@ export const parseCommand = (
       ...(desktopIdleMs === undefined ? {} : { desktopIdleMs }),
       ...(skillsShUrl === undefined ? {} : { skillsShUrl }),
       ...(slackApiUrl === undefined ? {} : { slackApiUrl }),
+      ...(harkUrl === undefined ? {} : { harkUrl }),
     },
   }
 }

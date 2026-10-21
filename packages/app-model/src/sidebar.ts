@@ -79,6 +79,19 @@ export const botItem = (
   return { kind: "bot", key: bot.id, bot, summary, activity, status, preview, unread, handling }
 }
 
+/**
+ * Chats the owner placed (dragged) keep their `sidebarOrder`; the rest come first, most recent first
+ * (a new chat shows on top).
+ */
+const arranged = <T>(order: (t: T) => number | undefined, recency: (t: T) => number) => (a: T, b: T): number => {
+  const oa = order(a)
+  const ob = order(b)
+  if (oa === undefined && ob === undefined) return recency(b) - recency(a)
+  if (oa === undefined) return -1
+  if (ob === undefined) return 1
+  return oa - ob
+}
+
 export const buildSidebar = (
   state: Pick<RosterState, "bots" | "conversations" | "activities" | "sections"> & { readonly tasks?: RosterState["tasks"] | undefined },
   open?: string | null,
@@ -87,20 +100,14 @@ export const buildSidebar = (
   const visible = bots.filter((b) => !b.hidden)
   const pinned = visible
     .filter((b) => b.pinned)
-    .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name))
+    .sort(arranged((b: Bot) => b.sidebarOrder, (b) => -b.createdAt))
     .map((b) => botItem(b, state, open))
   const sectionList = [...state.sections.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
   const known = new Set<string>(sectionList.map((s) => s.id))
   const recency = (b: Bot) => state.conversations.get(b.directConversationId)?.lastActivityAt ?? b.updatedAt
-  const rest = visible.filter((b) => !b.pinned).sort((a, b) => recency(b) - recency(a))
-  const sections: SidebarSection[] = sectionList.map((s) => ({
-    id: s.id,
-    name: s.name,
-    items: rest.filter((b) => b.sectionId === s.id).map((b) => botItem(b, state, open)),
-  }))
-  const groupItems: SidebarItem[] = [...state.conversations.values()]
+  const rest = visible.filter((b) => !b.pinned)
+  const groupItems: Array<SidebarItem & { kind: "group" }> = [...state.conversations.values()]
     .filter((c) => c.kind === "group" && !c.hiddenFromSidebar)
-    .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
     .map((c) => {
       const members = c.botIds.map((id) => state.bots.get(id as BotId)).filter((b): b is Bot => b !== undefined)
       const busy = members.some((m) => {
@@ -118,8 +125,26 @@ export const buildSidebar = (
         unread,
       }
     })
-  if (groupItems.length > 0) sections.push({ id: "groups", name: "Group chats", items: groupItems })
-  sections.push({ id: "unassigned", name: "Unassigned", items: rest.filter((b) => b.sectionId === undefined || !known.has(b.sectionId)).map((b) => botItem(b, state, open)) })
+  // a section holds Bots and group chats, in the owner's order
+  const order = (item: SidebarItem) => (item.kind === "bot" ? item.bot.sidebarOrder : item.summary.sidebarOrder)
+  const recent = (item: SidebarItem) => (item.kind === "bot" ? recency(item.bot) : item.summary.lastActivityAt)
+  const place = (items: ReadonlyArray<SidebarItem>) => [...items].sort(arranged(order, recent))
+  const sections: SidebarSection[] = sectionList.map((s) => ({
+    id: s.id,
+    name: s.name,
+    items: place([
+      ...rest.filter((b) => b.sectionId === s.id).map((b) => botItem(b, state, open)),
+      ...groupItems.filter((g) => g.summary.sectionId === s.id),
+    ]),
+  }))
+  const looseGroups = groupItems.filter((g) => g.summary.sectionId === undefined || !known.has(g.summary.sectionId))
+  // kept (maybe empty) while any group chat exists: the place to drag one back out of a section
+  if (groupItems.length > 0) sections.push({ id: "groups", name: "Group chats", items: place(looseGroups) })
+  sections.push({
+    id: "unassigned",
+    name: "Unassigned",
+    items: place(rest.filter((b) => b.sectionId === undefined || !known.has(b.sectionId)).map((b) => botItem(b, state, open))),
+  })
   const hidden: SidebarSection = { id: "hidden", name: "Hidden Bots", items: bots.filter((b) => b.hidden).map((b) => botItem(b, state, open)) }
   return { pinned, sections, hidden }
 }

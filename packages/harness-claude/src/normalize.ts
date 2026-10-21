@@ -176,6 +176,17 @@ const foreignOrigin = (frame: Json): boolean => {
   return kind !== undefined && kind !== "human"
 }
 
+/** `error` of an assistant message the CLI made up to report a failed API call (not model output). */
+const CLI_ERROR_MESSAGES: ReadonlySet<string> = new Set([
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "cloud_credential_error",
+  "billing_error",
+  "rate_limit",
+  "server_error",
+  "overloaded",
+])
+
 export class ClaudeEventPipeline {
   private readonly previewChars: number
   private readonly outputChars: number
@@ -825,6 +836,9 @@ export class ClaudeEventPipeline {
     const parent = str(frame.parent_tool_use_id) ?? null
     const error = str(frame.error)
     if (error && parent === null) this.assistantError = error
+    // The CLI's own error text ("Failed to authenticate…", "You've hit your limit…") is not the bot
+    // speaking: the turn's failure reports it.
+    const cliError = error !== undefined && parent === null && CLI_ERROR_MESSAGES.has(error)
     const msgId = str(message.id) ?? str(frame.uuid) ?? "msg"
     const content = Array.isArray(message.content) ? message.content : []
     const base = this.frameCounts.get(msgId) ?? 0
@@ -849,6 +863,7 @@ export class ClaudeEventPipeline {
       if (blockType === "text") {
         const text = str(rawBlock.text) ?? stream?.text ?? ""
         this.openTexts.delete(key)
+        if (cliError) return
         if (text.length === 0 && !aborted) return
         events.push(...this.item(key, { _tag: "Message", role: "bot", text, streaming: false, ...(aborted ? { aborted: true } : {}) }))
       } else if (blockType === "thinking") {

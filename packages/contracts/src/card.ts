@@ -6,6 +6,7 @@ import { Schema } from "effect"
 import { NodeId, RequestId, RoutineId, withUnknownFallback } from "./base.ts"
 import { SuggestedRule } from "./policy.ts"
 import { FormField, Question, RuntimeRequestKind, RuntimeResponse } from "./runtime-request.ts"
+import { Attachment } from "./attachment.ts"
 
 export const ApprovalCard = Schema.Struct({
   type: Schema.Literal("approval"),
@@ -93,6 +94,8 @@ export const SlackDraftCard = Schema.Struct({
   /** The start of the thread's first message. */
   threadLabel: Schema.optionalKey(Schema.String),
   text: Schema.String,
+  /** Files the Bot attached (kept in OpenBot until sent; uploaded to Slack with the message). */
+  files: Schema.optionalKey(Schema.Array(Attachment)),
 })
 
 export const CardMembers = [ApprovalCard, QuestionCard, FormCard, SecretRequestCard, HandoffCard, RoutineCard, SlackDraftCard] as const

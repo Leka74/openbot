@@ -93,6 +93,8 @@ export const Bot = Schema.Struct({
   /** Sidebar section; absent = "Unassigned". */
   sectionId: Schema.optionalKey(SectionId),
   pinned: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  /** Where the owner dragged it among its section's (or the pins') chats; absent = by recent activity. */
+  sidebarOrder: Schema.optionalKey(Schema.Number),
   /** "Hide from sidebar" (Hidden Bots section). */
   hidden: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   notify: BotNotify.pipe(Schema.withDecodingDefaultKey(Effect.succeed("all" as const))),
@@ -182,6 +184,10 @@ export const GroupConversation = Schema.Struct({
   /** The router's default responder; absent = the first member. */
   leadBotId: Schema.optionalKey(BotId),
   namedBy: Schema.Literals(["user", "app"]),
+  /** The owner's sidebar section for it; absent = "Group chats". */
+  sectionId: Schema.optionalKey(SectionId),
+  /** See `Bot.sidebarOrder`. */
+  sidebarOrder: Schema.optionalKey(Schema.Number),
 })
 export const RoutineRunConversation = Schema.Struct({
   ...ConversationBase,
@@ -209,6 +215,9 @@ export const ConversationSummary = Schema.Struct({
   unreadCount: NonNegativeInt,
   pendingRequestCount: NonNegativeInt,
   hiddenFromSidebar: Schema.Boolean,
+  /** A group chat's sidebar section and place (see `GroupConversation`). */
+  sectionId: Schema.optionalKey(SectionId),
+  sidebarOrder: Schema.optionalKey(Schema.Number),
 })
 export type ConversationSummary = typeof ConversationSummary.Type
 

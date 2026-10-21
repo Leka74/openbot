@@ -262,6 +262,43 @@ describe("BotService", () => {
   })
 })
 
+describe("dragging chats in the sidebar", () => {
+  test("Bots and group chats move between places and keep the order they were dropped in", async () => {
+    const out = await runTest(
+      Effect.gen(function*() {
+        const bots = yield* BotService
+        const conversations = yield* ConversationService
+        const ada = yield* createBot("Ada")
+        const bob = yield* createBot("Bob")
+        const work = yield* bots.createSection("Work")
+        const group = yield* conversations.createGroup({ title: "Crew", memberBotIds: [ada.id, bob.id] })
+        const groupRef = { kind: "group" as const, conversationId: group.id }
+        yield* bots.arrangeSidebar({ place: work.id, items: [{ kind: "bot", botId: bob.id }, groupRef, { kind: "bot", botId: ada.id }] })
+        const placed = { ada: yield* bots.get(ada.id), bob: yield* bots.get(bob.id), group: yield* conversations.summary(group.id) }
+        yield* bots.arrangeSidebar({ place: "pinned", items: [{ kind: "bot", botId: ada.id }] })
+        const pinned = yield* bots.get(ada.id)
+        const groupPinned = yield* Effect.flip(bots.arrangeSidebar({ place: "pinned", items: [groupRef] }))
+        const botInGroups = yield* Effect.flip(bots.arrangeSidebar({ place: "groups", items: [{ kind: "bot", botId: bob.id }] }))
+        yield* bots.arrangeSidebar({ place: "unassigned", items: [{ kind: "bot", botId: bob.id }] })
+        const unassigned = yield* bots.get(bob.id)
+        yield* bots.deleteSection(work.id)
+        return { placed, pinned, groupPinned, botInGroups, unassigned, groupAfter: yield* conversations.summary(group.id) }
+      }),
+      appLayer(),
+    )
+    expect(out.placed.bob).toMatchObject({ sectionId: expect.any(String), sidebarOrder: 0 })
+    expect(out.placed.group).toMatchObject({ sectionId: out.placed.bob.sectionId, sidebarOrder: 1 })
+    expect(out.placed.ada).toMatchObject({ sectionId: out.placed.bob.sectionId, sidebarOrder: 2, pinned: false })
+    // pinned keeps its section: unpinned it goes back there
+    expect(out.pinned).toMatchObject({ pinned: true, sidebarOrder: 0, sectionId: out.placed.bob.sectionId })
+    expect(out.groupPinned._tag).toBe("InvalidInput")
+    expect(out.botInGroups._tag).toBe("InvalidInput")
+    expect(out.unassigned.sectionId).toBeUndefined()
+    // a deleted section's group chats go back to Group chats
+    expect(out.groupAfter.sectionId).toBeUndefined()
+  })
+})
+
 describe("ConversationService bookkeeping", () => {
   test("unread counts, markRead, history paging, rename and hide", async () => {
     const out = await runTest(

@@ -60,6 +60,7 @@ import {
   type SkillPreview,
   type SlackStatus,
   type SttStatus,
+  type HarkStatus,
   type ToolKind,
   type Turn,
   type TurnFailure,
@@ -141,6 +142,8 @@ export class MockBrain {
   stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
   sttFailsAppend = false
   sttDiscards = 0
+  /** Hark (D3.5): any `whk_` webhook connects the mock. */
+  hark: HarkStatus = { connected: false, sends: "all" }
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>()
   readonly sends = new Map<string, SendResult>()
   readonly usage = new Map<string, BotUsage>()
@@ -235,6 +238,8 @@ export class MockBrain {
       pendingRequestCount: r.requests.filter((q) => q.status === "pending" && q.blocking).length,
       hiddenFromSidebar: c.hiddenFromSidebar,
       ...((previewText ?? prev?.preview) !== undefined ? { preview: previewText ?? prev?.preview } : {}),
+      ...(c.kind === "group" && c.sectionId !== undefined ? { sectionId: c.sectionId } : {}),
+      ...(c.kind === "group" && c.sidebarOrder !== undefined ? { sidebarOrder: c.sidebarOrder } : {}),
     }
     this.roster.apply({ type: "conversation.upserted", conversation: summary })
   }
@@ -1137,6 +1142,27 @@ export class MockBrain {
         })(),
       "conversations.markRead": ({ conversationId, unread, at }) => sync(() => this.markRead(conversationId, unread, at))(),
       "conversations.setHidden": ({ conversationId, hidden }) => sync(() => this.updateConversation(conversationId, { hiddenFromSidebar: hidden }))(),
+      "sidebar.arrange": ({ place, items }: { place: string; items: ReadonlyArray<{ kind: "bot"; botId: string } | { kind: "group"; conversationId: string }> }) =>
+        sync(() => {
+          const section = place === "pinned" || place === "unassigned" || place === "groups" ? undefined : place
+          items.forEach((item, index) => {
+            if (item.kind === "bot") {
+              const bot = this.bot(item.botId)
+              if (!bot) throw new NotFound({ entity: "bot", id: item.botId })
+              const next: Record<string, unknown> = { ...bot, pinned: place === "pinned", sidebarOrder: index, updatedAt: this.now() }
+              if (place !== "pinned") {
+                if (section === undefined) delete next.sectionId
+                else next.sectionId = section
+              }
+              this.putBot(next as unknown as Bot)
+            } else {
+              const r = this.conv(item.conversationId)
+              const { sectionId: _drop, ...rest } = r.conversation as Conversation & { sectionId?: string }
+              r.apply({ type: "conversation.updated", conversation: { ...rest, ...(section === undefined ? {} : { sectionId: section }), sidebarOrder: index } as Conversation })
+              this.publishSummary(item.conversationId)
+            }
+          })
+        })(),
       "conversations.delete": ({ conversationId }) =>
         sync(() => {
           const c = this.conv(conversationId).conversation
@@ -1365,6 +1391,28 @@ export class MockBrain {
       "computer.ensure": ({ botId }) => sync(() => this.computerEnsure(botId))(),
       "computer.lease": ({ botId, take }) => sync(() => this.computerLease(botId, take))(),
       "computer.reset": ({ botId }) => sync(() => this.computerReset(botId))(),
+      "hark.status": () => Effect.succeed(this.hark),
+      "hark.connect": ({ webhook }) =>
+        sync(() => {
+          if (!/whk_/.test(webhook)) throw new InvalidInput({ message: "Paste the service's webhook URL from Hark (…/hooks/whk_…)." })
+          this.hark = { connected: true, sends: this.hark.sends, lastSentAt: this.now() }
+          return this.hark
+        })(),
+      "hark.disconnect": () =>
+        sync(() => {
+          this.hark = { connected: false, sends: "all" }
+          return this.hark
+        })(),
+      "hark.test": () =>
+        sync(() => {
+          this.hark = { ...this.hark, lastSentAt: this.now() }
+          return this.hark
+        })(),
+      "hark.setSends": ({ sends }) =>
+        sync(() => {
+          this.hark = { ...this.hark, sends }
+          return this.hark
+        })(),
       "slack.status": () => Effect.succeed(this.slack),
       "slack.connect": ({ userToken, appToken }) =>
         sync(() => {

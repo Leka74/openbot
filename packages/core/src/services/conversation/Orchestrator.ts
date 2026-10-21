@@ -178,6 +178,7 @@ const makeOrchestrator = (options: RunnerOptions) =>
       held: () => holding,
       scope,
       options,
+      signedOut: new Map<string, number>(),
     }
 
     /** The bot's one runner (created on demand). */

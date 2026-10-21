@@ -96,6 +96,8 @@ import type {
   RuntimeResponseInput,
   Section,
   SectionId,
+  SidebarItemRef,
+  SidebarPlace,
   SendInput,
   SendLookup,
   SendMode,
@@ -343,6 +345,14 @@ export class BotService extends Context.Service<BotService, {
   readonly renameSection: (sectionId: SectionId, name: string) => Effect.Effect<Section, NotFound | InvalidInput>
   /** `sections.delete`: bots in it become Unassigned. */
   readonly deleteSection: (sectionId: SectionId) => Effect.Effect<void, NotFound>
+  /**
+   * `sidebar.arrange`: `items` (Bots and group chats) is the new order at `place`; each moves there
+   * (pinned, a section, Unassigned or Group chats) and keeps its position.
+   */
+  readonly arrangeSidebar: (input: { readonly place: SidebarPlace; readonly items: ReadonlyArray<SidebarItemRef> }) => Effect.Effect<
+    void,
+    NotFound | InvalidInput
+  >
   /** `sections.reorder`: full ordered list of section ids. */
   readonly reorderSections: (
     sectionIds: ReadonlyArray<SectionId>,
@@ -397,6 +407,11 @@ export class ConversationService extends Context.Service<ConversationService, {
   }) => Effect.Effect<void, NotFound>
   /** `conversations.setHidden`. */
   readonly setHidden: (conversationId: ConversationId, hidden: boolean) => Effect.Effect<void, NotFound>
+  /** A group chat's sidebar section (`null`: Group chats) and place (`null`: by recent activity). */
+  readonly place: (conversationId: ConversationId, input: {
+    readonly sectionId?: SectionId | null | undefined
+    readonly sidebarOrder?: number | null | undefined
+  }) => Effect.Effect<void, NotFound | InvalidInput>
 
   // ---- transcript writes shared by every service (persist, then publish `entry.upserted`)
   // Conversation.sessions (context ring) is maintained by W1.2 internals (TurnIngest on
@@ -666,6 +681,17 @@ export class Messaging extends Context.Service<Messaging, {
       readonly progress?: ((message: string) => Effect.Effect<void>) | undefined
     },
   ) => Effect.Effect<SendFilesResult, NotFound | InvalidInput>
+  /**
+   * The files at `paths` on a node, brought into OpenBot (attachments) without posting them: for a
+   * Slack draft's files. Same limits and path policy as `sendFiles`.
+   */
+  readonly importFiles: (input: {
+    readonly nodeId: NodeId
+    readonly inv: Invocation
+    readonly cwd?: string | undefined
+    readonly paths: ReadonlyArray<string>
+    readonly progress?: ((message: string) => Effect.Effect<void>) | undefined
+  }) => Effect.Effect<ReadonlyArray<Attachment>, InvalidInput>
 }>()("openbot/core/Messaging") {}
 
 // ============================================================================ InstructionRenderer (§4.3.7)

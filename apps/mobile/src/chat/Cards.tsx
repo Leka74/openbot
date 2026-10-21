@@ -307,7 +307,7 @@ function SecretCard({ card, state, request, theme }: CardProps & { readonly card
 
 // ------------------------------------------------------------------------------------ Slack draft
 
-/** A Slack message a Bot drafted (D3.4): edit it, then Send (it goes out as you) or Discard. */
+/** A Slack message a Bot drafted (D3.4): edit it, then Send (it goes out as you, with its files) or Discard. */
 function SlackDraftCard({ card, state, entryId, theme }: CardProps & { readonly card: Extract<Card, { type: "slack-draft" }> }): ReactNode {
   const [text, setText] = useState(card.text)
   const send = useAtomSet(commandAtom("slack.sendDraft", entryId ?? "none"), { mode: "promiseExit" })
@@ -325,7 +325,13 @@ function SlackDraftCard({ card, state, entryId, theme }: CardProps & { readonly 
     }
   }
   const pending = state.status === "pending"
-  const facts: ReadonlyArray<[string, string]> = [["Workspace", card.team], ["To", card.to], ["Thread", card.threadLabel ?? "New message"]]
+  const files = card.files ?? []
+  const facts: ReadonlyArray<[string, string]> = [
+    ["Workspace", card.team],
+    ["To", card.to],
+    ["Thread", card.threadLabel ?? "New message"],
+    ...(files.length === 0 ? [] : [[files.length === 1 ? "File" : "Files", files.map((f) => f.name).join(", ")] as [string, string]]),
+  ]
   return (
     <Shell theme={theme}>
       <Text style={[styles.kicker, { color: theme.fgSecondary }]}>Slack message</Text>
@@ -347,14 +353,14 @@ function SlackDraftCard({ card, state, entryId, theme }: CardProps & { readonly 
             style={[styles.draft, { color: theme.fg, backgroundColor: theme.bg, borderColor: theme.lineSecondary }]}
           />
           <View style={styles.row}>
-            <Button theme={theme} primary label="Send" busy={busy === "send"} disabled={text.trim() === "" || entryId === undefined} onPress={() => void act("send")} />
+            <Button theme={theme} primary label="Send" busy={busy === "send"} disabled={(text.trim() === "" && files.length === 0) || entryId === undefined} onPress={() => void act("send")} />
             <View style={{ flex: 1 }} />
             <Button theme={theme} label="Discard" busy={busy === "discard"} disabled={entryId === undefined} onPress={() => void act("discard")} />
           </View>
         </>
       ) : (
         <>
-          <Text style={[styles.body, { color: state.status === "resolved" ? theme.fg : theme.fgTertiary }]}>{card.text}</Text>
+          {card.text !== "" && <Text style={[styles.body, { color: state.status === "resolved" ? theme.fg : theme.fgTertiary }]}>{card.text}</Text>}
           {state.status === "resolved" && state.link !== undefined ? (
             <Pressable onPress={() => void Linking.openURL(state.link!)} accessibilityRole="link">
               <Done theme={theme} text="Sent · Open in Slack" />

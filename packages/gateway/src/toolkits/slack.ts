@@ -6,11 +6,12 @@
  * slack_search / slack_read / slack_find → SlackConnector · slack_draft → SlackService.draft (an
  * editable draft the owner sends themselves; nothing reaches Slack from a Bot directly).
  */
-import { type SlackConversation, SlackConnector, type SlackMessage, SlackService } from "@openbot/core"
+import { type DataDir, type IdGen, Messaging, type NodeDirectory, type SlackConversation, SlackConnector, type SlackMessage, SlackService } from "@openbot/core"
 import { Effect, Option } from "effect"
 import * as p from "../params.ts"
 import { capText, textResult, ToolRefusal } from "../results.ts"
 import { type AnyTool, defineTool, type ToolAvailability } from "../tool.ts"
+import { chooseNode } from "./node.ts"
 
 const slackConnected = ({ slack }: ToolAvailability): boolean => slack === true
 
@@ -145,11 +146,13 @@ const slackDraft = defineTool({
   name: "slack_draft",
   toolset: "bot",
   description:
-    "Write a Slack message for the owner to send: it appears in this chat as a draft they can edit, then send (it goes out as them) or discard. This is the only way to write in Slack; you are not told when they send it. `to` is a channel (#name or id), a person (@handle or name: a DM), several people separated by commas (a group DM), or a Slack message link (a reply in its thread). Mention people as @Name. Keep Slack's tone: short and plain, no headings.",
+    "Write a Slack message for the owner to send: it appears in this chat as a draft they can edit, then send (it goes out as them) or discard. This is the only way to write in Slack; you are not told when they send it. `to` is a channel (#name or id), a person (@handle or name: a DM), several people separated by commas (a group DM), or a Slack message link (a reply in its thread). Mention people as @Name. Keep Slack's tone: short and plain, no headings. `files` attaches files you made (a video, an image, a PDF…; paths like send_file's, up to 10): they are uploaded with the message, which becomes their comment.",
   params: p.params({
     to: p.text("#channel, a channel id, @person or their name, \"Alice, Bob\", or a Slack message link."),
-    text: p.text("The message, as the owner would write it."),
+    text: p.string("The message, as the owner would write it (may be empty when files are attached)."),
     thread: p.optional(p.string("Reply in this thread: the ts of its first message, or a message link.")),
+    files: p.optional(p.array(p.text(), "Files to attach: relative to your workspace, absolute, or ~/… on the node (at most 10).", { minItems: 1, maxItems: 10 })),
+    node: p.optional(p.text("Node id or name the files are on (see list_nodes). Default: your host node.")),
   }),
   annotations: { title: "Draft a Slack message", destructiveHint: false, openWorldHint: false },
   available: slackConnected,
@@ -157,15 +160,30 @@ const slackDraft = defineTool({
     Effect.gen(function*() {
       const service = yield* Effect.serviceOption(SlackService)
       if (Option.isNone(service)) return yield* new ToolRefusal({ message: NOT_CONNECTED })
+      const paths = args.files ?? []
+      if (paths.length > 0) {
+        const status = yield* (yield* connector).status
+        if ((status.missingScopes ?? []).includes("files:write")) {
+          return yield* new ToolRefusal({
+            message: "The owner's Slack app can't upload files yet: it needs an update (Connect apps › Slack shows how). Draft the text alone, or tell the owner.",
+          })
+        }
+      }
+      // the files come into OpenBot now (the draft shows them); Slack gets them when the owner sends it
+      const files = paths.length === 0 ? [] : yield* Effect.gen(function*() {
+        const target = yield* chooseNode(ctx, args.node, "fs")
+        return yield* (yield* Messaging).importFiles({ nodeId: target.nodeId, inv: target.inv, cwd: target.workspace, paths, progress: ctx.progress })
+      })
       const drafted = yield* service.value.draft(ctx.tool, {
         to: args.to,
         text: args.text,
         thread: args.thread === undefined || args.thread.trim() === "" ? undefined : args.thread.trim(),
+        ...(files.length === 0 ? {} : { files }),
       })
       return textResult(
-        `Drafted for ${drafted.to}${drafted.inThread ? " (in the thread)" : ""}. The owner sees it in this chat and sends or discards it themselves. Don't repeat the message in your reply; with nothing else to add, reply exactly NO_REPLY.`,
+        `Drafted for ${drafted.to}${drafted.inThread ? " (in the thread)" : ""}${files.length === 0 ? "" : ` with ${files.map((f) => f.name).join(", ")}`}. The owner sees it in this chat and sends or discards it themselves. Don't repeat the message in your reply; with nothing else to add, reply exactly NO_REPLY.`,
       )
     }),
 })
 
-export const SlackToolkit: ReadonlyArray<AnyTool<never>> = [slackSearch, slackRead, slackFind, slackDraft]
+export const SlackToolkit: ReadonlyArray<AnyTool<Messaging | NodeDirectory | IdGen | DataDir>> = [slackSearch, slackRead, slackFind, slackDraft]

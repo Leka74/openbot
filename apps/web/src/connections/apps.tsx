@@ -1,15 +1,16 @@
 // The apps a Bot can be connected to (Connect apps, D3.4). Only apps that work are listed; each one
 // has a logo, a category, a one-line description and a status read from the brain. Adding an app:
 // its connector on the brain, an entry here, and its page in ConnectAppsDialog's `AppPage`.
-import { slackStatusAtom } from "@openbot/client"
-import type { SlackStatus } from "@openbot/contracts"
+import { harkStatusAtom, slackStatusAtom } from "@openbot/client"
+import type { HarkStatus, SlackStatus } from "@openbot/contracts"
 import { cn } from "@openbot/ui"
+import { BellRing } from "lucide-react"
 import { type ComponentType, type ReactNode, useEffect } from "react"
 import { useQuery } from "../details/kit.tsx"
 
-export type AppId = "slack"
+export type AppId = "slack" | "hark"
 
-export const CATEGORIES = ["Communication"] as const
+export const CATEGORIES = ["Communication", "Notifications"] as const
 export type AppCategory = (typeof CATEGORIES)[number]
 
 export interface ConnectApp {
@@ -34,6 +35,11 @@ export function SlackLogo({ className }: { readonly className?: string }): React
   )
 }
 
+/** Hark has no published mark here: a bell. */
+export function HarkLogo({ className }: { readonly className?: string }): ReactNode {
+  return <BellRing className={className} color="#1d1d1f" strokeWidth={2.2} aria-hidden="true" />
+}
+
 export const APPS: ReadonlyArray<ConnectApp> = [
   {
     id: "slack",
@@ -42,6 +48,14 @@ export const APPS: ReadonlyArray<ConnectApp> = [
     description: "Read and search your Slack, draft messages you send, start routines on new messages.",
     keywords: ["chat", "messages", "dm", "channels", "workspace"],
     Logo: SlackLogo,
+  },
+  {
+    id: "hark",
+    name: "Hark",
+    category: "Notifications",
+    description: "Your Bots' notifications on your iPhone, through the Hark app.",
+    keywords: ["iphone", "push", "notifications", "phone", "alerts"],
+    Logo: HarkLogo,
   },
 ]
 
@@ -82,9 +96,19 @@ export interface AppStatus {
 const slackStatusOf = (status: SlackStatus | undefined, loading: boolean): AppStatus => {
   if (status === undefined || !status.connected) return { state: "off", loading }
   const live = status.events === "live" ? "live messages on" : status.events === "connecting" ? "connecting live messages" : status.events === "off" ? "live messages off" : "live messages not working"
+  const outdated = status.missingScopes !== undefined && status.missingScopes.length > 0
   return {
-    state: status.events === "failed" ? "attention" : "connected",
-    summary: [status.team, live].filter((part) => part !== undefined).join(" · "),
+    state: status.events === "failed" || outdated ? "attention" : "connected",
+    summary: [status.team, outdated ? "the app needs an update" : live].filter((part) => part !== undefined).join(" · "),
+    loading,
+  }
+}
+
+const harkStatusOf = (status: HarkStatus | undefined, loading: boolean): AppStatus => {
+  if (status === undefined || !status.connected) return { state: "off", loading }
+  return {
+    state: status.problem === undefined ? "connected" : "attention",
+    summary: status.problem ?? (status.sends === "all" ? "Every notification" : "When a Bot needs you"),
     loading,
   }
 }
@@ -92,13 +116,26 @@ const slackStatusOf = (status: SlackStatus | undefined, loading: boolean): AppSt
 /** Every app's status; `poll` refreshes them every few seconds (while the Connect apps window is open). */
 export const useAppStatuses = (options?: { readonly poll?: boolean }): ReadonlyMap<AppId, AppStatus> & { readonly refresh: () => void } => {
   const slack = useQuery(slackStatusAtom)
-  const { refresh } = slack
+  const hark = useQuery(harkStatusAtom)
+  const refreshSlack = slack.refresh
+  const refreshHark = hark.refresh
   const poll = options?.poll === true
   useEffect(() => {
     if (!poll) return
-    const t = setInterval(refresh, 5_000)
+    const t = setInterval(() => {
+      refreshSlack()
+      refreshHark()
+    }, 5_000)
     return () => clearInterval(t)
-  }, [poll, refresh])
-  const map = new Map<AppId, AppStatus>([["slack", slackStatusOf(slack.value, slack.loading)]])
-  return Object.assign(map, { refresh })
+  }, [poll, refreshSlack, refreshHark])
+  const map = new Map<AppId, AppStatus>([
+    ["slack", slackStatusOf(slack.value, slack.loading)],
+    ["hark", harkStatusOf(hark.value, hark.loading)],
+  ])
+  return Object.assign(map, {
+    refresh: () => {
+      refreshSlack()
+      refreshHark()
+    },
+  })
 }

@@ -38,6 +38,7 @@ import {
 import { Cause, Clock, Effect, Option, Stream } from "effect"
 import { userInfo } from "node:os"
 import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
+import { Hark } from "./hark.ts"
 import { HarnessProfiles } from "./profiles.ts"
 import { SpeechToText } from "./stt/service.ts"
 
@@ -147,6 +148,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
   const slack = yield* SlackConnector
   const slackDrafts = yield* SlackService
   const speech = yield* SpeechToText
+  const hark = yield* Hark
   const ownerFallback = defaultOwnerName()
 
   return OpenBotRpcs.of({
@@ -307,6 +309,16 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
     "stt.append": ({ sessionId, pcmBase64 }) => edge("stt.append", withPcm(pcmBase64, (pcm) => speech.append(sessionId, pcm))),
     "stt.finish": ({ sessionId, pcmBase64 }) => edge("stt.finish", withPcm(pcmBase64, (pcm) => speech.finish(sessionId, pcm))),
     "stt.discard": ({ sessionId }) => edge("stt.discard", speech.discard(sessionId)),
+
+    // ---------------------------------------------------------------- sidebar (drag and drop)
+    "sidebar.arrange": (input) => edge("sidebar.arrange", bots.arrangeSidebar(input)),
+
+    // ---------------------------------------------------------------- Hark (D3.5)
+    "hark.status": () => edge("hark.status", hark.status),
+    "hark.connect": ({ webhook }) => edge("hark.connect", hark.connect(webhook)),
+    "hark.disconnect": () => edge("hark.disconnect", hark.disconnect),
+    "hark.test": () => edge("hark.test", hark.test),
+    "hark.setSends": ({ sends }) => edge("hark.setSends", hark.setSends(sends)),
 
     // ---------------------------------------------------------------- usage
     "usage.byBot": ({ sinceMs }) => edge("usage.byBot", usage.byBot({ sinceMs })),

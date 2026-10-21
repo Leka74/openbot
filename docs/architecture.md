@@ -343,7 +343,7 @@ core/src/
   services/automation/     — WP-core-b
     ApprovalService.ts    policy eval (rules), RuntimeRequest lifecycle (create → card entry → Deferred → resolve/expire), allow-always rule creation, boot-time expiry, onRequest implementation for runners, ask_user/request_approval tools (non-blocking, D3.3)
     RoutineScheduler.ts   cron/interval/once via effect Cron; next-run computation; fires → Orchestrator.deliverSystem; runs history; runNow; Slack-triggered runs (SlackConnector.events, batched)
-    SlackService.ts       Slack drafts (D3.4): slack_draft → a `slack-draft` card; the owner's Send / Discard (SlackConnector.send)
+    SlackService.ts       Slack drafts (D3.4): slack_draft → a `slack-draft` card (text, files); the owner's Send / Discard (SlackConnector.send)
     MemoryService.ts      read/write MEMORY.md + facts; remember/forget/recall for tools; emits "updated-memory" events
     SkillService.ts       skills library on SkillStore, per-Bot skills (via BotService), skills.sh import (SkillDirectory)
     SettingsService.ts    typed settings with defaults; rules CRUD

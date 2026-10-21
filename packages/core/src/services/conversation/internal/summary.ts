@@ -5,7 +5,7 @@
 import type { Conversation, ConversationSummary } from "@openbot/contracts"
 import { Effect } from "effect"
 import { EntryRepo, RequestRepo } from "../../../ports/repos.ts"
-import { attachmentsLine, compact, conversationBotIds, describeEvent, previewOf } from "./util.ts"
+import { attachmentsLine, compact, conversationBotIds, describeEvent, isHousekeeping, previewOf } from "./util.ts"
 
 /** How many tail entries are scanned for the preview line. */
 const PREVIEW_SCAN = 20
@@ -19,7 +19,7 @@ export const previewFor = (conversation: Conversation): Effect.Effect<string | u
       const entry = page.entries[i]!
       if (entry.kind === "message" && entry.text.trim().length > 0) return previewOf(entry.text)
       if (entry.kind === "message" && entry.attachments.length > 0) return previewOf(attachmentsLine(entry.attachments))
-      if (entry.kind === "event" && entry.event.type !== "unknown") return previewOf(describeEvent(entry.event))
+      if (entry.kind === "event" && entry.event.type !== "unknown" && !isHousekeeping(entry)) return previewOf(describeEvent(entry.event))
     }
     return undefined
   })
@@ -41,5 +41,7 @@ export const summarize = (
       unreadCount: conversation.unreadCount,
       pendingRequestCount: pending.length,
       hiddenFromSidebar: conversation.hiddenFromSidebar,
+      sectionId: conversation.kind === "group" ? conversation.sectionId : undefined,
+      sidebarOrder: conversation.kind === "group" ? conversation.sidebarOrder : undefined,
     })
   })

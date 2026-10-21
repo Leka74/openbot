@@ -42,6 +42,7 @@ const V1_RPCS = [
   "sections.rename",
   "sections.delete",
   "sections.reorder",
+  "sidebar.arrange",
   "conversations.subscribe",
   "conversations.history",
   "conversations.exchange",
@@ -112,6 +113,11 @@ const V1_RPCS = [
   "stt.append",
   "stt.finish",
   "stt.discard",
+  "hark.status",
+  "hark.connect",
+  "hark.disconnect",
+  "hark.test",
+  "hark.setSends",
   "usage.byBot",
 ] as const satisfies ReadonlyArray<OpenBotRpcTag>
 

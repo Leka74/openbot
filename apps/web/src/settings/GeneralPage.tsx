@@ -92,6 +92,11 @@ export function GeneralPage(): ReactNode {
           description="Show a collapsed “N steps” row under finished replies, with every tool call the Bot made."
           control={<Switch checked={settings.showSteps} onCheckedChange={(showSteps) => void patch({ showSteps })} label="Show steps" />}
         />
+        <SettingsRow
+          title="Show compactions"
+          description="A line in the chat each time a Bot compacts its context to keep going."
+          control={<Switch checked={settings.showCompactions} onCheckedChange={(showCompactions) => void patch({ showCompactions })} label="Show compactions" />}
+        />
       </SettingsCard>
 
       <GroupLabel>Bots</GroupLabel>

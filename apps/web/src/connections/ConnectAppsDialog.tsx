@@ -10,6 +10,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { useIsPhone } from "../app/layout.ts"
 import type { ConnectAppsView } from "../app/uiState.ts"
 import { type AppCategory, type AppId, type AppStatus, APPS, AppTile, appById, CATEGORIES, type ConnectApp, StackedLogos, useAppStatuses } from "./apps.tsx"
+import { HarkApp } from "./HarkApp.tsx"
 import { SlackApp } from "./SlackApp.tsx"
 
 export interface ConnectAppsDialogProps {
@@ -255,5 +256,7 @@ function AppPage({ id }: { readonly id: AppId }): ReactNode {
   switch (id) {
     case "slack":
       return <SlackApp />
+    case "hark":
+      return <HarkApp />
   }
 }

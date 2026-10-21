@@ -258,6 +258,7 @@ export class ConversationServiceFake extends Context.Service<ConversationService
         markRead: () => notImplemented("ConversationServiceFake", "markRead"),
         setHidden: () => notImplemented("ConversationServiceFake", "setHidden"),
         removeGroup: () => notImplemented("ConversationServiceFake", "removeGroup"),
+        place: () => notImplemented("ConversationServiceFake", "place"),
         removeEntry: (entryId) =>
           Effect.gen(function*() {
             const current = yield* repoOrDie(entries.get(entryId))

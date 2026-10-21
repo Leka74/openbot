@@ -39,6 +39,9 @@ export const slackStatusAtom = OpenBotClient.query("slack.status", undefined, { 
 
 export const sttStatusAtom = OpenBotClient.query("stt.status", undefined, { reactivityKeys: [Keys.stt] })
 
+/** Hark (D3.5): whether the owner's iPhone gets OpenBot's notifications, and which. */
+export const harkStatusAtom = OpenBotClient.query("hark.status", undefined, { reactivityKeys: [Keys.hark] })
+
 /** Rendered instructions + memory for the details pane. */
 export const botContextAtom = Atom.family((botId: BotId) => OpenBotClient.query("bots.readContext", { botId }, { reactivityKeys: [Keys.botContext] }))
 
