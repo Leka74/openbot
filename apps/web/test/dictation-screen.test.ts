@@ -137,6 +137,30 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     expect(errors).toEqual([])
   }, 30_000)
 
+  test("Dictate appears when installation finishes after leaving Settings", async () => {
+    const { page, errors } = await openExpenseChat(browser, mock.url)
+    try {
+      await page.getByRole("button", { name: "Account" }).click()
+      await page.getByRole("menuitem", { name: "Computers" }).click()
+      await page.getByTestId("settings-nav-general").click()
+      const voice = page.getByTestId("settings-voice")
+      await voice.getByRole("button", { name: "Turn off" }).click()
+      await voice.getByRole("button", { name: "Turn on" }).click()
+      await voice.getByText("Downloading Parakeet", { exact: false }).waitFor()
+      await page.getByRole("button", { name: "Close settings" }).click()
+      await voice.waitFor({ state: "detached" })
+      expect((await mockStt(mock)).status.state).toBe("installing")
+      expect(await page.getByRole("button", { name: "Dictate", exact: true }).count()).toBe(0)
+
+      await setMockStt(mock, { failsAppend: false, resetToReady: true })
+      await page.getByRole("button", { name: "Dictate", exact: true }).waitFor({ timeout: 5000 })
+      expect(await page.getByRole("dialog", { name: "Settings", exact: true }).count()).toBe(0)
+      expect(errors).toEqual([])
+    } finally {
+      await page.context().close()
+    }
+  }, 30_000)
+
   test("Settings turns voice input off and on, showing the download as it progresses", async () => {
     const { page, errors } = await openPage(browser, mock.url, "dark", "#/c/cnv_expense")
     await page.getByRole("button", { name: "Account" }).click()

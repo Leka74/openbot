@@ -28,6 +28,7 @@ export interface DictationCallbacks {
 const PUMP_INTERVAL_MS = 120
 const MIN_CHUNK_SECONDS = 0.25
 const TIMER_TICK_MS = 250
+const INSTALL_POLL_MS = 1000
 
 interface Recording {
   readonly attempt: number
@@ -49,6 +50,12 @@ const takeBufferedAudio = (active: Recording): string =>
 
 export function useDictation(callbacks: DictationCallbacks): DictationControls {
   const status = useQuery(sttStatusAtom)
+  const installing = status.value?.state === "installing"
+  useEffect(() => {
+    if (!installing) return
+    const poll = setInterval(status.refresh, INSTALL_POLL_MS)
+    return () => clearInterval(poll)
+  }, [installing, status.refresh])
   const openSession = useCommand("stt.open", callbacks.draftKey).run
   const appendAudio = useCommand("stt.append", callbacks.draftKey).run
   const finishSession = useCommand("stt.finish", callbacks.draftKey).run
