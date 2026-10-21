@@ -4,7 +4,7 @@ import { MAX_DICTATION_SECONDS, type SttStatus } from "@openbot/contracts"
 import { ProcessLedger } from "@openbot/core"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -471,6 +471,22 @@ describe("voice input over RPC", () => {
     } finally {
       await server.close()
     }
+  }, 30_000)
+
+  test("a failed download or unpack leaves nothing behind", async () => {
+    const leavesNothing = async (manifest: SttManifest) => {
+      const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+      const server = await startWithManifest(manifest, { dataDir })
+      try {
+        await withClient(server, (client) => Effect.map(installed(client), (status) => expect(status.state).toBe("failed")))
+        expect(existsSync(join(dataDir, "stt"))).toBe(false)
+      } finally {
+        await server.close()
+      }
+    }
+    await leavesNothing(manifestFor(fixtures, { runtime: fixtures.endlessRuntime }))
+    await leavesNothing(manifestFor(fixtures, { runtime: fixtures.twoFolderRuntime }))
+    await leavesNothing(manifestFor(fixtures, { model: { ...fixtures.model, sha256: "0".repeat(64) } }))
   }, 30_000)
 
   test("voice input cannot be turned off while it installs", async () => {

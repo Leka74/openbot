@@ -110,12 +110,17 @@ export const downloadStt = async (
     { archive: model.archive, destination: layout.model },
   ]
   let completedBytes = 0
-  for (const { archive, destination } of parts) {
-    const file = path.join(layout.work, archiveFileName(archive))
-    await downloadVerified(archive, file, (received) => onProgress(completedBytes + received, downloadBytes), signal)
-    completedBytes += archive.bytes
-    await unpackSingleFolder(file, destination, path.join(layout.work, "staging"))
-    await rm(file, { force: true })
+  try {
+    for (const { archive, destination } of parts) {
+      const file = path.join(layout.work, archiveFileName(archive))
+      await downloadVerified(archive, file, (received) => onProgress(completedBytes + received, downloadBytes), signal)
+      completedBytes += archive.bytes
+      await unpackSingleFolder(file, destination, path.join(layout.work, "staging"))
+      await rm(file, { force: true })
+    }
+  } catch (error) {
+    await rm(layout.root, { recursive: true, force: true }).catch(() => undefined)
+    throw error
   }
 }
 
