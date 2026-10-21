@@ -116,6 +116,28 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     expect(errors).toEqual([])
   }, 30_000)
 
+  test("leaving the conversation while a sent dictation finishes still sends it there", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Leaving")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Leaving ${LIVE}`)
+    await setMockStt(mock, { failsAppend: false, finishDelayMs: 1_500 })
+    await box.press("Enter")
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_travel"
+    })
+    await page.waitForTimeout(2_500)
+    await microphoneReleased(page)
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_expense"
+    })
+    const sent = page.getByTestId("transcript").getByText(`Leaving ${FINAL}`, { exact: true })
+    await sent.waitFor()
+    expect(await sent.count()).toBe(1)
+    await draftIs(page, "")
+    expect(errors).toEqual([])
+  }, 30_000)
+
   test("an attachment removed while the transcript finishes is not sent with the message", async () => {
     const { page, errors, box } = await openExpenseChat(browser, mock.url)
     await page.locator('input[type="file"]').first().setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") })

@@ -193,7 +193,12 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
     return () => window.removeEventListener("keydown", cancelOnEscape, true)
   }, [phase, cancel])
 
-  useEffect(() => cancel, [cancel])
+  useEffect(
+    () => () => {
+      if (recording.current?.finishing === undefined) cancel()
+    },
+    [cancel],
+  )
 
   return {
     available: status.value?.state === "ready" && microphoneAvailable(),
