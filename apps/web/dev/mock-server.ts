@@ -86,8 +86,29 @@ export const startMockServer = async (options: { port?: number; hostname?: strin
       return HttpServerResponse.text(JSON.stringify({ requestId: request.id }), { contentType: "application/json" })
     }),
   )
+  const SpeechToText = Layer.mergeAll(
+    HttpRouter.add(
+      "GET",
+      "/api/mock/stt",
+      Effect.sync(() =>
+        HttpServerResponse.text(JSON.stringify({ status: brain.stt, discards: brain.sttDiscards }), {
+          contentType: "application/json",
+        })),
+    ),
+    HttpRouter.add(
+      "POST",
+      "/api/mock/stt",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const query = new URL(request.url, "http://mock").searchParams
+        brain.sttFailsAppend = query.get("failsAppend") === "1"
+        if (query.get("resetToReady") === "1") brain.stt = { state: "ready", model: brain.stt.model }
+        return HttpServerResponse.empty()
+      }),
+    ),
+  )
   const development = options.development ?? process.env.NODE_ENV !== "production"
-  const ServerLive = HttpRouter.serve(Layer.mergeAll(RpcLive, Attachments, Desktop, DesktopInput, Takeover), { disableLogger: true, disableListenLog: true }).pipe(
+  const ServerLive = HttpRouter.serve(Layer.mergeAll(RpcLive, Attachments, Desktop, DesktopInput, Takeover, SpeechToText), { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provideMerge(
       BunHttpServer.layer({
         port: options.port ?? 4321,

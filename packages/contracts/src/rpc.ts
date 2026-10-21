@@ -32,6 +32,7 @@ import { RuntimeRequest, RuntimeResponseInput } from "./runtime-request.ts"
 import { Settings, SettingsPatch } from "./settings.ts"
 import { Skill, SkillInput, SkillName, SkillPreview, SkillSearchResult } from "./skills.ts"
 import { SlackConnectInput, SlackStatus } from "./slack.ts"
+import { SttSession, SttStatus, SttTranscription } from "./stt.ts"
 import { HarkSends, HarkStatus } from "./hark.ts"
 import { ConversationStreamItem, ExchangePage, RosterStreamItem, StreamCursor, TranscriptPage } from "./stream.ts"
 import { Task, TaskDetail } from "./task.ts"
@@ -410,6 +411,14 @@ export class OpenBotRpcs extends RpcGroup.make(
     error: errors(NotFound, InvalidInput, Conflict, Unavailable),
   }),
   Rpc.make("slack.discardDraft", { payload: { entryId: EntryId }, error: errors(NotFound, Conflict) }),
+
+  Rpc.make("stt.status", { success: SttStatus, error: errors() }),
+  Rpc.make("stt.install", { success: SttStatus, error: errors(Conflict) }),
+  Rpc.make("stt.remove", { success: SttStatus, error: errors(Conflict) }),
+  Rpc.make("stt.open", { success: SttSession, error: errors(Unavailable, Conflict) }),
+  Rpc.make("stt.append", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable, Conflict) }),
+  Rpc.make("stt.finish", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable, Conflict) }),
+  Rpc.make("stt.discard", { payload: { sessionId: Schema.String }, error: errors() }),
 
   // Hark: iPhone notifications (D3.5)
   Rpc.make("hark.status", { success: HarkStatus, error: errors() }),

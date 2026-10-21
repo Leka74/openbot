@@ -21,6 +21,7 @@ export const Keys = {
   tasks: "tasks",
   /** The Slack connection (D3.4). */
   slack: "slack",
+  stt: "stt",
   /** Hark, iPhone notifications (D3.5). */
   hark: "hark",
 } as const

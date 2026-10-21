@@ -59,6 +59,7 @@ import {
   type SkillName,
   type SkillPreview,
   type SlackStatus,
+  type SttStatus,
   type HarkStatus,
   type ToolKind,
   type Turn,
@@ -121,6 +122,9 @@ export interface ToolStep {
   readonly fail?: string
 }
 
+const STT_DOWNLOAD_BYTES = 500 * 1024 * 1024
+const STT_DOWNLOAD_STEP_BYTES = 200 * 1024 * 1024
+
 export class MockBrain {
   readonly roster = new RosterReplica()
   readonly convs = new Map<string, ConversationReplica>()
@@ -135,6 +139,9 @@ export class MockBrain {
   readonly rules = new Map<string, ApprovalRule>()
   /** Slack (D3.4): any `xoxp-` token connects the mock to workspace "Acme". */
   slack: SlackStatus = { connected: false, events: "off" }
+  stt: SttStatus = { state: "ready", model: "Parakeet TDT 0.6B v3" }
+  sttFailsAppend = false
+  sttDiscards = 0
   /** Hark (D3.5): any `whk_` webhook connects the mock. */
   hark: HarkStatus = { connected: false, sends: "all" }
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>()
@@ -819,6 +826,15 @@ export class MockBrain {
     this.replyTo(conversationId, turn.botId, "retry", turn.inputEntryId)
   }
 
+  advanceSttInstall(): SttStatus {
+    if (this.stt.state !== "installing") return this.stt
+    const downloadedBytes = Math.min(STT_DOWNLOAD_BYTES, (this.stt.downloadedBytes ?? 0) + STT_DOWNLOAD_STEP_BYTES)
+    this.stt = downloadedBytes >= STT_DOWNLOAD_BYTES
+      ? { state: "ready", model: this.stt.model }
+      : { state: "installing", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES, downloadedBytes }
+    return this.stt
+  }
+
   /** A Slack draft card (by entry): Send (with the owner's edits) or Discard. */
   answerSlackDraft(entryId: string, text: string | undefined) {
     const conv = [...this.convs.values()].find((c) => c.state.entries.has(entryId as EntryId))
@@ -1412,6 +1428,32 @@ export class MockBrain {
         })(),
       "slack.sendDraft": ({ entryId, text }) => sync(() => this.answerSlackDraft(entryId, text))(),
       "slack.discardDraft": ({ entryId }) => sync(() => this.answerSlackDraft(entryId, undefined))(),
+      "stt.status": () => sync(() => this.advanceSttInstall())(),
+      "stt.install": () =>
+        sync(() => {
+          this.stt = { state: "installing", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES, downloadedBytes: 0 }
+          return this.stt
+        })(),
+      "stt.remove": () =>
+        sync(() => {
+          this.stt = { state: "absent", model: this.stt.model, downloadBytes: STT_DOWNLOAD_BYTES }
+          return this.stt
+        })(),
+      "stt.open": () =>
+        sync(() => {
+          if (this.stt.state !== "ready") throw new Unavailable({ message: "Voice input isn't set up on this OpenBot yet." })
+          return { sessionId: this.id("dic") }
+        })(),
+      "stt.append": () =>
+        sync(() => {
+          if (this.sttFailsAppend) throw new Unavailable({ message: "Voice input could not transcribe; the details are in the brain's log." })
+          return { text: "Check the staging deploy" }
+        })(),
+      "stt.finish": () => Effect.succeed({ text: "Check the staging deploy and tell me if it is green." }),
+      "stt.discard": () =>
+        sync(() => {
+          this.sttDiscards++
+        })(),
       "settings.get": () => Effect.succeed(this.settings),
       "settings.update": ({ patch }) =>
         sync(() => {
