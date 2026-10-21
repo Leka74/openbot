@@ -53,6 +53,7 @@ interface Fixtures {
   model: SttArchive
   misheardModel: SttArchive
   twoFolderRuntime: SttArchive
+  endlessRuntime: SttArchive
   failNextDownload: boolean
   holdDownloads: Promise<void> | undefined
   stop: () => void
@@ -90,6 +91,9 @@ const makeFixtures = (): Fixtures => {
         fixtures.failNextDownload = false
         return new Response("try later", { status: 503 })
       }
+      if (new URL(request.url).pathname === "/endless.tar.bz2") {
+        return new Response(new ReadableStream({ pull: (controller) => controller.enqueue(new Uint8Array(64 * 1024)) }))
+      }
       return new Response(Bun.file(join(root, new URL(request.url).pathname.slice(1))))
     },
   })
@@ -98,6 +102,7 @@ const makeFixtures = (): Fixtures => {
   fixtures.model = archive(root, origin, "fake-model.tar.bz2", "fake-model")
   fixtures.misheardModel = archive(root, origin, "misheard-model.tar.bz2", "misheard-model")
   fixtures.twoFolderRuntime = archive(root, origin, "two-folders.tar.bz2", "fake-runtime", "other-runtime")
+  fixtures.endlessRuntime = { url: `${origin}/endless.tar.bz2`, sha256: "0".repeat(64), bytes: 1_000_000 }
   fixtures.stop = () => {
     void server.stop(true)
     rmSync(root, { recursive: true, force: true })
@@ -455,6 +460,16 @@ describe("voice input over RPC", () => {
         }))
     } finally {
       await retried.close()
+    }
+  }, 30_000)
+
+  test("a download that runs past its pinned size is cut off", async () => {
+    const server = await startWithManifest(manifestFor(fixtures, { runtime: fixtures.endlessRuntime }))
+    try {
+      await withClient(server, (client) =>
+        Effect.map(installed(client), (status) => expect(status).toMatchObject({ state: "failed", problem: expect.stringContaining("larger than its pinned 1000000 bytes") })))
+    } finally {
+      await server.close()
     }
   }, 30_000)
 

@@ -64,9 +64,10 @@ const downloadVerified = async (archive: SttArchive, file: string, onReceived: (
   let received = 0
   try {
     for await (const chunk of response.body) {
+      received += chunk.byteLength
+      if (received > archive.bytes) throw new Error(`${path.basename(file)} is larger than its pinned ${archive.bytes} bytes.`)
       hash.update(chunk)
       sink.write(chunk)
-      received += chunk.byteLength
       onReceived(received)
     }
   } finally {
