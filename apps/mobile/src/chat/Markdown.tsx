@@ -30,8 +30,9 @@ export interface MarkdownImage {
  * only it gets the origin and the session headers. */
 const uri = (href: string, origin: string): string => (href.startsWith("/") ? origin + href : href)
 
-/** An image is a block of its own: it holds its own failure state, never a shared one. The state
- * remembers which source failed, so a new `href` gets its own try instead of the old failure. */
+/** An image is a block of its own: it holds its own failure state, never a shared one. The caller
+ * keys it by the address it loads (origin included), so every new source mounts fresh and gets its
+ * own try instead of inheriting an old failure. */
 function MdImage(props: {
   readonly href: string
   readonly alt: string
@@ -40,8 +41,8 @@ function MdImage(props: {
   readonly theme: Theme
   readonly size: number
 }): ReactNode {
-  const [failedHref, setFailedHref] = useState<string | undefined>(undefined)
-  if (failedHref === props.href) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
     return <Text style={bodyText(props.theme.fgSecondary, props.size)} selectable>{props.alt || props.href}</Text>
   }
   return (
@@ -51,7 +52,7 @@ function MdImage(props: {
         ...(props.href.startsWith("/") ? { headers: props.headers } : {}),
       }}
       alt={props.alt}
-      onError={() => setFailedHref(props.href)}
+      onError={() => setFailed(true)}
       style={{ width: "100%", maxWidth: 480, aspectRatio: 1, borderRadius: 12 }}
       contentFit="contain"
     />
@@ -92,7 +93,7 @@ function inlineRows(
     const img = t as Tokens.Image
     rows.push(
       <MdImage
-        key={`${keyBase}.i${i}`}
+        key={`${keyBase}.i${i}:${uri(href, image.origin)}`}
         href={href}
         alt={img.text || ""}
         origin={image.origin}

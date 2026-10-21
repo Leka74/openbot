@@ -165,11 +165,11 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
 // ------------------------------------------------------------------------------------------ inline
 
 /** Inline image with its own failure state: a broken image must stay visible as text, never blank.
- * The state remembers which source failed, so a new `href` (an edited or re-rendered message) gets
- * its own try instead of inheriting the old failure. */
+ * The caller keys it by `href`, so every new source (an edited or re-rendered message, or a source
+ * shown before) mounts fresh and gets its own try instead of inheriting an old failure. */
 function MdImage(props: { readonly href: string; readonly alt: string }): ReactNode {
-  const [failedHref, setFailedHref] = useState<string | undefined>(undefined)
-  if (failedHref === props.href) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
     return <span className="ob-md-img-fallback">{props.alt || props.href}</span>
   }
   return (
@@ -180,7 +180,7 @@ function MdImage(props: { readonly href: string; readonly alt: string }): ReactN
       decoding="async"
       referrerPolicy="no-referrer"
       className="ob-md-img"
-      onError={() => setFailedHref(props.href)}
+      onError={() => setFailed(true)}
     />
   )
 }
@@ -236,7 +236,7 @@ const rules: ReadonlyArray<InlineRule> = [
       // Anything but https: or an attachment falls back to text *before* creating the element, so
       // it never loads and no broken image flashes before it turns into text.
       if (href === undefined) return <Fragment key={key}>{alt || m[2]!.trim()}</Fragment>
-      return <MdImage key={key} href={href} alt={alt} />
+      return <MdImage key={`${key}:${href}`} href={href} alt={alt} />
     },
   },
   {
