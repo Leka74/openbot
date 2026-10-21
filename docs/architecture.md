@@ -678,7 +678,7 @@ Per-adapter specifics:
   - **Chat:**
     - floating header pill (avatar + name, click → details);
     - transcript: bubbles grouped by author and time, timestamps, NEW divider, event lines, cards, notices, steps disclosure;
-    - attachments: a file card opens in a dialog instead of downloading — markdown, text and code are previewed in place (2 MiB ceiling), media and PDFs keep their own viewers (D6.9);
+    - attachments: a file card opens in a dialog instead of downloading — markdown, text and code are previewed in place (2 MiB ceiling), media and PDFs keep their own viewers;
     - ONE status line per bot above the composer, in the activity row's look (avatar + shimmer): its turn's phrase, else "Busy in … · your message is queued", else "Handling…" while its background work started here runs (D5.7), else "Busy in …";
     - composer (pill, + menu: attach file; textarea autosize to 6 lines; `@` mention picker in groups; send/stop; context ring).
   - **Cards:** approval (Allow once / Always allow / Deny, View the full request, Needs approval / Allowed / Denied / Expired), question (A/B/C keys, "Type your own answer"), handoff, routine-created, error tray ("Bot failed to respond" + Retry).
