@@ -167,10 +167,12 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
 /** Whether an `<img>` can load this href at all (`safeHref` also lets `#frag` and `mailto:` through). */
 const loadable = (href: string): boolean => /^https?:/i.test(href) || (href.startsWith("/") && !href.startsWith("//"))
 
-/** Inline image with its own failure state: a broken image must stay visible as text, never blank. */
+/** Inline image with its own failure state: a broken image must stay visible as text, never blank.
+ * The state remembers which source failed, so a new `href` (an edited or re-rendered message) gets
+ * its own try instead of inheriting the old failure. */
 function MdImage(props: { readonly href: string; readonly alt: string }): ReactNode {
-  const [failed, setFailed] = useState(false)
-  if (failed) {
+  const [failedHref, setFailedHref] = useState<string | undefined>(undefined)
+  if (failedHref === props.href) {
     return <span className="ob-md-img-fallback">{props.alt || props.href}</span>
   }
   return (
@@ -181,7 +183,7 @@ function MdImage(props: { readonly href: string; readonly alt: string }): ReactN
       decoding="async"
       referrerPolicy="no-referrer"
       className="ob-md-img"
-      onError={() => setFailed(true)}
+      onError={() => setFailedHref(props.href)}
     />
   )
 }
