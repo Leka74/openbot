@@ -77,6 +77,22 @@ describe("safeHref: rejected protocols, the full table", () => {
     expect(safeHref("/a\\b")).toBe("/a\\b")
   })
 
+  test("a tab, CR or LF inside the address never passes: URL parsers drop them, so /<tab>\\host is //host", () => {
+    for (const control of ["\t", "\r", "\n"]) {
+      for (const slash of ["/", "\\"]) {
+        const href = `/${control}${slash}evil.example`
+        expect(new URL(href, "https://brain.example").host).toBe("evil.example")
+        expect(safeHref(href)).toBeUndefined()
+      }
+    }
+  })
+
+  test("nor does any other C0 control character", () => {
+    expect(safeHref("/a\u0000b")).toBeUndefined()
+    expect(safeHref("https://ok.example/\u001fx")).toBeUndefined()
+    expect(safeHref("#a\u0007")).toBeUndefined()
+  })
+
   test("bare text and empty input", () => {
     expect(safeHref("")).toBeUndefined()
     expect(safeHref("   ")).toBeUndefined()
@@ -133,6 +149,17 @@ describe("imageSrc", () => {
     for (const src of ["/", "/logout", "/api/conversations", "/api/attachments", "/api/attachments/", "/api/attachments/att_1/raw", "/api/attachments/att_1?download=1", "/api/attachments/att_1#x", "/api/attachments/../logout", "/api/attachments/%2e%2e", "//evil.example/a.png", "/\\evil.example/a.png", "a.png", "./a.png", "../a.png"]) {
       expect(imageSrc(src)).toBeUndefined()
     }
+  })
+
+  test("a control character inside the address never loads", () => {
+    for (const control of ["\t", "\r", "\n"]) {
+      for (const slash of ["/", "\\"]) {
+        expect(imageSrc(`/${control}${slash}evil.example/a.png`, ORIGIN)).toBeUndefined()
+      }
+      expect(imageSrc(`/api/attachments/${control}att_1`, ORIGIN)).toBeUndefined()
+      expect(imageSrc(`https://cdn.example/a${control}.png`, ORIGIN)).toBeUndefined()
+    }
+    expect(imageSrc("https://cdn.example/\u0000a.png")).toBeUndefined()
   })
 
   test("an absolute URL on the brain's own origin is held to the attachment rule", () => {
