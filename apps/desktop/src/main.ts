@@ -18,9 +18,10 @@
  * - Quick send (quickSend.ts): ⌥⌘O / Ctrl+Alt+O, `openbot://send?…` links and `--quick-send` open a
  *   small panel to send the page in the browser, a copy or a screenshot to a Bot.
  */
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, shell, Tray } from "electron"
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, session, shell, Tray } from "electron"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { permits } from "./permissions.ts"
 import { makeQuickSend, prefillOfLink } from "./quickSend.ts"
 import { makeUpdater, type UpdateState } from "./update.ts"
 
@@ -196,6 +197,16 @@ const createWindow = () => {
   })
 }
 
+/** The microphone for voice input and little else, and only for OpenBot's own pages (permissions.ts). */
+const limitPermissions = () => {
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    const media = "mediaTypes" in details ? details : undefined
+    callback(permits(origin, { permission, from: media?.securityOrigin ?? details.requestingUrl, mediaTypes: media?.mediaTypes }))
+  })
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) =>
+    permits(origin, { permission, from: requestingOrigin, mediaTypes: details.mediaType === undefined ? undefined : [details.mediaType] }))
+}
+
 const createTray = () => {
   if (isMac) return
   const image = nativeImage.createFromPath(join(appDir, "tray.png"))
@@ -338,6 +349,7 @@ void app.whenReady().then(() => {
       ])
       : null,
   )
+  limitPermissions()
   createWindow()
   createTray()
   quick = makeQuickSend({ origin, preload: join(appDir, "preload.js"), canOpen: () => signedIn, fallback: show })
