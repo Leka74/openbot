@@ -5,7 +5,7 @@ import { Image } from "expo-image"
 import { type Token, type Tokens, marked } from "marked"
 import { type ReactNode, useMemo, useState } from "react"
 import { Platform, ScrollView, StyleSheet, Text, View } from "react-native"
-import { safeHref } from "@openbot/app-model"
+import { imageSrc, safeHref } from "@openbot/app-model"
 import type { Theme } from "../theme.ts"
 
 const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" })
@@ -26,21 +26,9 @@ export interface MarkdownImage {
   readonly headers: Readonly<Record<string, string>>
 }
 
-/** Only `/`-prefixed same-origin paths get the origin; absolute URLs are used as they are. */
+/** `imageSrc` lets through https and the brain's attachment path; only the path is the brain's, so
+ * only it gets the origin and the session headers. */
 const uri = (href: string, origin: string): string => (href.startsWith("/") ? origin + href : href)
-
-/** Relative paths are same-origin; absolute URLs only when the origin prefix matches exactly. */
-const sameOrigin = (href: string, origin: string): boolean =>
-  href.startsWith("/") ? !href.startsWith("//") : href.startsWith(`${origin}/`) || href === origin
-
-/** Protocols an image element can actually load (`#` / `mailto:` pass safeHref but never load). */
-const loadable = (href: string): boolean => /^https?:/i.test(href) || (href.startsWith("/") && !href.startsWith("//"))
-
-/** A top-level image token that should become a real image; everything else stays a text link. */
-const imageUrl = (img: Tokens.Image): string | undefined => {
-  const href = safeHref(img.href)
-  return href !== undefined && loadable(href) ? href : undefined
-}
 
 /** An image is a block of its own: it holds its own failure state, never a shared one. The state
  * remembers which source failed, so a new `href` gets its own try instead of the old failure. */
@@ -60,7 +48,7 @@ function MdImage(props: {
     <Image
       source={{
         uri: uri(props.href, props.origin),
-        ...(sameOrigin(props.href, props.origin) ? { headers: props.headers } : {}),
+        ...(props.href.startsWith("/") ? { headers: props.headers } : {}),
       }}
       alt={props.alt}
       onError={() => setFailedHref(props.href)}
@@ -83,7 +71,8 @@ function inlineRows(
 ): ReactNode[] {
   const textRow = (run: ReadonlyArray<Token>, key: string): ReactNode =>
     <Text key={key} style={bodyText(ctx.color, ctx.size)} selectable>{inline(run, ctx, key)}</Text>
-  const split = image !== undefined && tokens.some((t) => t.type === "image" && imageUrl(t as Tokens.Image) !== undefined)
+  const src = (t: Token): string | undefined => (t.type === "image" && image !== undefined ? imageSrc((t as Tokens.Image).href, image.origin) : undefined)
+  const split = tokens.some((t) => src(t) !== undefined)
   if (!split) return [textRow(tokens, `${keyBase}.t`)]
   const rows: ReactNode[] = []
   let run: Token[] = []
@@ -94,8 +83,8 @@ function inlineRows(
     run = []
   }
   tokens.forEach((t, i) => {
-    const href = t.type === "image" ? imageUrl(t as Tokens.Image) : undefined
-    if (href === undefined) {
+    const href = src(t)
+    if (href === undefined || image === undefined) {
       run.push(t)
       return
     }

@@ -134,7 +134,7 @@ test("image: a well-formed image yields an element, not text", () => {
 
 test("image: `javascript:` never produces an image element", () => {
   const out = imageOf("![a](javascript:alert(1))")
-  // safeHref rejects it, so the alt text renders as plain text (same rule as links).
+  // imageSrc rejects it, so the alt text renders as plain text.
   expect(nodeKinds(out)).not.toContain("MdImage")
   expect(textOf(out[0]!)).toBe("a")
 })
@@ -144,8 +144,7 @@ test("image: `data:` and protocol-relative hrefs never produce an image element"
   expect(nodeKinds(imageOf("![a](//evil.example/x.png)"))).not.toContain("MdImage")
 })
 
-test("image: `#frag` and `mailto:` pass safeHref but render as text (pre-flight failure)", () => {
-  // These two would otherwise flash a broken image before onError turns it back into text.
+test("image: `#frag` and `mailto:` render as text before any <img> exists", () => {
   expect(nodeKinds(imageOf("![a](#frag)"))).not.toContain("MdImage")
   expect(nodeKinds(imageOf("![a](mailto:x@y)"))).not.toContain("MdImage")
   expect(textOf(imageOf("![a](#frag)")[0]!)).toBe("a")
@@ -155,10 +154,19 @@ test("image: an empty alt falls back to the href, never an empty string", () => 
   expect(textOf(imageOf("![](#frag)")[0]!)).toBe("#frag")
 })
 
-test("image: same-origin relative and absolute https both render", () => {
+test("image: an attachment and absolute https both render", () => {
   expect(nodeKinds(imageOf("![a](/api/attachments/att_1)"))).toEqual(["MdImage"])
   expect(nodeKinds(imageOf("![a](https://x/y.png)"))).toEqual(["MdImage"])
-  expect(nodeKinds(imageOf("![a](HTTP://x/y.png)"))).toEqual(["MdImage"])
+  expect(nodeKinds(imageOf("![a](HTTPS://x/y.png)"))).toEqual(["MdImage"])
+})
+
+test("image: http and brain paths other than attachments render as alt text", () => {
+  for (const src of ["http://x/y.png", "HTTP://x/y.png", "/api/conversations", "/api/attachments/att_1/../../logout", "/logout", "/\\evil.example/x.png"]) {
+    const out = imageOf(`![a](${src})`)
+    expect(nodeKinds(out)).not.toContain("MdImage")
+    expect(textOf(out[0]!)).toBe("a")
+  }
+  expect(textOf(imageOf("![](http://x/y.png)")[0]!)).toBe("http://x/y.png")
 })
 
 test("image: the image rule wins over the link rule at the same start position", () => {

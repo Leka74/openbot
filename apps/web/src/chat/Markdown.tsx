@@ -2,11 +2,11 @@
 // with soft line breaks, **bold**, *italic*, ~~strike~~, `code`, fenced code blocks, [links](url),
 // bare URLs, bullet and numbered lists, blockquotes, #-headings, GFM tables and @Bot mentions
 // (avatar + name in the Bot's colour, Grok style). Links only allow http(s), mailto and
-// same-origin relative URLs; anything else renders as plain text.
+// same-origin relative URLs, images only https and attachments; anything else renders as plain text.
 import { Globe } from "lucide-react"
 import { Fragment, type ReactNode, useState } from "react"
 import { Avatar } from "@openbot/ui"
-import { safeHref } from "@openbot/app-model"
+import { imageSrc, safeHref } from "@openbot/app-model"
 
 export { safeHref }
 
@@ -164,9 +164,6 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
 
 // ------------------------------------------------------------------------------------------ inline
 
-/** Whether an `<img>` can load this href at all (`safeHref` also lets `#frag` and `mailto:` through). */
-const loadable = (href: string): boolean => /^https?:/i.test(href) || (href.startsWith("/") && !href.startsWith("//"))
-
 /** Inline image with its own failure state: a broken image must stay visible as text, never blank.
  * The state remembers which source failed, so a new `href` (an edited or re-rendered message) gets
  * its own try instead of inheriting the old failure. */
@@ -234,11 +231,11 @@ const rules: ReadonlyArray<InlineRule> = [
   {
     re: /!\[([^\]\n]*)\]\(([^)\s]+)\)/,
     render: (m, key) => {
-      const href = safeHref(m[2]!)
+      const href = imageSrc(m[2]!, typeof location === "undefined" ? undefined : location.origin)
       const alt = m[1] ?? ""
-      // `#frag` / `mailto:` pass safeHref but no <img> can load them: fall back to text *before*
-      // creating the element, or the user sees a broken image flash before it turns into text.
-      if (href === undefined || !loadable(href)) return <Fragment key={key}>{alt || href || m[2]!}</Fragment>
+      // Anything but https: or an attachment falls back to text *before* creating the element, so
+      // it never loads and no broken image flashes before it turns into text.
+      if (href === undefined) return <Fragment key={key}>{alt || m[2]!.trim()}</Fragment>
       return <MdImage key={key} href={href} alt={alt} />
     },
   },

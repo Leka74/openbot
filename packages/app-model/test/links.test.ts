@@ -2,7 +2,7 @@
 // link or an image source. `apps/web/test/model.test.ts` has the six original assertions; this file
 // is the full illegal-protocol table plus the boundaries those six do not reach.
 import { describe, expect, test } from "bun:test"
-import { safeHref } from "../src/links.ts"
+import { imageSrc, safeHref } from "../src/links.ts"
 
 describe("safeHref: allowed", () => {
   test("http and https, any case", () => {
@@ -103,5 +103,46 @@ describe("safeHref: the exact boundary between the two", () => {
   test("`#` and `mailto:` pass even though no image can load them — loadable() is a separate gate", () => {
     expect(safeHref("#frag")).toBe("#frag")
     expect(safeHref("mailto:x@y")).toBe("mailto:x@y")
+  })
+})
+
+// The image-source guard: images load without a click, so only https and the brain's attachment
+// route may ever become a src.
+describe("imageSrc", () => {
+  const ORIGIN = "https://brain.example"
+
+  test("https anywhere, any case, trimmed", () => {
+    expect(imageSrc("https://cdn.example/a.png")).toBe("https://cdn.example/a.png")
+    expect(imageSrc("HTTPS://cdn.example/a.png")).toBe("HTTPS://cdn.example/a.png")
+    expect(imageSrc("  https://cdn.example/a.png\n")).toBe("https://cdn.example/a.png")
+    expect(imageSrc("https://cdn.example/a.png", ORIGIN)).toBe("https://cdn.example/a.png")
+  })
+
+  test("the brain's attachment route", () => {
+    expect(imageSrc("/api/attachments/att_01ABC")).toBe("/api/attachments/att_01ABC")
+    expect(imageSrc("/api/attachments/does-not-exist", ORIGIN)).toBe("/api/attachments/does-not-exist")
+  })
+
+  test("http, data and other schemes never load", () => {
+    for (const src of ["http://cdn.example/a.png", "HTTP://cdn.example/a.png", "data:image/png;base64,iVBORw0KGgo=", "javascript:alert(1)", "blob:https://x/uuid", "file:///etc/passwd", "mailto:a@b.c", "#frag", "https:", "https:/cdn.example/a.png"]) {
+      expect(imageSrc(src)).toBeUndefined()
+    }
+  })
+
+  test("no other relative path: no cookie-bearing GET to a brain route", () => {
+    for (const src of ["/", "/logout", "/api/conversations", "/api/attachments", "/api/attachments/", "/api/attachments/att_1/raw", "/api/attachments/att_1?download=1", "/api/attachments/att_1#x", "/api/attachments/../logout", "/api/attachments/%2e%2e", "//evil.example/a.png", "/\\evil.example/a.png", "a.png", "./a.png", "../a.png"]) {
+      expect(imageSrc(src)).toBeUndefined()
+    }
+  })
+
+  test("an absolute URL on the brain's own origin is held to the attachment rule", () => {
+    expect(imageSrc("https://brain.example/api/attachments/att_1", ORIGIN)).toBe("/api/attachments/att_1")
+    expect(imageSrc("https://BRAIN.example:443/api/attachments/att_1", ORIGIN)).toBe("/api/attachments/att_1")
+    expect(imageSrc("https://brain.example/logout", ORIGIN)).toBeUndefined()
+    expect(imageSrc("https://brain.example:443/api/conversations", ORIGIN)).toBeUndefined()
+    expect(imageSrc("https://user@brain.example/api/conversations", ORIGIN)).toBeUndefined()
+    expect(imageSrc("https://brain.example/api/attachments/att_1?x=1", ORIGIN)).toBeUndefined()
+    // another port is another origin
+    expect(imageSrc("https://brain.example:8443/logout", ORIGIN)).toBe("https://brain.example:8443/logout")
   })
 })
