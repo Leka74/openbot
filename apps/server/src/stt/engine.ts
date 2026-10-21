@@ -259,6 +259,7 @@ export const startRecognizer = (options: RecognizerOptions): Promise<Recognizer>
       killGroup(child.pid, "SIGTERM")
       const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(RECOGNIZER_STOP_GRACE_MS).then(() => false)])
       if (!exited) killGroup(child.pid, "SIGKILL")
+      await child.exited
     }
 
     const recognizer: Recognizer = { pid: child.pid, decode, stop, alive: () => !broken && child.exitCode === null }

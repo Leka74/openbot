@@ -413,11 +413,11 @@ export class OpenBotRpcs extends RpcGroup.make(
   Rpc.make("slack.discardDraft", { payload: { entryId: EntryId }, error: errors(NotFound, Conflict) }),
 
   Rpc.make("stt.status", { success: SttStatus, error: errors() }),
-  Rpc.make("stt.install", { success: SttStatus, error: errors() }),
+  Rpc.make("stt.install", { success: SttStatus, error: errors(Conflict) }),
   Rpc.make("stt.remove", { success: SttStatus, error: errors(Conflict) }),
-  Rpc.make("stt.open", { success: SttSession, error: errors(Unavailable) }),
-  Rpc.make("stt.append", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable) }),
-  Rpc.make("stt.finish", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable) }),
+  Rpc.make("stt.open", { success: SttSession, error: errors(Unavailable, Conflict) }),
+  Rpc.make("stt.append", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable, Conflict) }),
+  Rpc.make("stt.finish", { payload: { sessionId: Schema.String, pcmBase64: Schema.String }, success: SttTranscription, error: errors(NotFound, InvalidInput, Unavailable, Conflict) }),
   Rpc.make("stt.discard", { payload: { sessionId: Schema.String }, error: errors() }),
 
   // Hark: iPhone notifications (D3.5)

@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test"
 import { encodePcm16, joinChunks, toBase64 } from "@openbot/app-model"
 import { MAX_DICTATION_SECONDS, type SttStatus } from "@openbot/contracts"
 import { ProcessLedger } from "@openbot/core"
-import { Effect } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -310,7 +310,7 @@ describe("voice input over RPC", () => {
       await withClient(first, (client) =>
         Effect.gen(function*() {
           expect(yield* client["stt.status"]()).toEqual({ state: "absent", model: "Fake Parakeet", downloadBytes: fixtures.runtime.bytes + fixtures.model.bytes })
-          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          expect(yield* Effect.flip(client["stt.open"]())).toMatchObject({ _tag: "Unavailable" })
           expect(yield* installed(client)).toEqual({ state: "ready", model: "Fake Parakeet" })
           expect(recognizersRunningUnder(dataDir)).toBe(0)
 
@@ -322,13 +322,13 @@ describe("voice input over RPC", () => {
           expect(live.some((text) => occurrences(text, "country") === 1)).toBe(true)
           const final = yield* client["stt.finish"]({ sessionId, pcmBase64: pcm(silence(0.1)) })
           expect(occurrences(final.text, "country")).toBe(2)
-          expect((yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: "" })))._tag).toBe("NotFound")
+          expect(yield* Effect.flip(client["stt.append"]({ sessionId, pcmBase64: "" }))).toMatchObject({ _tag: "NotFound" })
 
           const other = yield* client["stt.open"]()
-          expect((yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "A".repeat(3_000_000) })))._tag).toBe("InvalidInput")
-          expect((yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "%%%" })))._tag).toBe("InvalidInput")
+          expect(yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "A".repeat(3_000_000) }))).toMatchObject({ _tag: "InvalidInput" })
+          expect(yield* Effect.flip(client["stt.append"]({ sessionId: other.sessionId, pcmBase64: "%%%" }))).toMatchObject({ _tag: "InvalidInput" })
           yield* client["stt.discard"]({ sessionId: other.sessionId })
-          expect((yield* Effect.flip(client["stt.finish"]({ sessionId: other.sessionId, pcmBase64: "" })))._tag).toBe("NotFound")
+          expect(yield* Effect.flip(client["stt.finish"]({ sessionId: other.sessionId, pcmBase64: "" }))).toMatchObject({ _tag: "NotFound" })
           expect(recognizersRunningUnder(dataDir)).toBe(1)
         }))
       expect(await recognizerLedgerEntries(first)).toHaveLength(1)
@@ -345,7 +345,7 @@ describe("voice input over RPC", () => {
           yield* client["stt.open"]()
           expect(yield* client["stt.remove"]()).toMatchObject({ state: "absent", model: "Fake Parakeet" })
           expect(recognizersRunningUnder(dataDir)).toBe(0)
-          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          expect(yield* Effect.flip(client["stt.open"]())).toMatchObject({ _tag: "Unavailable" })
         }))
       expect(await recognizerLedgerEntries(second)).toHaveLength(0)
     } finally {
@@ -375,7 +375,7 @@ describe("voice input over RPC", () => {
           expect(recognizersRunningUnder(dataDir)).toBe(1)
 
           const hung = yield* client["stt.open"]()
-          expect((yield* Effect.flip(client["stt.finish"]({ sessionId: hung.sessionId, pcmBase64: pcm(tone(1, HANG_LEVEL)) })))._tag).toBe("Unavailable")
+          expect(yield* Effect.flip(client["stt.finish"]({ sessionId: hung.sessionId, pcmBase64: pcm(tone(1, HANG_LEVEL)) }))).toMatchObject({ _tag: "Unavailable" })
           const after = yield* client["stt.open"]()
           expect((yield* client["stt.finish"]({ sessionId: after.sessionId, pcmBase64: pcm(tone(1)) })).text).toBe("country")
           expect(recognizersRunningUnder(dataDir)).toBe(1)
@@ -403,7 +403,7 @@ describe("voice input over RPC", () => {
           yield* client["stt.append"]({ sessionId: abandoned.sessionId, pcmBase64: pcm(tone(1)) })
           expect(recognizersRunningUnder(dataDir)).toBe(1)
           yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { label: "abandoned stop" })
-          expect((yield* Effect.flip(client["stt.append"]({ sessionId: abandoned.sessionId, pcmBase64: pcm(tone(1)) })))._tag).toBe("NotFound")
+          expect(yield* Effect.flip(client["stt.append"]({ sessionId: abandoned.sessionId, pcmBase64: pcm(tone(1)) }))).toMatchObject({ _tag: "NotFound" })
         }))
       expect(await recognizerLedgerEntries(server)).toHaveLength(0)
     } finally {
@@ -499,7 +499,7 @@ describe("voice input over RPC", () => {
       await withClient(server, (client) =>
         Effect.gen(function*() {
           expect((yield* client["stt.install"]()).state).toBe("installing")
-          expect((yield* Effect.flip(client["stt.remove"]()))._tag).toBe("Conflict")
+          expect(yield* Effect.flip(client["stt.remove"]())).toMatchObject({ _tag: "Conflict" })
           release()
           expect(yield* eventually(client["stt.status"](), settled, { label: "install" })).toEqual({ state: "ready", model: "Fake Parakeet" })
         }))
@@ -518,7 +518,7 @@ describe("voice input over RPC", () => {
         Effect.gen(function*() {
           yield* installed(client)
           setModelMarker(dataDir, "fail-start", true)
-          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          expect(yield* Effect.flip(client["stt.open"]())).toMatchObject({ _tag: "Unavailable" })
           setModelMarker(dataDir, "fail-start", false)
           const first = yield* client["stt.open"]()
           expect((yield* client["stt.append"]({ sessionId: first.sessionId, pcmBase64: pcm(tone(1)) })).text).toBe("country")
@@ -527,7 +527,7 @@ describe("voice input over RPC", () => {
 
           yield* Effect.sleep("800 millis")
           const failed = yield* Effect.flip(client["stt.append"]({ sessionId: first.sessionId, pcmBase64: pcm(tone(1, DECODE_FAIL_LEVEL)) }))
-          expect(failed._tag).toBe("Unavailable")
+          expect(failed).toMatchObject({ _tag: "Unavailable" })
           const second = yield* client["stt.open"]()
           expect((yield* client["stt.finish"]({ sessionId: second.sessionId, pcmBase64: pcm(tone(2)) })).text).toBe("country")
           expect(yield* Effect.promise(() => recognizerPids(server))).toEqual(pidAfterStart)
@@ -545,7 +545,7 @@ describe("voice input over RPC", () => {
         Effect.gen(function*() {
           yield* installed(client)
           setModelMarker(dataDir, "hang-start", true)
-          expect((yield* Effect.flip(client["stt.open"]()))._tag).toBe("Unavailable")
+          expect(yield* Effect.flip(client["stt.open"]())).toMatchObject({ _tag: "Unavailable" })
           yield* eventually(Effect.sync(() => recognizersRunningUnder(dataDir)), (running) => running === 0, { timeout: 3_000, label: "hung start killed" })
         }))
       expect(await recognizerLedgerEntries(server)).toHaveLength(0)
@@ -570,6 +570,107 @@ describe("voice input over RPC", () => {
           expect(recognizersRunningUnder(dataDir)).toBe(0)
         }))
     } finally {
+      await server.close()
+    }
+  }, 30_000)
+
+  test.each(["startup", "shutdown", "idle shutdown", "interrupted shutdown"] as const)("removal blocks dictation and installation during recognizer %s", async (stage) => {
+    const dataDir = mkdtempSync(join(tmpdir(), "openbot-server-test-"))
+    const entered = Effect.runSync(Deferred.make<void>())
+    const resume = Effect.runSync(Deferred.make<void>())
+    const pause = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+    let held = false
+    const speech = SpeechToTextLive({ dir: join(dataDir, "stt"), manifest: manifestFor(fixtures), recognizerEntry: FAKE_RECOGNIZER, recognizerIdleMs: stage === "idle shutdown" ? 20 : undefined }).pipe(
+      Layer.provide(Layer.succeed(ProcessLedger, ProcessLedger.of({
+        record: () => Effect.suspend(() => held && stage === "startup" ? pause : Effect.void),
+        remove: () => Effect.suspend(() => held && stage !== "startup" ? pause : Effect.void),
+        list: Effect.succeed([]),
+        clear: Effect.void,
+      }))),
+    )
+    const server = await startServer({ dataDir, server: { speechToText: speech } })
+    try {
+      await withClient(server, (client) =>
+        Effect.gen(function*() {
+          yield* installed(client)
+          setModelMarker(dataDir, "ignore-sigterm", true)
+        }))
+      await server.run(Effect.gen(function*() {
+        const service = yield* SpeechToText
+        const initial = stage === "startup" ? undefined : yield* service.open
+        held = true
+        if (stage === "idle shutdown" && initial !== undefined) {
+          yield* service.discard(initial.sessionId)
+          yield* Deferred.await(entered)
+        }
+        const opening = stage === "startup"
+          ? yield* service.open.pipe(
+            Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          : undefined
+        if (stage === "startup") yield* Deferred.await(entered)
+        const removing = yield* service.remove.pipe(Effect.forkScoped({ startImmediately: true }))
+        if (stage === "shutdown" || stage === "interrupted shutdown") yield* Deferred.await(entered)
+        const interruption = stage === "interrupted shutdown"
+          ? yield* Fiber.interrupt(removing).pipe(Effect.forkScoped({ startImmediately: true }))
+          : undefined
+        yield* Effect.gen(function*() {
+          expect(existsSync(join(dataDir, "stt", "model"))).toBe(true)
+          yield* Effect.promise(() => withClient(server, (client) => Effect.gen(function*() {
+            expect(yield* Effect.flip(client["stt.open"]())).toMatchObject({ _tag: "Conflict" })
+            expect(yield* Effect.flip(client["stt.install"]())).toMatchObject({ _tag: "Conflict" })
+            expect(yield* Effect.flip(client["stt.remove"]())).toMatchObject({ _tag: "Conflict" })
+            expect(yield* Effect.flip(client["stt.append"]({ sessionId: "removed", pcmBase64: "" }))).toMatchObject({ _tag: "Conflict" })
+          })))
+        }).pipe(Effect.ensuring(Effect.sync(() => { held = false }).pipe(Effect.andThen(Deferred.succeed(resume, undefined)))))
+        if (interruption === undefined) expect((yield* Fiber.join(removing)).state).toBe("absent")
+        else {
+          yield* Fiber.join(interruption)
+          expect((yield* service.status).state).toBe("absent")
+        }
+        if (opening !== undefined) expect(yield* Fiber.join(opening)).toMatchObject({ _tag: "Conflict" })
+        expect(recognizersRunningUnder(dataDir)).toBe(0)
+        expect(existsSync(join(dataDir, "stt"))).toBe(false)
+        expect(yield* Effect.flip(service.open)).toMatchObject({ _tag: "Unavailable" })
+      }))
+      await withClient(server, (client) => Effect.gen(function*() {
+        expect((yield* installed(client)).state).toBe("ready")
+        yield* client["stt.open"]()
+        yield* client["stt.remove"]()
+        expect(recognizersRunningUnder(dataDir)).toBe(0)
+      }))
+    } finally {
+      held = false
+      Effect.runSync(Deferred.succeed(resume, undefined))
+      await server.close()
+    }
+  }, 30_000)
+
+  test("a pending transcription resumed after removal says voice input is not set up", async () => {
+    const server = await startWithManifest(manifestFor(fixtures))
+    const entered = Effect.runSync(Deferred.make<void>())
+    const resume = Effect.runSync(Deferred.make<void>())
+    const finish = DictationSession.prototype.finish
+    const paused = spyOn(DictationSession.prototype, "finish").mockImplementation(async function(this: DictationSession, samples: Float32Array) {
+      Effect.runSync(Deferred.succeed(entered, undefined))
+      await Effect.runPromise(Deferred.await(resume))
+      return finish.call(this, samples)
+    })
+    try {
+      await withClient(server, installed)
+      await server.run(Effect.gen(function*() {
+        const service = yield* SpeechToText
+        const { sessionId } = yield* service.open
+        const finishing = yield* service.finish(sessionId, encodePcm16(tone(1))).pipe(Effect.flip, Effect.forkScoped({ startImmediately: true }))
+        yield* Deferred.await(entered)
+        yield* service.remove.pipe(Effect.ensuring(Deferred.succeed(resume, undefined)))
+        expect(yield* Fiber.join(finishing)).toMatchObject({ _tag: "Unavailable", message: expect.stringContaining("isn't set up") })
+        expect(recognizersRunningUnder(server.dataDir)).toBe(0)
+      }))
+    } finally {
+      Effect.runSync(Deferred.succeed(resume, undefined))
+      paused.mockRestore()
       await server.close()
     }
   }, 30_000)
