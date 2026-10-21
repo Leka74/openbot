@@ -23,6 +23,7 @@ export interface DictationCallbacks {
   readonly onDone: (text: string) => void
   readonly onCancel: () => void
   readonly onError: (message: string) => void
+  readonly onFinishing: (finishing: Promise<unknown>) => void
 }
 
 const PUMP_INTERVAL_MS = 120
@@ -145,7 +146,10 @@ export function useDictation(callbacks: DictationCallbacks): DictationControls {
       cancel()
       return Promise.resolve("")
     }
-    if (active.finishing === undefined) active.finishing = completeRecording(active, active.microphone)
+    if (active.finishing === undefined) {
+      active.finishing = completeRecording(active, active.microphone)
+      latest.current.onFinishing(active.finishing)
+    }
     return active.finishing
   }, [completeRecording, cancel])
 

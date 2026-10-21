@@ -138,6 +138,73 @@ describe.skipIf(!existsSync(chromiumPath))("dictation against the dev mock", () 
     expect(errors).toEqual([])
   }, 30_000)
 
+  test("coming back before a sent dictation finishes shows it finishing, then an empty box", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Midway")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Midway ${LIVE}`)
+    await setMockStt(mock, { failsAppend: false, finishDelayMs: 2_000 })
+    await box.press("Enter")
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_travel"
+    })
+    await page.waitForTimeout(300)
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_expense"
+    })
+    await page.getByRole("status", { name: "Finishing the transcript" }).waitFor()
+    expect(await box.getAttribute("readonly")).not.toBeNull()
+    const sent = page.getByTestId("transcript").getByText(`Midway ${FINAL}`, { exact: true })
+    await sent.waitFor()
+    await draftIs(page, "")
+    await page.getByRole("button", { name: "Dictate" }).waitFor()
+    expect(await sent.count()).toBe(1)
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("coming back before a stopped dictation finishes shows the final transcript once it lands", async () => {
+    const { page, errors, box } = await openExpenseChat(browser, mock.url)
+    await box.fill("Halfway")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await draftIs(page, `Halfway ${LIVE}`)
+    await setMockStt(mock, { failsAppend: false, finishDelayMs: 2_000 })
+    await page.getByRole("button", { name: "Stop dictation" }).click()
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_travel"
+    })
+    await page.waitForTimeout(300)
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_expense"
+    })
+    await draftIs(page, `Halfway ${FINAL}`)
+    expect(await box.getAttribute("readonly")).toBeNull()
+    expect(errors).toEqual([])
+  }, 30_000)
+
+  test("leaving New chat while a sent dictation finishes sends it without pulling you back", async () => {
+    const { page, errors } = await openPage(browser, mock.url, "dark", "#/c/cnv_travel")
+    await page.context().grantPermissions(["microphone"])
+    await trackMicrophoneTracks(page)
+    await page.getByRole("button", { name: "New chat", exact: true }).click()
+    await page.getByRole("combobox", { name: "To" }).fill("Expense")
+    const box = page.getByRole("textbox", { name: "Message Bot" })
+    await box.fill("From new chat")
+    await page.getByRole("button", { name: "Dictate" }).click()
+    await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Bot"]')?.value.includes("staging") === true)
+    await setMockStt(mock, { failsAppend: false, finishDelayMs: 1_500 })
+    await box.press("Enter")
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_travel"
+    })
+    await page.waitForTimeout(2_500)
+    expect(await page.evaluate(() => location.hash)).toBe("#/c/cnv_travel")
+    await page.evaluate(() => {
+      location.hash = "#/c/cnv_expense"
+    })
+    await page.getByTestId("transcript").getByText(`From new chat ${FINAL}`, { exact: true }).waitFor()
+    expect(errors).toEqual([])
+  }, 30_000)
+
   test("an attachment removed while the transcript finishes is not sent with the message", async () => {
     const { page, errors, box } = await openExpenseChat(browser, mock.url)
     await page.locator('input[type="file"]').first().setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") })

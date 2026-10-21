@@ -49,6 +49,14 @@ export interface ComposerProps {
 }
 
 const drafts = new Map<string, string>()
+const draftsBeingFinished = new Map<string, Promise<unknown>>()
+
+const holdDraft = (draftKey: string, until: Promise<unknown>) => {
+  draftsBeingFinished.set(draftKey, until)
+  void until.finally(() => {
+    if (draftsBeingFinished.get(draftKey) === until) draftsBeingFinished.delete(draftKey)
+  })
+}
 const MAX_LINES = 6
 const LINE = 20
 
@@ -191,11 +199,27 @@ export function Composer(props: ComposerProps): ReactNode {
       setDictatingInto(undefined)
     },
     onError: (message) => toast({ title: message, tone: "danger" }),
+    onFinishing: (finishing) => holdDraft(draftKey, finishing),
   })
+
+  const [draftBusyElsewhere, setDraftBusyElsewhere] = useState(() => draftsBeingFinished.has(draftKey))
+  useEffect(() => {
+    const finishing = draftsBeingFinished.get(draftKey)
+    if (finishing === undefined) return
+    let mounted = true
+    void finishing.finally(() => {
+      if (!mounted) return
+      setDraftBusyElsewhere(false)
+      setText(drafts.get(draftKey) ?? "")
+    })
+    return () => {
+      mounted = false
+    }
+  }, [draftKey])
 
   const ready = uploads.filter((u) => u.attachment)
   const dictating = dictation.phase !== "idle"
-  const canSend = !props.disabled && !uploading && (dictating || text.trim().length > 0 || ready.length > 0)
+  const canSend = !props.disabled && !uploading && !draftBusyElsewhere && (dictating || text.trim().length > 0 || ready.length > 0)
   const sendingDictation = useRef(false)
   const current = useRef({ uploads, uploading, replyTo: props.replyTo })
   useLayoutEffect(() => {
@@ -368,7 +392,7 @@ export function Composer(props: ComposerProps): ReactNode {
             rows={1}
             value={text}
             disabled={props.disabled}
-            readOnly={dictation.phase !== "idle"}
+            readOnly={dictation.phase !== "idle" || draftBusyElsewhere}
             aria-label={placeholder}
             placeholder={placeholder}
             enterKeyHint={phone ? "enter" : "send"}
@@ -392,7 +416,7 @@ export function Composer(props: ComposerProps): ReactNode {
             )}
           />
           {props.context && <ContextRing {...props.context} />}
-          {dictation.available && !props.disabled && <DictationButton dictation={dictation} size={phone ? 36 : 28} />}
+          {draftBusyElsewhere ? <Spinner size={14} label="Finishing the transcript" /> : dictation.available && !props.disabled && <DictationButton dictation={dictation} size={phone ? 36 : 28} />}
           {working && (
             <IconButton icon={Square} label="Stop" title="Stop the Bot" size={phone ? 36 : 28} variant={text.trim() ? "secondary" : "primary"} iconSize="xs" onClick={props.onStop} className="[&_svg]:fill-current" />
           )}

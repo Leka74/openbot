@@ -3,7 +3,7 @@
 // type. Enter opens a Bot's direct chat; Tab adds it as a recipient (2–6 make a group). On a phone it
 // is a full-screen page with a back button; each Bot row has a + to add it (there is no Tab key).
 import { ChevronLeft, Plus, Users, X } from "lucide-react"
-import { type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useAtomSet } from "@effect/atom-react"
 import { Exit } from "effect"
 import { MAX_GROUP_BOTS, type Bot, type ConversationId } from "@openbot/contracts"
@@ -50,6 +50,17 @@ export function NewChatView({ onClose }: { readonly onClose?: (() => void) | und
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, chips.length])
 
+  const onScreen = useRef(true)
+  useEffect(() => {
+    onScreen.current = true
+    return () => {
+      onScreen.current = false
+    }
+  }, [])
+  const showConversation = (conversationId: ConversationId) => {
+    if (onScreen.current) select(conversationId)
+  }
+
   const openGroup = async (bots: ReadonlyArray<Bot>, firstMessage?: ComposerSubmit) => {
     const exit = await createGroup({ title: groupName.trim() || bots.map((b) => b.name).join(", "), memberBotIds: bots.map((b) => b.id), clientNonce: newClientNonce() })
     if (Exit.isFailure(exit)) {
@@ -58,7 +69,7 @@ export function NewChatView({ onClose }: { readonly onClose?: (() => void) | und
     }
     const conversationId = exit.value.id as ConversationId
     if (firstMessage) send({ conversationId, text: firstMessage.text, ...(firstMessage.attachmentIds.length ? { attachmentIds: firstMessage.attachmentIds } : {}) })
-    select(conversationId)
+    showConversation(conversationId)
   }
 
   const choose = (opt: Option | undefined, add = false) => {
@@ -108,7 +119,7 @@ export function NewChatView({ onClose }: { readonly onClose?: (() => void) | und
     if (targets.length === 1) {
       const conversationId = targets[0]!.directConversationId
       send({ conversationId, text: d.text, ...(d.attachmentIds.length ? { attachmentIds: d.attachmentIds } : {}) })
-      select(conversationId)
+      showConversation(conversationId)
       return
     }
     await openGroup(targets, d)
