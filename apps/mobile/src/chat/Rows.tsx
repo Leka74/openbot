@@ -133,7 +133,7 @@ function Bubble({ item, user, ctx }: { readonly item: BubbleItem; readonly user:
           </View>
         ) : (
           <View style={[styles.bubble, styles.botBubble, { backgroundColor: theme.bubbleBot }]}>
-            <Markdown text={e.text} theme={theme} />
+            <Markdown text={e.text} theme={theme} image={{ origin: ctx.connection.origin, headers }} />
           </View>
         ))}
     </View>

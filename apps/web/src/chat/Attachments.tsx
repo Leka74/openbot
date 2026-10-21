@@ -18,7 +18,9 @@ import {
   fileFamily,
   formatBytes,
   posterFrameUrl,
+  previewKind,
 } from "./attachments.ts"
+import { FilePreview } from "./FilePreview.tsx"
 
 const FAMILY_ICONS: Record<FileFamily, typeof File> = {
   image: FileImage,
@@ -61,9 +63,21 @@ function IconLink({ href, label, icon, download, newTab, tone = "default" }: {
   )
 }
 
-function FileCard({ attachment }: { readonly attachment: Attachment }): ReactNode {
+function FileCard({ attachment, onOpen }: {
+  readonly attachment: Attachment
+  readonly onOpen?: ((trigger: HTMLButtonElement) => void) | undefined
+}): ReactNode {
   const kind = attachmentKind(attachment)
   const family = fileFamily(attachment)
+  const previewable = onOpen !== undefined && previewKind(attachment) !== undefined
+  const label = (
+    <>
+      <span className="truncate text-sm font-medium text-fg" title={attachment.name}>
+        {attachment.name}
+      </span>
+      <span className="truncate text-xs text-fg-tertiary">{metaLine(attachment)}</span>
+    </>
+  )
   return (
     <div
       data-attachment={kind === "pdf" ? "pdf" : "file"}
@@ -72,12 +86,21 @@ function FileCard({ attachment }: { readonly attachment: Attachment }): ReactNod
       <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-secondary text-icon-secondary" aria-hidden>
         <Icon icon={FAMILY_ICONS[family]} size="lg" />
       </span>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-medium text-fg" title={attachment.name}>
-          {attachment.name}
-        </span>
-        <span className="truncate text-xs text-fg-tertiary">{metaLine(attachment)}</span>
-      </div>
+      {previewable ? (
+        // The button wraps only the name/meta column: an interactive element may not contain the
+        // Download link (it would swallow its clicks), so Download sits beside it outside.
+        <button
+          type="button"
+          data-attachment-id={attachment.id}
+          onClick={(e) => onOpen(e.currentTarget)}
+          title="Preview"
+          className="flex min-w-0 flex-1 flex-col rounded-lg text-start hover:underline focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          {label}
+        </button>
+      ) : (
+        <div className="flex min-w-0 flex-1 flex-col">{label}</div>
+      )}
       {kind === "pdf" && (
         <a
           href={attachment.url}
@@ -247,6 +270,23 @@ export function Lightbox({ images, index, onIndex, onClose }: {
 
 export function Attachments({ items, side }: { readonly items: ReadonlyArray<Attachment>; readonly side: "user" | "bot" }): ReactNode {
   const [viewing, setViewing] = useState<number | undefined>(undefined)
+  const [previewing, setPreviewing] = useState<Attachment | undefined>(undefined)
+  // `Dialog` restores the element focused when it opened, but a mouse click does not always focus
+  // a <button>, so the card that opened the preview is captured and focused explicitly on close.
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const closePreview = useCallback(() => setPreviewing(undefined), [])
+  // Restoring inside `closePreview` runs synchronously, before `Dialog` unmounts, so its own
+  // cleanup would then re-focus whatever was active when the dialog opened (the composer, on
+  // browsers that do not focus a <button> on click) and steal the card's focus back. One macrotask
+  // later is also required: closing on a scrim click lets the browser's mousedown default action
+  // reset focus to <body> *after* this commit, which a synchronous or microtask restore loses to.
+  useEffect(() => {
+    if (previewing !== undefined || triggerRef.current === null) return
+    const trigger = triggerRef.current
+    triggerRef.current = null
+    const timer = setTimeout(() => trigger.focus(), 0)
+    return () => clearTimeout(timer)
+  }, [previewing])
   if (items.length === 0) return null
   const images = items.filter((a) => attachmentKind(a) === "image")
   const others = items.filter((a) => attachmentKind(a) !== "image")
@@ -262,9 +302,19 @@ export function Attachments({ items, side }: { readonly items: ReadonlyArray<Att
       )}
       {others.map((a) => {
         const kind = attachmentKind(a)
-        return kind === "video" ? <VideoPlayer key={a.id} attachment={a} /> : kind === "audio" ? <AudioPlayer key={a.id} attachment={a} /> : <FileCard key={a.id} attachment={a} />
+        return kind === "video" ? <VideoPlayer key={a.id} attachment={a} /> : kind === "audio" ? <AudioPlayer key={a.id} attachment={a} /> : (
+          <FileCard
+            key={a.id}
+            attachment={a}
+            onOpen={(trigger) => {
+              triggerRef.current = trigger
+              setPreviewing(a)
+            }}
+          />
+        )
       })}
       {viewing !== undefined && <Lightbox images={images} index={viewing} onIndex={setViewing} onClose={() => setViewing(undefined)} />}
+      {previewing !== undefined && <FilePreview key={previewing.id} attachment={previewing} onClose={closePreview} />}
     </div>
   )
 }

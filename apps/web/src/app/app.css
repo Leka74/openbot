@@ -47,6 +47,18 @@
 .ob-md pre code { padding: 0; background: none; font-size: inherit; }
 .ob-md blockquote { border-inline-start: 2px solid var(--ob-line); padding-inline-start: 8px; color: var(--ob-fg-secondary); }
 .ob-md h1, .ob-md h2, .ob-md h3 { font-weight: 600; }
+.ob-md-hr { border: 0; border-top: 1px solid var(--ob-line); margin: 10px 0; }
+.ob-md-img { max-width: 100%; max-height: 360px; border-radius: 12px; object-fit: contain; }
+/* The dashed border and padding are part of the criterion: a bare coloured word reads as body text,
+ * so a failed image would look like ordinary copy instead of a visible placeholder. */
+.ob-md-img-fallback {
+  display: inline-block; max-width: 100%; padding: 2px 6px; border-radius: 6px;
+  border: 1px dashed var(--ob-line); color: var(--ob-fg-secondary);
+  font-size: 13px; word-break: break-all;
+}
+.ob-md li[data-task="done"] { opacity: 0.65; text-decoration: line-through; }
+.ob-md-preview { font-size: 15px; line-height: 22px; }
+.ob-md-preview-code { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 19px; }
 
 /* Accordion (steps disclosure): grid-template-rows 0fr -> 1fr, 240 ms standard easing. */
 .ob-accordion { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 240ms var(--ease-standard); }

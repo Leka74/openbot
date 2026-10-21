@@ -8,7 +8,10 @@ import {
   extensionLabel,
   fileFamily,
   formatBytes,
+  MAX_PREVIEW_BYTES,
   posterFrameUrl,
+  previewKind,
+  previewTooLarge,
 } from "../src/chat/attachments.ts"
 
 describe("attachments", () => {
@@ -55,5 +58,56 @@ describe("attachments", () => {
     expect(posterFrameUrl("/api/attachments/att_1")).toBe("/api/attachments/att_1#t=0.1")
     expect(aspectRatioOf({ width: 1920, height: 1080 }, "16 / 9")).toBe("1920 / 1080")
     expect(aspectRatioOf({}, "16 / 9")).toBe("16 / 9")
+  })
+})
+
+describe("previewKind", () => {
+  test("exclusions come first: media, PDF, archives, HTML", () => {
+    expect(previewKind({ mime: "image/png", name: "a.png" })).toBeUndefined()
+    expect(previewKind({ mime: "video/mp4", name: "a.mp4" })).toBeUndefined()
+    expect(previewKind({ mime: "audio/mpeg", name: "a.mp3" })).toBeUndefined()
+    expect(previewKind({ mime: "application/pdf", name: "a.pdf" })).toBeUndefined()
+    expect(previewKind({ mime: "application/zip", name: "a.zip" })).toBeUndefined()
+    expect(previewKind({ mime: "text/html", name: "a.html" })).toBeUndefined()
+    expect(previewKind({ mime: "text/plain", name: "a.HTM" })).toBeUndefined()
+    expect(previewKind({ mime: "application/octet-stream", name: "a.bin" })).toBeUndefined()
+  })
+
+  test("markdown by mime or extension", () => {
+    expect(previewKind({ mime: "text/markdown", name: "a.txt" })).toBe("markdown")
+    expect(previewKind({ mime: "text/plain", name: "a.md" })).toBe("markdown")
+    expect(previewKind({ mime: "application/octet-stream", name: "notes.markdown" })).toBe("markdown")
+  })
+
+  test("extension beats the generic text/* because the server maps .ts/.rs/.go to text/plain", () => {
+    expect(previewKind({ mime: "text/plain", name: "a.ts" })).toBe("code")
+    expect(previewKind({ mime: "text/plain", name: "a.rs" })).toBe("code")
+    expect(previewKind({ mime: "text/plain", name: "a.go" })).toBe("code")
+    expect(previewKind({ mime: "text/plain", name: "a.json" })).toBe("code")
+    expect(previewKind({ mime: "text/plain", name: "a.yaml" })).toBe("code")
+  })
+
+  test("code by mime", () => {
+    expect(previewKind({ mime: "application/json", name: "a.dat" })).toBe("code")
+    expect(previewKind({ mime: "text/css", name: "a.dat" })).toBe("code")
+    expect(previewKind({ mime: "text/javascript", name: "a.dat" })).toBe("code")
+  })
+
+  test("plain text last, case-normalised", () => {
+    expect(previewKind({ mime: "text/csv", name: "a.csv" })).toBe("text")
+    expect(previewKind({ mime: "text/plain", name: "Makefile" })).toBe("text")
+    expect(previewKind({ mime: "TEXT/MARKDOWN", name: "A.MD" })).toBe("markdown")
+    expect(previewKind({ mime: "  Text/Plain  ", name: "a.txt" })).toBe("text")
+  })
+})
+
+describe("previewTooLarge", () => {
+  test("exact 2 MiB boundary; undefined is not too large", () => {
+    expect(MAX_PREVIEW_BYTES).toBe(2_097_152)
+    expect(previewTooLarge(2_097_151)).toBe(false)
+    expect(previewTooLarge(2_097_152)).toBe(false)
+    expect(previewTooLarge(2_097_153)).toBe(true)
+    expect(previewTooLarge(undefined)).toBe(false)
+    expect(previewTooLarge(0)).toBe(false)
   })
 })

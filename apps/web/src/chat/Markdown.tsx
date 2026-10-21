@@ -4,17 +4,28 @@
 // (avatar + name in the Bot's colour, Grok style). Links only allow http(s), mailto and
 // same-origin relative URLs; anything else renders as plain text.
 import { Globe } from "lucide-react"
-import { Fragment, type ReactNode } from "react"
+import { Fragment, type ReactNode, useState } from "react"
 import { Avatar } from "@openbot/ui"
+import { safeHref } from "@openbot/app-model"
+
+export { safeHref }
 
 // ------------------------------------------------------------------------------------------- blocks
 
 export type Block =
   | { readonly kind: "paragraph"; readonly text: string }
   | { readonly kind: "code"; readonly lang: string; readonly text: string }
-  | { readonly kind: "list"; readonly ordered: boolean; readonly start: number; readonly items: ReadonlyArray<string> }
+  | {
+    readonly kind: "list"
+    readonly ordered: boolean
+    readonly start: number
+    readonly items: ReadonlyArray<string>
+    /** One entry per item when this is a task list; undefined once an item has no `[ ]`/`[x]` prefix. */
+    readonly checked?: ReadonlyArray<boolean | undefined>
+  }
   | { readonly kind: "quote"; readonly text: string }
   | { readonly kind: "heading"; readonly level: number; readonly text: string }
+  | { readonly kind: "rule" }
   | {
     readonly kind: "table"
     readonly header: ReadonlyArray<string>
@@ -28,6 +39,11 @@ const FENCE = /^\s{0,3}(```|~~~)\s*([\w+-]*)\s*$/
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*)$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
 const TABLE_SEP = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/
+// `marked`'s task-item rule: the box, then at least one space, then real content. A `[ ]` with
+// nothing after it (or only trailing spaces) is a plain list item on both ends — mobile's `marked`
+// strips trailing spaces before tokenising, so it cannot tell `- [ ] ` from `- [ ]`.
+const TASK = /^\[([ xX])\] +(\S.*)$/
 
 /** Splits a GFM table row into trimmed cells (`\|` is a literal pipe). */
 export const splitRow = (line: string): ReadonlyArray<string> => {
@@ -88,6 +104,13 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
         continue
       }
     }
+    // After tables (so `|---|` stays a separator) and before headings/lists (so `- - -` is not a
+    // bullet). The empty-paragraph guard keeps `Title\n---` as text — this renderer has no setext.
+    if (para.length === 0 && RULE.test(line)) {
+      flush()
+      blocks.push({ kind: "rule" })
+      continue
+    }
     const heading = HEADING.exec(line)
     if (heading) {
       flush()
@@ -99,16 +122,30 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
       const ordered = !BULLET.test(line)
       const start = ordered ? Number(ORDERED.exec(line)![1]) : 1
       const items: string[] = []
+      const checked: Array<boolean | undefined> = []
       while (i < lines.length) {
         const l = lines[i]!
         const m = ordered ? ORDERED.exec(l) : BULLET.exec(l)
-        if (m) items.push((ordered ? m[2] : m[1]) ?? "")
-        else if (l.trim() !== "" && /^\s{2,}\S/.test(l) && items.length > 0) items[items.length - 1] += `\n${l.trim()}`
+        if (m) {
+          const raw = (ordered ? m[2] : m[1]) ?? ""
+          const task = TASK.exec(raw)
+          if (task) {
+            checked.push(task[1] !== " ")
+            items.push(task[2] ?? "")
+          } else {
+            checked.push(undefined)
+            items.push(raw)
+          }
+        } else if (l.trim() !== "" && /^\s{2,}\S/.test(l) && items.length > 0) items[items.length - 1] += `\n${l.trim()}`
         else break
         i++
       }
       i--
-      blocks.push({ kind: "list", ordered, start, items })
+      blocks.push(
+        checked.some((c) => c !== undefined)
+          ? { kind: "list", ordered, start, items, checked }
+          : { kind: "list", ordered, start, items },
+      )
       continue
     }
     const quote = QUOTE.exec(line)
@@ -127,11 +164,26 @@ export const parseBlocks = (source: string): ReadonlyArray<Block> => {
 
 // ------------------------------------------------------------------------------------------ inline
 
-export const safeHref = (raw: string): string | undefined => {
-  const url = raw.trim()
-  if (/^(https?:|mailto:)/i.test(url)) return url
-  if (/^\/(?!\/)/.test(url) || /^#/.test(url)) return url
-  return undefined
+/** Whether an `<img>` can load this href at all (`safeHref` also lets `#frag` and `mailto:` through). */
+const loadable = (href: string): boolean => /^https?:/i.test(href) || (href.startsWith("/") && !href.startsWith("//"))
+
+/** Inline image with its own failure state: a broken image must stay visible as text, never blank. */
+function MdImage(props: { readonly href: string; readonly alt: string }): ReactNode {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return <span className="ob-md-img-fallback">{props.alt || props.href}</span>
+  }
+  return (
+    <img
+      src={props.href}
+      alt={props.alt}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      className="ob-md-img"
+      onError={() => setFailed(true)}
+    />
+  )
 }
 
 type InlineRule = { readonly re: RegExp; readonly render: (m: RegExpExecArray, key: string) => ReactNode }
@@ -177,6 +229,17 @@ const mentionRule = (scope: MentionScope): InlineRule | undefined =>
 
 const rules: ReadonlyArray<InlineRule> = [
   { re: /`([^`\n]+)`/, render: (m, key) => <code key={key}>{m[1]}</code> },
+  {
+    re: /!\[([^\]\n]*)\]\(([^)\s]+)\)/,
+    render: (m, key) => {
+      const href = safeHref(m[2]!)
+      const alt = m[1] ?? ""
+      // `#frag` / `mailto:` pass safeHref but no <img> can load them: fall back to text *before*
+      // creating the element, or the user sees a broken image flash before it turns into text.
+      if (href === undefined || !loadable(href)) return <Fragment key={key}>{alt || href || m[2]!}</Fragment>
+      return <MdImage key={key} href={href} alt={alt} />
+    },
+  },
   {
     re: /\[([^\]\n]+)\]\(([^)\s]+)\)/,
     render: (m, key) => {
@@ -298,6 +361,8 @@ function renderBlocks(blocks: ReadonlyArray<Block>, className: string | undefine
             )
           case "paragraph":
             return <p key={i}>{renderInline(b.text, `p${i}-`)}</p>
+          case "rule":
+            return <hr key={i} className="ob-md-hr" />
           case "code":
             return (
               <pre key={i} data-lang={b.lang || undefined}>
@@ -312,13 +377,21 @@ function renderBlocks(blocks: ReadonlyArray<Block>, className: string | undefine
             return b.ordered ? (
               <ol key={i} start={b.start}>
                 {b.items.map((it, j) => (
-                  <li key={j}>{renderInline(it, `l${i}-${j}-`)}</li>
+                  <li key={j} {...(b.checked === undefined ? {} : { "data-task": b.checked[j] === true ? "done" : "todo" })}>
+                    {b.checked?.[j] === undefined ? null : <span aria-hidden>{b.checked[j] === true ? "☑" : "☐"}</span>}
+                    {b.checked?.[j] === undefined ? null : " "}
+                    {renderInline(it, `l${i}-${j}-`)}
+                  </li>
                 ))}
               </ol>
             ) : (
               <ul key={i}>
                 {b.items.map((it, j) => (
-                  <li key={j}>{renderInline(it, `l${i}-${j}-`)}</li>
+                  <li key={j} {...(b.checked === undefined ? {} : { "data-task": b.checked[j] === true ? "done" : "todo" })}>
+                    {b.checked?.[j] === undefined ? null : <span aria-hidden>{b.checked[j] === true ? "☑" : "☐"}</span>}
+                    {b.checked?.[j] === undefined ? null : " "}
+                    {renderInline(it, `l${i}-${j}-`)}
+                  </li>
                 ))}
               </ul>
             )

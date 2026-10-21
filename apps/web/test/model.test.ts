@@ -257,6 +257,8 @@ describe("markdown", () => {
     expect(blocks[4]?.kind === "list" && blocks[4].ordered).toBe(true)
   })
   test("only allows safe link targets", () => {
+    // The whitelist itself is tested in `packages/app-model/test/links.test.ts`; these six pin
+    // that the web renderer still goes through it.
     expect(safeHref("https://example.com")).toBe("https://example.com")
     expect(safeHref("mailto:a@b.c")).toBe("mailto:a@b.c")
     expect(safeHref("/api/attachments/att_1")).toBe("/api/attachments/att_1")
