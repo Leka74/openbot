@@ -41,7 +41,7 @@ import {
   TurnRepo,
 } from "../../ports/repos.ts"
 import { type BotChatRef, type BotReadPage, CANT_READ_MESSAGE, type SearchInput, SearchService } from "../../ports/services.ts"
-import { visiblePage, visiblePageAfter } from "../conversation/internal/summary.ts"
+import { visiblePage, visiblePageAfter, voiceWork } from "../conversation/internal/summary.ts"
 import { compact, findBotByRef, isHousekeeping, orDie } from "../conversation/internal/util.ts"
 import { decodeSearchCursor, encodeSearchCursor, parseSearchQuery, parseSnippet } from "./text.ts"
 
@@ -65,6 +65,7 @@ export const SearchServiceLive: Layer.Layer<
     const conversations = yield* ConversationRepo
     const bots = yield* BotRepo
     const entries = yield* EntryRepo
+    const turns = yield* TurnRepo
     const transcript = yield* Effect.context<EntryRepo | TurnRepo>()
 
     const checkQuery = (query: string) =>
@@ -172,56 +173,69 @@ export const SearchServiceLive: Layer.Layer<
       readonly more: boolean
     }
 
-    /** `want` shown entries before (`older`) or after a position, oldest first. */
+    /** Whether a bot may see this entry of a chat it may read: `shown`, and not a voice call's work. */
+    const visible = (botId: BotId, includeTools: boolean) => {
+      const keep = shown(botId, includeTools)
+      const hidden = voiceWork(turns)
+      return (entry: TranscriptEntry): Effect.Effect<boolean> =>
+        keep(entry) ? Effect.map(hidden(entry), (voice) => !voice) : Effect.succeed(false)
+    }
+
+    /** `want` visible entries before (`older`) or after a position, oldest first. */
     const scan = (
       bot: Bot,
       chat: ReadChat,
       direction: "older" | "newer",
       from: EntryPosition | undefined,
       want: number,
-      keep: (entry: TranscriptEntry) => boolean,
+      keep: (entry: TranscriptEntry) => Effect.Effect<boolean>,
     ): Effect.Effect<Scan> =>
       Effect.gen(function*() {
         if (want <= 0) return { entries: [], more: true }
-        if (chat.kind === "exchange") {
-          const peer = yield* orDie(bots.get(chat.peerBotId))
-          if (Option.isNone(peer)) return { entries: [], more: false }
-          const slice = yield* orDie(entries.listExchange({
-            botIds: [bot.id, peer.value.id],
-            conversationIds: [bot.directConversationId, peer.value.directConversationId],
-            direction,
-            from,
-            limit: want,
-          }))
-          return { entries: slice.entries, more: slice.more }
-        }
-        const kept: Array<TranscriptEntry> = []
-        let at = from
+        const older = direction === "older"
         const size = Math.max(want * 2, 20)
-        while (true) {
-          if (direction === "older") {
-            const page = yield* orDie(Effect.provide(
+        let peer: Bot | undefined
+        if (chat.kind === "exchange") {
+          peer = Option.getOrUndefined(yield* orDie(bots.get(chat.peerBotId)))
+          if (peer === undefined) return { entries: [], more: false }
+        }
+        /** One slice from `at` towards `direction`, in order. */
+        const slice = (at: EntryPosition | undefined): Effect.Effect<Scan> =>
+          peer !== undefined
+            ? orDie(entries.listExchange({
+              botIds: [bot.id, peer.id],
+              conversationIds: [bot.directConversationId, peer.directConversationId],
+              direction,
+              from: at,
+              limit: size,
+            }))
+            : chat.kind === "exchange"
+            ? Effect.succeed({ entries: [], more: false })
+            : older
+            ? orDie(Effect.provide(
               visiblePage({ conversationId: chat.conversationId, before: at === undefined ? undefined : cursorOf(at), limit: size }),
               transcript,
-            ))
-            kept.unshift(...page.entries.filter(keep))
-            const first = page.entries[0]
-            if (kept.length >= want || !page.hasMoreBefore || first === undefined) {
-              return { entries: kept.slice(Math.max(0, kept.length - want)), more: kept.length > want || page.hasMoreBefore }
-            }
-            at = first
-          } else {
-            const page = yield* orDie(Effect.provide(
+            )).pipe(Effect.map((page) => ({ entries: page.entries, more: page.hasMoreBefore })))
+            : orDie(Effect.provide(
               visiblePageAfter({ conversationId: chat.conversationId, after: cursorOf(at ?? { createdAt: -1, id: "0" }), limit: size }),
               transcript,
-            ))
-            kept.push(...page.entries.filter(keep))
-            const last = page.entries[page.entries.length - 1]
-            if (kept.length >= want || !page.hasMoreAfter || last === undefined) {
-              return { entries: kept.slice(0, want), more: kept.length > want || page.hasMoreAfter }
+            )).pipe(Effect.map((page) => ({ entries: page.entries, more: page.hasMoreAfter })))
+        const kept: Array<TranscriptEntry> = []
+        let at = from
+        while (true) {
+          const page = yield* slice(at)
+          const seen: Array<TranscriptEntry> = []
+          for (const entry of page.entries) if (yield* keep(entry)) seen.push(entry)
+          if (older) kept.unshift(...seen)
+          else kept.push(...seen)
+          const edge = older ? page.entries[0] : page.entries[page.entries.length - 1]
+          if (kept.length >= want || !page.more || edge === undefined) {
+            return {
+              entries: older ? kept.slice(Math.max(0, kept.length - want)) : kept.slice(0, want),
+              more: kept.length > want || page.more,
             }
-            at = last
           }
+          at = edge
         }
       })
 
@@ -276,7 +290,9 @@ export const SearchServiceLive: Layer.Layer<
       const bot = yield* botOf(botId)
       const anchorId = input.around ?? input.before ?? input.after
       const anchor = anchorId === undefined ? undefined : Option.getOrUndefined(yield* orDie(entries.get(anchorId)))
-      if (anchorId !== undefined && (anchor === undefined || anchor.kind === "unknown")) return yield* cantRead()
+      // An entry the bot may not see (another bot's step or reasoning, a voice call's work, a hidden
+      // line) is refused as if it did not exist. Its own steps it may open without include_tools.
+      if (anchorId !== undefined && (anchor === undefined || !(yield* visible(botId, true)(anchor)))) return yield* cantRead()
 
       // the chat: asked for, or the one the entry belongs to as this bot may read it
       let chat = input.chat
@@ -300,7 +316,7 @@ export const SearchServiceLive: Layer.Layer<
         return yield* cantRead()
       }
 
-      const keep = shown(botId, input.includeTools)
+      const keep = visible(botId, input.includeTools)
       let list: ReadonlyArray<TranscriptEntry>
       let moreBefore: boolean
       let moreAfter: boolean

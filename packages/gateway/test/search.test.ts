@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import type { BotId, ConversationId, KnownTranscriptEntry, Task, TaskId } from "@openbot/contracts"
 import { OWNER_USER_ID } from "@openbot/contracts"
-import { ConversationRepo, EntryRepo, TaskRepo } from "@openbot/core"
+import { ConversationRepo, EntryRepo, TaskRepo, TurnRepo } from "@openbot/core"
 import {
   botId,
   conversationId,
@@ -13,7 +13,9 @@ import {
   makeMessageEntry,
   makeTask,
   makeToolCallEntry,
+  makeTurn,
   SettingsServiceFake,
+  turnId,
 } from "@openbot/core/testing"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { DEFAULT_SETTINGS } from "@openbot/contracts"
@@ -33,7 +35,7 @@ const group = conversationId("cnv_launch")
 
 const put = (entry: KnownTranscriptEntry) => h.run(Effect.flatMap(EntryRepo, (repo) => repo.upsert(entry)))
 const putTask = (task: Task) => h.run(Effect.flatMap(TaskRepo, (repo) => repo.upsert(task)))
-const say = (id: string, conversation: ConversationId, createdAt: number, from: "owner" | BotId, text: string, to?: BotId) =>
+const say = (id: string, conversation: ConversationId, createdAt: number, from: "owner" | BotId, text: string, to?: BotId, turn?: string) =>
   put(makeMessageEntry({
     id: entryId(id),
     conversationId: conversation,
@@ -42,6 +44,7 @@ const say = (id: string, conversation: ConversationId, createdAt: number, from: 
     author: from === "owner" ? { kind: "user", userId: OWNER_USER_ID } : { kind: "bot", botId: from },
     text,
     ...(to === undefined ? {} : { toBotId: to }),
+    ...(turn === undefined ? {} : { turnId: turnId(turn) }),
   }))
 const setGroup = (members: ReadonlyArray<BotId>) =>
   h.run(Effect.flatMap(ConversationRepo, (repo) => repo.upsert(makeGroupConversation({ id: group, memberBotIds: members, title: "Launch" }))))
@@ -178,6 +181,67 @@ describe("what a bot may read", () => {
     expect(read.text).toContain("· ran: lynx deploy")
     expect(read.text).not.toContain("lynx secret")
     expect((await call(client, "read_conversation", { conversation: "Launch" })).text).not.toContain("ran:")
+  })
+
+  /** Every way to name an entry as the anchor; each must be refused like an unknown id. */
+  const refusedEverywhere = async (client: Client, id: string) => {
+    const cant = { text: "ERROR: You can't read that conversation.", isError: true }
+    expect(await call(client, "read_conversation", { around: id, limit: 1 })).toEqual(cant)
+    expect(await call(client, "read_conversation", { around: id })).toEqual(cant)
+    expect(await call(client, "read_conversation", { before: id })).toEqual(cant)
+    expect(await call(client, "read_conversation", { after: id })).toEqual(cant)
+    expect(await call(client, "read_conversation", { around: id, include_tools: true })).toEqual(cant)
+    expect(await call(client, "read_conversation", { around: "ent_nope" })).toEqual(cant)
+  }
+
+  test("an anchor it may not see is refused like an unknown id: another bot's tool step", async () => {
+    h = await startHarness()
+    await seed()
+    await put(makeToolCallEntry({ id: entryId("ent_t1"), conversationId: group, createdAt: 33, author: { kind: "bot", botId: BOT_A }, inputSummary: "lynx deploy", status: "completed" }))
+    await put(makeToolCallEntry({ id: entryId("ent_t2"), conversationId: group, createdAt: 34, author: { kind: "bot", botId: BOT_B }, inputSummary: "lynx secret", status: "completed" }))
+    const client = await connectAs()
+    await refusedEverywhere(client, "ent_t2")
+    expect((await call(client, "read_conversation", { conversation: "Launch", around: "ent_t2" })).text).toBe("ERROR: You can't read that conversation.")
+    // its own step it may open (a search_messages tools hit), and the page around it hides Beta's
+    const own = await call(client, "read_conversation", { around: "ent_t1", limit: 1 })
+    expect(own.text).toContain("· ran: lynx deploy")
+    const near = await call(client, "read_conversation", { around: "ent_t1", include_tools: true })
+    expect(near.text).toContain("· ran: lynx deploy")
+    expect(near.text).not.toContain("lynx secret")
+    const older = await call(client, "read_conversation", { after: "ent_g2", include_tools: true })
+    expect(older.text).not.toContain("lynx secret")
+  })
+
+  test("an anchor it may not see is refused like an unknown id: a voice call's work", async () => {
+    h = await startHarness()
+    await seed()
+    await h.run(Effect.flatMap(TurnRepo, (turns) =>
+      Effect.all([
+        turns.upsert(makeTurn({ id: turnId("trn_voice_a"), conversationId: dmA, botId: BOT_A, status: "completed", voice: true })),
+        turns.upsert(makeTurn({ id: turnId("trn_voice_b"), conversationId: dmB, botId: BOT_B, status: "completed", voice: true })),
+      ])))
+    // in Alpha's own DM, and in its messages with Beta (sent from Beta's call)
+    await say("ent_v1", dmA, 22, BOT_A, "quokka: told on the call", undefined, "trn_voice_a")
+    await say("ent_v2", dmA, 23, BOT_B, "quokka from Beta's call", BOT_A, "trn_voice_b")
+    await say("ent_a3", dmA, 24, "owner", "after the call")
+    const client = await connectAs()
+    await refusedEverywhere(client, "ent_v1")
+    await refusedEverywhere(client, "ent_v2")
+    expect((await call(client, "read_conversation", { conversation: "owner" })).text).not.toContain("quokka")
+    const exchange = await call(client, "read_conversation", { conversation: "@Beta" })
+    expect(exchange.text).toContain("zebra build is green")
+    expect(exchange.text).not.toContain("quokka")
+    expect((await call(client, "read_conversation", { after: "ent_a2" })).text).not.toContain("quokka")
+  })
+
+  test("an anchor in a group it left is refused like an unknown id, its own messages and steps too", async () => {
+    h = await startHarness()
+    await seed()
+    await put(makeToolCallEntry({ id: entryId("ent_t1"), conversationId: group, createdAt: 33, author: { kind: "bot", botId: BOT_A }, inputSummary: "lynx deploy", status: "completed" }))
+    await setGroup([BOT_B, C])
+    const client = await connectAs()
+    for (const id of ["ent_g1", "ent_g3", "ent_t1"]) await refusedEverywhere(client, id)
+    expect((await call(client, "read_conversation", { conversation: "owner", around: "ent_g1" })).text).toBe("ERROR: You can't read that conversation.")
   })
 })
 

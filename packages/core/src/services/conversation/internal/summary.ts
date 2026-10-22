@@ -20,7 +20,7 @@ import { attachmentsLine, compact, conversationBotIds, describeEvent, isHousekee
 const PREVIEW_SCAN = 20
 
 /** Whether an entry is part of work handed over on a voice call (told on the call, not shown in the chat). Remembers each turn. */
-const voiceWork = (turns: TurnRepo["Service"]) => {
+export const voiceWork = (turns: TurnRepo["Service"]) => {
   const known = new Map<string, boolean>()
   return (entry: TranscriptEntry): Effect.Effect<boolean> =>
     Effect.gen(function*() {
