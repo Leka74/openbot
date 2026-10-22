@@ -1,8 +1,8 @@
 // A chat opened away from its newest messages (a search hit, the Find bar): the pages of
 // `conversations.around` merged into one window, and what the chat shows while it is open. The
 // live replica keeps only the newest part of a chat, so the window lives next to it: newer
-// revisions of the window's entries come from the replica, and once the window reaches the part
-// the replica holds, the two join into one continuous transcript that stays live.
+// revisions of the window's entries come from the replica, and once the window reaches the newest
+// entry, the two join into one continuous transcript that stays live.
 import { compareEntries, type ConversationState, type RuntimeRequest, type TranscriptEntry, type TranscriptWindow, type Turn, type TurnId } from "@openbot/contracts"
 
 /** The loaded part of a chat around a target, oldest first, with the cursors to load more. */
@@ -61,18 +61,11 @@ export const applyWindowPage = (window: ChatWindow | undefined, page: Transcript
 }
 
 /**
- * Whether the window reaches the part of the chat the replica holds: it ends at the newest entry,
- * shares an entry with the replica, or its newest entry is not older than the replica's oldest.
+ * Whether the window and the replica are one continuous transcript: only once the window reaches
+ * the newest entry. Sharing an entry with the replica proves nothing: a reaction or an edit to an
+ * old message puts it in the replica too, far from the part the replica holds in one piece.
  */
-export const joinsReplica = (window: ChatWindow, replica: Pick<ConversationState, "entries">): boolean => {
-  if (window.afterCursor === null) return true
-  const last = window.entries[window.entries.length - 1]
-  if (last === undefined || replica.entries.size === 0) return false
-  if (replica.entries.has(last.id)) return true
-  let oldest: TranscriptEntry | undefined
-  for (const e of replica.entries.values()) if (oldest === undefined || compareEntries(e, oldest) < 0) oldest = e
-  return oldest !== undefined && compareEntries(last, oldest) >= 0
-}
+export const joinsReplica = (window: ChatWindow): boolean => window.afterCursor === null
 
 /** What the chat shows while a window is open. */
 export interface WindowView {
@@ -85,14 +78,18 @@ export interface WindowView {
 
 /**
  * The window with newer revisions (and turns / requests) from the replica; once joined, the
- * replica's entries too. Before that, the replica's other entries stay out: they belong to pages
- * not loaded yet.
+ * replica's newer entries too (older ones may be lone edits: the window's own older pages bring
+ * them). Before that, the replica's other entries stay out: they belong to pages not loaded yet.
  */
 export const windowView = (window: ChatWindow, replica: Pick<ConversationState, "entries" | "turns" | "requests">): WindowView => {
-  const joined = joinsReplica(window, replica)
+  const joined = joinsReplica(window)
   const turns = mergeById(window.turns, replica.turns)
   const requests = mergeById(window.requests, replica.requests as ReadonlyMap<string, RuntimeRequest>)
-  if (joined) return { entries: mergeEntries(window.entries, [...replica.entries.values()]), turns, requests, joined }
+  const first = window.entries[0]
+  if (joined) {
+    const live = [...replica.entries.values()].filter((e) => first === undefined || compareEntries(e, first) >= 0)
+    return { entries: mergeEntries(window.entries, live), turns, requests, joined }
+  }
   const entries = window.entries.map((e) => {
     const live = replica.entries.get(e.id)
     return live !== undefined && live.revision > e.revision ? live : e

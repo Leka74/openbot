@@ -192,13 +192,21 @@ describe("chat window", () => {
     expect([w.beforeCursor, w.afterCursor]).toEqual([null, null])
   })
 
-  test("joins the replica at the newest entry, on a shared entry, or once it reaches the replica's oldest", () => {
-    const tail = replica([msg("e8", 8), msg("e9", 9)])
-    expect(joinsReplica(applyWindowPage(undefined, win([msg("e2", 2)], "b", "a"), "first"), tail)).toBe(false)
-    expect(joinsReplica(applyWindowPage(undefined, win([msg("e2", 2)], "b", null), "first"), tail)).toBe(true)
-    expect(joinsReplica(applyWindowPage(undefined, win([msg("e7", 7), msg("e8", 8)], "b", "a"), "first"), tail)).toBe(true)
-    expect(joinsReplica(applyWindowPage(undefined, win([msg("e7", 7), msg("e8b", 8.5)], "b", "a"), "first"), tail)).toBe(true)
-    expect(joinsReplica(applyWindowPage(undefined, win([msg("e7", 7)], "b", "a"), "first"), replica([]))).toBe(false)
+  test("joins the replica only once it reaches the newest entry", () => {
+    expect(joinsReplica(applyWindowPage(undefined, win([msg("e2", 2)], "b", "a"), "first"))).toBe(false)
+    expect(joinsReplica(applyWindowPage(undefined, win([msg("e2", 2)], "b", null), "first"))).toBe(true)
+    // touching the replica's oldest entry is not enough: newer pages bring the rest
+    expect(joinsReplica(applyWindowPage(undefined, win([msg("e7", 7), msg("e8", 8)], "b", "a"), "first"))).toBe(false)
+  })
+
+  test("a reaction to an old window entry patches it in place and leaves the gap to the tail open", () => {
+    const w = applyWindowPage(undefined, win([msg("e2", 2), msg("e3", 3)], "b", "a"), "first")
+    // the reaction arrives live: the replica now holds e2 next to its own tail (e8, e9)
+    const live = replica([msg("e2", 2, 2, "reacted"), msg("e8", 8), msg("e9", 9)])
+    const v = windowView(w, live)
+    expect([v.joined, ids(v.entries), (v.entries[0] as { text: string }).text]).toEqual([false, ["e2", "e3"], "reacted"])
+    // the window's last entry too
+    expect(windowView(w, replica([msg("e3", 3, 2, "reacted"), msg("e8", 8)])).joined).toBe(false)
   })
 
   test("view: the replica's turns at once, its entries only once joined (newer revisions win)", () => {
@@ -206,7 +214,8 @@ describe("chat window", () => {
     const live = replica([msg("e8", 8), msg("e9", 9)], [turn("t9", "running")])
     const v = windowView(w, live)
     expect([v.joined, ids(v.entries), v.turns.has("t9" as TurnId)]).toEqual([false, ["e2", "e3"], true])
-    const joined = windowView(applyWindowPage(w, win([msg("e4", 4)], "x", null), "newer"), replica([msg("e3", 3, 2, "edited"), msg("e8", 8), msg("e9", 9)]))
+    const joined = windowView(applyWindowPage(w, win([msg("e4", 4)], "x", null), "newer"), replica([msg("e1", 1, 2, "older edit"), msg("e3", 3, 2, "edited"), msg("e8", 8), msg("e9", 9)]))
+    // e1 is older than the window: its own older page brings it, not the replica
     expect([joined.joined, ids(joined.entries), (joined.entries[1] as { text: string }).text]).toEqual([true, ["e2", "e3", "e4", "e8", "e9"], "edited"])
   })
 

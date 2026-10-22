@@ -8,7 +8,7 @@
 // steps while steps are hidden; the phone layout. Screenshots: e2e/screenshots/e2e-search-*.png.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import type { Browser, Page } from "playwright-core"
-import type { Bot, ConversationId } from "@openbot/contracts"
+import type { Bot, ConversationId, EntryId } from "@openbot/contracts"
 import { type AppPage, type Brain, connectRpc, eventually, hasChromium, launchBrowser, openApp, type Rpc, startBrain } from "./brain.ts"
 
 const CITIES = ["Berlin", "Tokyo", "Austin", "Zürich", "Nairobi", "Montréal", "Seoul", "Porto", "Reykjavík", "Lima", "Oslo", "Kraków"]
@@ -133,6 +133,13 @@ describe.skipIf(!hasChromium)("e2e: message search", () => {
     expect(await page.evaluate(() => (CSS as unknown as { highlights: Map<string, unknown> }).highlights.has("ob-find-current"))).toBe(true)
     await page.getByTestId("jump-to-latest").waitFor()
     await app.shot("e2e-search-deep-link")
+
+    // a reaction to it shows in place; the unloaded part up to the newest stays a gap
+    await rpc.call((c) => c["messages.react"]({ conversationId: nova.directConversationId, entryId: entryId as EntryId, emoji: "👍" }))
+    await eventually(() => target.textContent(), (t) => t?.includes("👍") === true, { label: "the reaction" })
+    expect(await transcript(page).getAttribute("data-window")).toBe("open")
+    expect(await page.getByTestId("jump-to-latest").count()).toBe(1)
+    expect(await transcript(page).locator(".ob-msg").filter({ hasText: `Trip ${TRIPS}:` }).count()).toBe(0)
 
     // scrolling pages in older and newer parts of the window
     const count = () => transcript(page).locator(".ob-msg").count()
