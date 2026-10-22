@@ -21,6 +21,8 @@ const OPENBOT_TOOL_ACTIVITY: Readonly<Record<string, string>> = {
   handoff_task: MESSAGING_ACTIVITY,
   post_to_group: MESSAGING_ACTIVITY,
   send_file: "Sending a file",
+  search_messages: "Looking back through messages",
+  read_conversation: "Looking back through messages",
   ask_user: "Asking you a question",
   request_approval: "Asking for your approval",
   request_takeover: "Needs you on its screen",

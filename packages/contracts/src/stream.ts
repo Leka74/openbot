@@ -75,6 +75,27 @@ export const TranscriptPage = Schema.Struct({
 })
 export type TranscriptPage = typeof TranscriptPage.Type
 
+/**
+ * A window of a chat's transcript (`conversations.around`), oldest first: around an entry (a search
+ * hit), or the page before / after a cursor of an earlier window.
+ */
+export const TranscriptWindow = Schema.Struct({
+  entries: Schema.Array(TranscriptEntry),
+  hasMoreBefore: Schema.Boolean,
+  hasMoreAfter: Schema.Boolean,
+  /** Opaque; pass as `beforeCursor` for older entries. Null when nothing is older. */
+  beforeCursor: Schema.NullOr(Schema.String),
+  /** Opaque; pass as `afterCursor` for newer entries. Null when the window reaches the newest. */
+  afterCursor: Schema.NullOr(Schema.String),
+  /** Timestamp of the entry just before the window, for timestamp separators. */
+  precedingTimestamp: Schema.optionalKey(Millis),
+  /** The turns of the window's entries (voice work, steps disclosure), as the live replica has them. */
+  turns: Schema.Array(Turn),
+  /** The requests of the window's cards (their pending / answered state). */
+  requests: Schema.Array(RuntimeRequest),
+})
+export type TranscriptWindow = typeof TranscriptWindow.Type
+
 /** A window of the messages two Bots sent each other (`conversations.exchange`), oldest first. */
 export const ExchangePage = Schema.Struct({
   entries: Schema.Array(TranscriptEntry),

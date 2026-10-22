@@ -36,10 +36,13 @@ import {
   RosterStreamItem,
   RuntimeRequest,
   RuntimeResponseInput,
+  SearchPage,
+  SearchPositions,
   Settings,
   SettingsPatch,
   SkillName,
   TranscriptEntry,
+  TranscriptWindow,
   Turn,
 } from "../src/index.ts"
 
@@ -387,5 +390,37 @@ describe("roster stream", () => {
       settings: {},
     })
     roundTrip(KnownRosterStreamItem, item)
+  })
+})
+
+describe("search", () => {
+  test("a page of hits round-trips (entry, bot-to-bot and task hits)", () => {
+    const page = Schema.decodeUnknownSync(SearchPage)({
+      hits: [
+        { ref: { kind: "entry", entryId: "ent_1" }, conversationId: "cnv_1", kind: "message", author: { kind: "owner" }, createdAt: 5, snippet: "the deploy waits", highlights: [{ start: 4, end: 10 }] },
+        { ref: { kind: "entry", entryId: "ent_2" }, conversationId: "cnv_2", kind: "message", author: { kind: "bot", botId: "bot_1" }, toBotId: "bot_2", turnId: "trn_1", createdAt: 6, snippet: "ok", highlights: [] },
+        { ref: { kind: "task", taskId: "tsk_1" }, conversationId: "cnv_1", kind: "task", author: { kind: "bot", botId: "bot_1" }, jumpEntryId: "ent_9", createdAt: 7, snippet: "report", highlights: [] },
+      ],
+      nextCursor: "r:-1.5:7:tsk_1",
+      totalCapped: 3,
+      terms: ["deploy"],
+      indexing: true,
+    })
+    roundTrip(SearchPage, page)
+    expect(decodes(SearchPage, { hits: [], nextCursor: null, totalCapped: 0 })).toBe(false) // terms are required
+  })
+
+  test("positions and a transcript window round-trip", () => {
+    roundTrip(SearchPositions, Schema.decodeUnknownSync(SearchPositions)({ hits: [{ entryId: "ent_1", createdAt: 1 }], more: false, terms: ["leke"] }))
+    const window = Schema.decodeUnknownSync(TranscriptWindow)({
+      entries: [{ ...base, kind: "message", role: "bot", text: "hi", attachments: [], streaming: false, turnId: "trn_1" }],
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      beforeCursor: "1:ent_1",
+      afterCursor: null,
+      turns: [{ id: "trn_1", conversationId: "cnv_1", botId: "bot_1", status: "completed", trigger: "user", startedAt: 1 }],
+      requests: [],
+    })
+    roundTrip(TranscriptWindow, window)
   })
 })

@@ -35,7 +35,8 @@ import { SlackConnectInput, SlackStatus } from "./slack.ts"
 import { SttSession, SttStatus, SttTranscription } from "./stt.ts"
 import { VoiceCallStatus, VoicePreview } from "./voice.ts"
 import { HarkSends, HarkStatus } from "./hark.ts"
-import { ConversationStreamItem, ExchangePage, RosterStreamItem, StreamCursor, TranscriptPage } from "./stream.ts"
+import { SearchKind, SearchPage, SearchPositions, SearchSender, SearchSort } from "./search.ts"
+import { ConversationStreamItem, ExchangePage, RosterStreamItem, StreamCursor, TranscriptPage, TranscriptWindow } from "./stream.ts"
 import { Task, TaskDetail } from "./task.ts"
 import { Attachment, MessageDelivery, Turn } from "./transcript.ts"
 
@@ -283,6 +284,22 @@ export class OpenBotRpcs extends RpcGroup.make(
     success: ExchangePage,
     error: errors(NotFound, InvalidInput),
   }),
+  /**
+   * A window of a chat around an entry (a search hit: up to half before it, the entry, the rest
+   * after), or the page before / after a cursor of an earlier window; neither = the newest entries.
+   * Pass at most one of `entryId`, `beforeCursor` and `afterCursor`. `limit` ≤ 200.
+   */
+  Rpc.make("conversations.around", {
+    payload: {
+      conversationId: ConversationId,
+      entryId: Schema.optionalKey(EntryId),
+      beforeCursor: Schema.optionalKey(Schema.String),
+      afterCursor: Schema.optionalKey(Schema.String),
+      limit: NonNegativeInt,
+    },
+    success: TranscriptWindow,
+    error: errors(NotFound, InvalidInput),
+  }),
   Rpc.make("conversations.createGroup", {
     payload: { title: Schema.String, memberBotIds: Schema.Array(BotId), leadBotId: Schema.optionalKey(BotId), clientNonce: Schema.optionalKey(NonEmptyString) },
     success: Conversation,
@@ -393,6 +410,40 @@ export class OpenBotRpcs extends RpcGroup.make(
   Rpc.make("rules.list", { payload: { botId: Schema.optionalKey(BotId) }, success: Schema.Array(ApprovalRule), error: errors() }),
   Rpc.make("rules.upsert", { payload: { rule: ApprovalRuleInput }, success: ApprovalRule, error: errors(NotFound, InvalidInput) }),
   Rpc.make("rules.delete", { payload: { ruleId: ApprovalRuleId }, error: Missing }),
+
+  // message search
+  /**
+   * Searches every chat: words or "an exact phrase", `-word` excludes, the last word also matches as
+   * a prefix. `botIds`: chats the Bot is in and what it wrote; `kinds` default `DEFAULT_SEARCH_KINDS`;
+   * `from` / `to` bound `createdAt` (inclusive); `sort` default relevance; `limit` ≤ 50.
+   */
+  Rpc.make("search.query", {
+    payload: {
+      query: Schema.String,
+      conversationIds: Schema.optionalKey(Schema.Array(ConversationId)),
+      botIds: Schema.optionalKey(Schema.Array(BotId)),
+      senders: Schema.optionalKey(Schema.Array(SearchSender)),
+      kinds: Schema.optionalKey(Schema.Array(SearchKind)),
+      from: Schema.optionalKey(Millis),
+      to: Schema.optionalKey(Millis),
+      sort: Schema.optionalKey(SearchSort),
+      cursor: Schema.optionalKey(Schema.String),
+      limit: NonNegativeInt,
+    },
+    success: SearchPage,
+    error: errors(InvalidInput),
+  }),
+  /** Every hit in one chat (the newest `limit` ≤ 1,000, returned oldest first), for the Find bar. */
+  Rpc.make("search.inConversation", {
+    payload: {
+      conversationId: ConversationId,
+      query: Schema.String,
+      kinds: Schema.optionalKey(Schema.Array(SearchKind)),
+      limit: NonNegativeInt,
+    },
+    success: SearchPositions,
+    error: errors(NotFound, InvalidInput),
+  }),
 
   // background tasks (D5.7)
   /** A bot's tasks, newest first (`limit` default 50). */
