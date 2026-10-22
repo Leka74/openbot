@@ -39,6 +39,8 @@ import {
 } from "./uiState.ts"
 
 const COMPACT_KEY = "openbot.sidebar.compact"
+/** Surfaces on top of the chat (dialogs, popovers, menus, the mention list): Cmd/Ctrl+F stays the browser's. */
+const OVERLAYS = '[role="dialog"], [role="menu"], [role="listbox"]'
 
 /** Browser chrome / status bar tint per theme (the chrome token; index.html has the first-paint value). */
 const THEME_COLOR = { dark: "#121212", light: "#fcfcfc" } as const
@@ -214,7 +216,7 @@ export function App(): ReactNode {
       const key = e.key.toLowerCase()
       if (mod && !e.shiftKey && !e.altKey && key === "f") {
         // Only while a chat is the main view and nothing covers it; elsewhere the browser finds.
-        if (!chatOnScreen || conversationId === null || dialogs.dialog || settings.open || connectApps.open || computer.botId || document.querySelector('[role="dialog"]')) return
+        if (!chatOnScreen || conversationId === null || dialogs.dialog || settings.open || connectApps.open || computer.botId || document.querySelector(OVERLAYS)) return
         e.preventDefault()
         setFindBar({ conversationId, nonce: (findBar?.nonce ?? 0) + 1 })
       } else if (mod && !e.shiftKey && !e.altKey && key === "k") {

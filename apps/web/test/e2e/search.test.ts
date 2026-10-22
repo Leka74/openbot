@@ -183,7 +183,16 @@ describe.skipIf(!hasChromium)("e2e: message search", () => {
     await page.getByTestId("find-bar").waitFor({ state: "detached" })
     await eventually(() => page.evaluate(() => (CSS as unknown as { highlights: Map<string, unknown> }).highlights.size), (n) => n === 0, { label: "the highlights to go" })
 
-    // a dialog on top: Cmd/Ctrl+F is the browser's
+    // a menu on top: Cmd/Ctrl+F is the browser's
+    await transcript(page).locator(".ob-msg").last().hover()
+    await transcript(page).locator(".ob-msg").last().getByRole("button", { name: "More", exact: true }).click()
+    await page.getByRole("menu", { name: "More actions" }).waitFor()
+    await page.keyboard.press("Control+f")
+    expect(await page.getByTestId("find-bar").count()).toBe(0)
+    await page.keyboard.press("Escape")
+    await page.getByRole("menu", { name: "More actions" }).waitFor({ state: "detached" })
+
+    // a dialog on top: the same
     await page.keyboard.press("Control+k")
     await page.getByRole("combobox").waitFor()
     await page.keyboard.press("Control+f")
