@@ -23,6 +23,7 @@ import {
   type StreamCursor,
   type Turn,
 } from "@openbot/contracts"
+import { snapshotTail } from "./search.ts"
 
 type ConversationChangeItem = Extract<KnownConversationStreamItem, { kind: "change" }>
 type RosterChangeItem = Extract<KnownRosterStreamItem, { kind: "change" }>
@@ -69,16 +70,18 @@ export class ConversationReplica extends Replica<ConversationState, KnownConvers
   get turns(): Turn[] {
     return [...this.state.turns.values()]
   }
+  /** The newest entries only (older ones page in with `conversations.history`), like LiveHub. */
   snapshot(): Extract<KnownConversationStreamItem, { kind: "snapshot" }> {
+    const tail = snapshotTail(this.entries)
     return {
       kind: "snapshot",
       cursor: this.head,
       conversation: this.conversation,
-      entries: this.entries,
+      entries: tail.entries as KnownTranscriptEntry[],
       requests: this.requests,
       turns: this.turns,
-      hasMoreBefore: false,
-      beforeCursor: null,
+      hasMoreBefore: tail.hasMoreBefore,
+      beforeCursor: tail.beforeCursor,
     }
   }
 }

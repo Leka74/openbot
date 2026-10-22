@@ -382,6 +382,21 @@ export const seed = (brain: MockBrain, now = Date.now()) => {
   // --------------------------------------------------------------------------------- Travel Desk
   {
     const { bot, conv } = direct("travel", 60 * 3)
+    // Months of older trips (more than one snapshot holds): message search jumps into them, the chat
+    // pages them in. Every tenth trip mentions a visa; one has a passport scan step.
+    const cities = ["Berlin", "Tokyo", "Austin", "Zürich", "Nairobi", "Montréal", "Seoul", "Porto", "Reykjavík", "Lima", "Oslo", "Kraków"]
+    for (let i = 0; i < 60; i++) {
+      const city = cities[i % cities.length]!
+      const start = 60 * 24 * (120 - i * 2)
+      const visa = i % 10 === 3
+      brain.put(brain.message(conv, OWNER, `Trip ${i + 1}: book ${city} for the ${visa ? "partner summit; check the visa rules" : "quarterly review"}, back by Friday.`, at(start), { delivery: "delivered" }))
+      const t = turn(conv, bot, start)
+      if (i === 23) steps(conv, bot, t, start, [{ name: "Read", toolKind: "file-read", summary: "passport-scan.pdf (2 pages)", output: "Passport valid until 2031-04-02" }])
+      brain.put(brain.message(conv, botAuthor(bot), `Looking at ${city} options now.`, at(start, 20), { turnId: t }))
+      brain.put(brain.message(conv, botAuthor(bot), visa ? `Booked ${city}. Heads up: the visa takes about 10 working days, so I filed it today.` : `Booked ${city}: aisle seat, hotel near the office, back Friday evening.`, at(start, 50), { turnId: t }))
+      brain.put(brain.message(conv, OWNER, i % 7 === 0 ? "Thanks — make the hotel refundable please." : "Great, thanks.", at(start - 30)))
+      if (i % 7 === 0) brain.put(brain.message(conv, botAuthor(bot), "Done: switched to the refundable rate (+€18/night).", at(start - 31)))
+    }
     brain.put(brain.message(conv, OWNER, "Hold flights to Lisbon for the offsite, Thursday morning out.", at(60 * 3 + 5), { delivery: "delivered" }))
     const t = turn(conv, bot, 60 * 3 + 5)
     brain.put(brain.message(conv, botAuthor(bot), "Flights held until Friday noon. I need a couple of details to book.", at(60 * 3, 10), { turnId: t }))

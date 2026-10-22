@@ -71,6 +71,7 @@ import {
   memoryFactIdFromTitle,
 } from "@openbot/contracts"
 import { ConversationReplica, RosterReplica, subscribeTo } from "./replica.ts"
+import { around, historyBefore, positions, search, type SearchSource } from "./search.ts"
 import { parseSkillMd, SKILLS_SH } from "./skillsSh.ts"
 
 export const OWNER: Author = { kind: "user", userId: OWNER_USER_ID }
@@ -1026,6 +1027,16 @@ export class MockBrain {
     }
   }
 
+  /** Every chat's entries for the mock search (dev/mock/search.ts). */
+  searchSource(): SearchSource {
+    return {
+      conversations: [...this.convs.values()].map((r) => {
+        const c = r.conversation
+        return { id: c.id, kind: c.kind, memberBotIds: c.kind === "group" ? c.memberBotIds : [c.botId], entries: r.entries, turns: r.state.turns }
+      }),
+    }
+  }
+
   // -------------------------------------------------------------------------------- handlers
   handlers(): Record<string, (payload: any) => unknown> {
     const sync =
@@ -1040,7 +1051,25 @@ export class MockBrain {
         if (!r) return Stream.fail(new NotFound({ entity: "conversation", id: conversationId }))
         return subscribeTo<KnownConversationStreamItem>(r, after, () => r.snapshot())
       },
-      "conversations.history": () => Effect.succeed({ entries: [], hasMoreBefore: false, beforeCursor: null }),
+      "conversations.history": ({ conversationId, beforeCursor, limit }) =>
+        sync(() => {
+          const r = this.conv(conversationId)
+          return historyBefore({ entries: r.entries, turns: r.state.turns }, beforeCursor, limit)
+        })(),
+      "conversations.around": ({ conversationId, entryId, beforeCursor, afterCursor, limit }) =>
+        sync(() => {
+          const r = this.conv(conversationId)
+          const page = around({ entries: r.entries, turns: r.state.turns, requests: r.requests }, { entryId, beforeCursor, afterCursor, limit })
+          if (!page) throw new NotFound({ entity: "entry", id: entryId ?? "" })
+          return page
+        })(),
+      "search.query": (p) => sync(() => search(this.searchSource(), p))(),
+      "search.inConversation": ({ conversationId, query, kinds, limit }) =>
+        sync(() => {
+          const c = this.searchSource().conversations.find((x) => x.id === conversationId)
+          if (!c) throw new NotFound({ entity: "conversation", id: conversationId })
+          return positions(c, { query, ...(kinds ? { kinds } : {}), limit })
+        })(),
       "conversations.exchange": (p) => sync(() => this.exchange(p))(),
       "bots.create": (p) => sync(() => this.createBot(p))(),
       "bots.update": ({ botId, patch }) =>
