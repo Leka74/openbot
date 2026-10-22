@@ -5,7 +5,7 @@
  */
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
 import { KnownTranscriptEntry, Task } from "@openbot/contracts"
-import { ConversationRepo, EntryRepo, parseSearchQuery, SearchRepo, SEARCH_TEXT_VERSION, TaskRepo } from "@openbot/core"
+import { ConversationRepo, EntryRepo, parseSearchQuery, type SearchCursor, SearchRepo, SEARCH_TEXT_VERSION, TaskRepo } from "@openbot/core"
 import {
   botId,
   conversationId,
@@ -18,7 +18,7 @@ import {
   taskId,
 } from "@openbot/core/testing"
 import { afterAll, describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Fiber, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { join } from "node:path"
 import Initial from "../src/migrations/0001_initial.ts"
@@ -122,11 +122,11 @@ describe("0004_message_search", () => {
     // chat items and tool steps are indexed apart
     expect(out.split).toEqual([2, 1])
     expect(out.version).toBe(String(SEARCH_TEXT_VERSION))
-    // next boot: only what has no doc is looked at again (the two without one)
-    expect(out.second).toMatchObject({ rebuilt: false, indexed: 2 })
+    // next boot: nothing was written since without its doc
+    expect(out.second).toMatchObject({ rebuilt: false, indexed: 0 })
   })
 
-  test("a new text version rebuilds the index; entries written meanwhile stay indexed", async () => {
+  test("a new text version rebuilds the index", async () => {
     const dir = await tempDataDir()
     const out = await run(
       Effect.gen(function*() {
@@ -149,6 +149,146 @@ describe("0004_message_search", () => {
     expect(out.report).toMatchObject({ rebuilt: true, indexed: 1_200 })
     expect(out.docs).toBe(1_200)
     expect(out.stale).toBe(0)
+  })
+
+  test("entries written while a rebuild runs, between its batches, stay indexed", async () => {
+    const dir = await tempDataDir()
+    const total = 2_000
+    const out = await run(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient
+        const search = yield* SearchRepo
+        const repo = yield* EntryRepo
+        yield* search.ensure
+        const id = (i: number) => entryId(`ent_${String(i).padStart(5, "0")}`)
+        for (let i = 0; i < total; i++) {
+          yield* repo.upsert(makeMessageEntry({ id: id(i), conversationId: dm, createdAt: i, text: `heron number ${i}` }))
+        }
+        yield* sql`UPDATE settings SET value_json = '0' WHERE key = ${SEARCH_VERSION_KEY}`
+        const rebuild = yield* Effect.forkChild(search.ensure)
+        // Wait until the first batches are in, then write: an entry the rebuild has passed, one it
+        // has yet to read, and a new one. (Queries wait for a batch's transaction to end.)
+        let docsWhenWritten = 0
+        for (let polls = 0; docsWhenWritten === 0 && polls < 10_000; polls++) {
+          const docs = yield* count("search_docs")
+          if (docs > 0 && docs < total) {
+            docsWhenWritten = docs
+            yield* repo.upsert(makeMessageEntry({ id: id(7), revision: 1, conversationId: dm, createdAt: 7, text: "egret passed" }))
+            yield* repo.upsert(makeMessageEntry({ id: id(total - 3), revision: 1, conversationId: dm, createdAt: total - 3, text: "egret ahead" }))
+            yield* repo.upsert(makeMessageEntry({ id: id(total + 5), conversationId: dm, createdAt: total + 5, text: "egret new" }))
+          }
+          yield* Effect.yieldNow
+        }
+        const report = yield* Fiber.join(rebuild)
+        yield* integrity
+        const egrets = yield* search.query({ scope: { kind: "owner" }, match: parseSearchQuery("egret")!, kinds: ["message"], sort: "oldest", limit: 10 })
+        return {
+          docsWhenWritten,
+          report,
+          docs: yield* count("search_docs"),
+          egrets: egrets.hits.map((hit) => hit.doc.text),
+          herons: yield* ftsCount("heron"),
+        }
+      }),
+      testPersistence(dir),
+    )
+    // the writes landed mid-rebuild
+    expect(out.docsWhenWritten).toBeGreaterThan(0)
+    expect(out.docsWhenWritten).toBeLessThan(total)
+    expect(out.report).toMatchObject({ rebuilt: true })
+    expect(out.docs).toBe(total + 1)
+    expect(out.egrets).toEqual(["egret passed", "egret ahead", "egret new"])
+    expect(out.herons).toBe(total - 2)
+  })
+
+  test("after a rollback, what the older release wrote or changed is indexed at the next boot", async () => {
+    const dir = await tempDataDir()
+    const out = await run(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient
+        const search = yield* SearchRepo
+        const repo = yield* EntryRepo
+        const tasks = yield* TaskRepo
+        yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
+        yield* search.ensure
+        const first = makeMessageEntry({ id: entryId("ent_1"), conversationId: dm, createdAt: 1, text: "priorword stays" })
+        const second = makeMessageEntry({ id: entryId("ent_2"), conversationId: dm, createdAt: 2, text: "priorword goes" })
+        const task = makeTask({ id: taskId("tsk_1"), botId: A, conversationId: dm, title: "Audit", status: "running", createdAt: 3 })
+        yield* repo.upsert(first)
+        yield* repo.upsert(second)
+        yield* tasks.upsert(task)
+
+        // the older release (0003's writers: no search docs, no search_rev) edits, adds and finishes work
+        const oldEntryWrite = (entry: KnownTranscriptEntry) =>
+          sql`INSERT INTO entries (id, conversation_id, revision, created_at, kind, turn_id, client_nonce, native_id, payload_json)
+            VALUES (${entry.id}, ${entry.conversationId}, ${entry.revision}, ${entry.createdAt}, ${entry.kind}, NULL, NULL, NULL, ${encodeEntry(entry)})
+            ON CONFLICT (id) DO UPDATE SET conversation_id = excluded.conversation_id, revision = excluded.revision,
+              kind = excluded.kind, turn_id = excluded.turn_id, client_nonce = excluded.client_nonce,
+              native_id = excluded.native_id, payload_json = excluded.payload_json`
+        yield* oldEntryWrite({ ...second, revision: 1, text: "replacementword now" } as KnownTranscriptEntry)
+        yield* oldEntryWrite(makeMessageEntry({ id: entryId("ent_3"), conversationId: dm, createdAt: 4, text: "addedword later" }))
+        const finished = { ...task, status: "succeeded" as const, result: "resultword found", endedAt: 5 }
+        yield* sql`INSERT INTO tasks (id, bot_id, conversation_id, status, created_at, payload_json)
+          VALUES (${finished.id}, ${finished.botId}, ${finished.conversationId}, ${finished.status}, ${finished.createdAt}, ${encodeTask(finished)})
+          ON CONFLICT (id) DO UPDATE SET bot_id = excluded.bot_id, conversation_id = excluded.conversation_id,
+            status = excluded.status, created_at = excluded.created_at, payload_json = excluded.payload_json`
+
+        const report = yield* search.ensure
+        yield* integrity
+        const hits = (words: string) =>
+          search.query({ scope: { kind: "owner" }, match: parseSearchQuery(words)!, kinds: ["message", "task"], sort: "oldest", limit: 10 }).pipe(
+            Effect.map((page) => page.hits.map((hit) => hit.doc.refId)),
+          )
+        return {
+          report,
+          prior: yield* hits("priorword"),
+          replacement: yield* hits("replacementword"),
+          added: yield* hits("addedword"),
+          result: yield* hits("resultword"),
+          again: yield* search.ensure,
+        }
+      }),
+      testPersistence(dir),
+    )
+    expect(out.report).toMatchObject({ rebuilt: false, indexed: 3 })
+    expect(out.prior).toEqual(["ent_1"])
+    expect(out.replacement).toEqual(["ent_2"])
+    expect(out.added).toEqual(["ent_3"])
+    expect(out.result).toEqual(["tsk_1"])
+    expect(out.again).toMatchObject({ rebuilt: false, indexed: 0 })
+  })
+
+  test("relevance paging reaches every match, however many share a score", async () => {
+    const dir = await tempDataDir()
+    const total = 600
+    const out = await run(
+      Effect.gen(function*() {
+        const search = yield* SearchRepo
+        const repo = yield* EntryRepo
+        yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
+        yield* search.ensure
+        for (let i = 1; i <= total; i++) {
+          yield* repo.upsert(makeMessageEntry({ id: entryId(`ent_${String(i).padStart(4, "0")}`), conversationId: dm, createdAt: i, text: "same heron words" }))
+        }
+        const seen: Array<string> = []
+        let after: SearchCursor | undefined
+        for (let pages = 0; pages < 100; pages++) {
+          const page = yield* search.query({
+            scope: { kind: "owner" }, match: parseSearchQuery("heron")!, kinds: ["message"], sort: "relevance", limit: 20,
+            ...(after === undefined ? {} : { after }),
+          })
+          seen.push(...page.hits.map((hit) => hit.doc.refId))
+          if (page.next === undefined) break
+          after = page.next
+        }
+        return seen
+      }),
+      testPersistence(dir),
+    )
+    // tied scores: newest first, every one of them once
+    expect(out[0]).toBe("ent_0600")
+    expect(out.length).toBe(total)
+    expect(new Set(out).size).toBe(total)
   })
 
   test("the FTS index follows inserts, edits, deletes and repeated revisions", async () => {

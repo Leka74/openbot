@@ -73,4 +73,10 @@ export default Effect.gen(function*() {
   yield* sql`CREATE TRIGGER tasks_search_ad AFTER DELETE ON tasks BEGIN
     DELETE FROM search_docs WHERE ref_id = old.id;
   END`
+
+  // The revision of an entry its doc was derived from (set by `EntryRepo.upsert`, in the same
+  // statement). An older release, run after a rollback, writes entries without it: whatever it
+  // added or changed is in `entries_search_stale`, and the next boot indexes it again.
+  yield* sql`ALTER TABLE entries ADD COLUMN search_rev INTEGER`
+  yield* sql`CREATE INDEX entries_search_stale ON entries (id) WHERE search_rev IS NOT revision`
 })

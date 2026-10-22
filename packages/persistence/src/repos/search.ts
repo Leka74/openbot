@@ -11,7 +11,8 @@
  *   matches (stopping at the page); relevance filters the best bm25 matches first (`byRelevance`).
  *   Snippets are cut from the stored text (`makeSnippet`).
  * - **Boot.** `ensure` indexes what is stored: everything when the stored text version differs from
- *   core's `SEARCH_TEXT_VERSION`, else only the entries and tasks without a doc.
+ *   core's `SEARCH_TEXT_VERSION`, else what an older release (run after a rollback) wrote: entries
+ *   whose `search_rev` is behind their revision, and tasks whose text changed (`backfill`).
  */
 import type { EntryId, Millis, Task, TranscriptEntry, TurnId } from "@openbot/contracts"
 import { SEARCH_TOTAL_CAP, Task as TaskSchema, TranscriptEntry as TranscriptEntrySchema } from "@openbot/contracts"
@@ -219,14 +220,16 @@ export const makeSqlSearchRepo = Effect.gen(function*() {
       const after = query.after?.sort === "relevance" ? query.after : undefined
       const filters = sql.and(filterClauses(query))
       for (let k = Math.max(RELEVANCE_FIRST_CANDIDATES, wanted * 16); k <= RELEVANCE_MAX_CANDIDATES; k *= 8) {
-        let complete = true
+        // Every match scoring below `bound` is a candidate. One scoring `bound` may not be: a table
+        // cut at k stops inside its run of ties, which the page orders by time.
+        let bound = Infinity
         const candidates: Array<{ readonly id: number; readonly score: number }> = []
         for (const table of tables) {
           const best = yield* sql<{ readonly id: number; readonly score: number }>`SELECT id, score FROM (
               SELECT rowid AS id, bm25(${sql.literal(table)}) AS score FROM ${sql.literal(table)}
               WHERE ${sql.literal(table)} MATCH ${fts}
             ) WHERE ${after === undefined ? sql`1` : sql`score >= ${after.rank}`} ORDER BY score LIMIT ${k}`
-          if (best.length >= k) complete = false
+          if (best.length >= k) bound = Math.min(bound, best[best.length - 1]!.score)
           candidates.push(...best)
         }
         if (candidates.length === 0) return []
@@ -245,9 +248,9 @@ export const makeSqlSearchRepo = Effect.gen(function*() {
           rows.push({ id, created_at: row.created_at, ref_id: row.ref_id, score })
         }
         rows.sort((x, y) => x.score - y.score || y.created_at - x.created_at || (x.ref_id < y.ref_id ? 1 : x.ref_id > y.ref_id ? -1 : 0))
-        // Enough passed, or every match was a candidate. (Each table's candidates are its best, so
-        // anything better than the last row taken is among them.)
-        if (rows.length >= wanted || complete) return rows.slice(0, wanted)
+        // Enough passed below the bound (nothing missing can come before them), or every match was a candidate.
+        const sure = bound === Infinity ? rows : rows.filter((row) => row.score < bound)
+        if (sure.length >= wanted || bound === Infinity) return sure.slice(0, wanted)
       }
       const scored = tables
         .map((table) =>
@@ -271,6 +274,12 @@ export const makeSqlSearchRepo = Effect.gen(function*() {
   const DOC_COLUMNS = sql`d.id, d.source, d.ref_id, d.conversation_id, d.turn_id, d.kind, d.author_kind, d.author_bot_id,
     d.to_bot_id, d.created_at, d.text`
 
+  /**
+   * Indexes stored rows, a batch per transaction. Entries: every one on a rebuild, else those an
+   * older release wrote or changed (`search_rev` behind `revision`); each is then marked indexed at
+   * the revision read. Tasks have no revision but are few: all are derived again, and written when
+   * their text changed (a task an older release finished gains its result).
+   */
   const backfill = Effect.fn("SearchRepo.backfill")(function*(rebuild: boolean) {
     let indexed = 0
     let last = ""
@@ -278,43 +287,42 @@ export const makeSqlSearchRepo = Effect.gen(function*() {
       const count = yield* Effect.gen(function*() {
         const rows = rebuild
           ? yield* sql<{ id: string; payload_json: string }>`SELECT id, payload_json FROM entries
-              WHERE id > ${last} AND ${sql.in("kind", INDEXED_KINDS)} ORDER BY id LIMIT ${BACKFILL_BATCH}`
-          : yield* sql<{ id: string; payload_json: string }>`SELECT e.id, e.payload_json FROM entries e
-              WHERE e.id > ${last} AND ${sql.in("e.kind", INDEXED_KINDS)}
-                AND NOT EXISTS (SELECT 1 FROM search_docs d WHERE d.ref_id = e.id)
-              ORDER BY e.id LIMIT ${BACKFILL_BATCH}`
+              WHERE id > ${last} ORDER BY id LIMIT ${BACKFILL_BATCH}`
+          : yield* sql<{ id: string; payload_json: string }>`SELECT id, payload_json FROM entries INDEXED BY entries_search_stale
+              WHERE search_rev IS NOT revision AND id > ${last} ORDER BY id LIMIT ${BACKFILL_BATCH}`
         for (const row of rows) {
           const entry = yield* Effect.option(EntryJson.decode("SearchRepo.ensure", row.payload_json, row.id))
           if (Option.isSome(entry)) {
             yield* indexEntry(sql, entry.value)
-            indexed++
+            if (INDEXED_KINDS.includes(entry.value.kind)) indexed++
           }
+          yield* sql`UPDATE entries SET search_rev = revision WHERE id = ${row.id} AND search_rev IS NOT revision`
         }
         if (rows.length > 0) last = rows[rows.length - 1]!.id
         return rows.length
       }).pipe(sql.withTransaction)
       if (count < BACKFILL_BATCH) break
+      // let waiting writes (live chats) in before the next batch
+      yield* Effect.yieldNow
     }
     last = ""
     while (true) {
       const count = yield* Effect.gen(function*() {
-        const rows = rebuild
-          ? yield* sql<{ id: string; payload_json: string }>`SELECT id, payload_json FROM tasks
-              WHERE id > ${last} ORDER BY id LIMIT ${BACKFILL_BATCH}`
-          : yield* sql<{ id: string; payload_json: string }>`SELECT t.id, t.payload_json FROM tasks t
-              WHERE t.id > ${last} AND NOT EXISTS (SELECT 1 FROM search_docs d WHERE d.ref_id = t.id)
-              ORDER BY t.id LIMIT ${BACKFILL_BATCH}`
+        const rows = yield* sql<{ id: string; payload_json: string; text: string | null }>`SELECT t.id, t.payload_json, d.text
+          FROM tasks t LEFT JOIN search_docs d ON d.ref_id = t.id
+          WHERE t.id > ${last} ORDER BY t.id LIMIT ${BACKFILL_BATCH}`
         for (const row of rows) {
           const task = yield* Effect.option(TaskJson.decode("SearchRepo.ensure", row.payload_json, row.id))
-          if (Option.isSome(task)) {
-            yield* indexTask(sql, task.value)
-            indexed++
-          }
+          if (Option.isNone(task)) continue
+          if ((searchDocOfTask(task.value)?.text ?? null) === row.text) continue
+          yield* indexTask(sql, task.value)
+          indexed++
         }
         if (rows.length > 0) last = rows[rows.length - 1]!.id
         return rows.length
       }).pipe(sql.withTransaction)
       if (count < BACKFILL_BATCH) break
+      yield* Effect.yieldNow
     }
     return indexed
   })

@@ -67,12 +67,14 @@ export const makeSqlEntryRepo = Effect.gen(function*() {
           ? { ...entry, createdAt: currentRow.created_at as Millis }
           : entry
         const payload = yield* KnownEntryJson.encode("EntryRepo.upsert", value)
-        yield* sql`INSERT INTO entries (id, conversation_id, revision, created_at, kind, turn_id, client_nonce, native_id, payload_json)
+        // search_rev: the search doc is written below, in this transaction
+        yield* sql`INSERT INTO entries (id, conversation_id, revision, created_at, kind, turn_id, client_nonce, native_id, payload_json,
+            search_rev)
           VALUES (${value.id}, ${value.conversationId}, ${value.revision}, ${value.createdAt}, ${value.kind},
-            ${value.turnId ?? null}, ${clientNonceOf(value)}, ${nativeIdOf(value)}, ${payload})
+            ${value.turnId ?? null}, ${clientNonceOf(value)}, ${nativeIdOf(value)}, ${payload}, ${value.revision})
           ON CONFLICT (id) DO UPDATE SET conversation_id = excluded.conversation_id, revision = excluded.revision,
             kind = excluded.kind, turn_id = excluded.turn_id, client_nonce = excluded.client_nonce,
-            native_id = excluded.native_id, payload_json = excluded.payload_json`
+            native_id = excluded.native_id, payload_json = excluded.payload_json, search_rev = excluded.search_rev`
         yield* indexEntry(sql, value)
         return { applied: true, value } satisfies UpsertOutcome<TranscriptEntry>
       }).pipe(sql.withTransaction, repoOp("EntryRepo.upsert")),

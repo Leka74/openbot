@@ -311,7 +311,7 @@ export interface SearchPositionsQuery extends SearchFilter {
 export interface SearchIndexReport {
   /** The index was rebuilt from scratch (first boot after the upgrade, or a new `SEARCH_TEXT_VERSION`). */
   readonly rebuilt: boolean
-  /** Entries and tasks looked at (each gets its doc, or none when nothing of it is searchable). */
+  /** Entries indexed again, and tasks whose doc changed. */
   readonly indexed: number
   readonly ms: number
 }
@@ -326,8 +326,8 @@ export class SearchRepo extends Context.Service<SearchRepo, {
   }, RepoError>
   /**
    * Builds the index from what is stored (boot, in the background): a full rebuild when the stored
-   * text version differs from `SEARCH_TEXT_VERSION`, otherwise only entries and tasks it lacks
-   * (written by an older release). Writes keep it up to date on their own.
+   * text version differs from `SEARCH_TEXT_VERSION`, otherwise what an older release (run after a
+   * rollback) added or changed. Writes keep it up to date on their own.
    */
   readonly ensure: Effect.Effect<SearchIndexReport, RepoError>
   /** A rebuild is pending or running: results may be incomplete. */
