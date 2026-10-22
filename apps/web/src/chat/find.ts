@@ -33,7 +33,12 @@ const lit = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>()
 
 /** Lights the row up once (a link) or briefly marks it (the Find bar's current hit). */
 export const flash = (element: HTMLElement, strong: boolean): void => {
-  const target = element.matches(".ob-msg") ? (element.querySelector<HTMLElement>("[data-side]") ?? element) : element
+  // a bubble, or the "N messages with" chip, rather than the whole width of the row
+  const target = element.matches(".ob-msg")
+    ? (element.querySelector<HTMLElement>("[data-side]") ?? element)
+    : element.matches("[data-entries]")
+      ? (element.querySelector<HTMLElement>("[data-exchange]") ?? element)
+      : element
   clearTimeout(lit.get(target))
   target.removeAttribute("data-flash")
   // restart the animation

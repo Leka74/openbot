@@ -175,6 +175,7 @@ export function SearchPalette({ open, onOpenChange, onToggleCompact }: SearchPal
         group: "Messages",
         leading: <Icon icon={Search} size="xl" className="text-icon-secondary" />,
         ...(pending && hits.length === 0 ? { trailing: <Spinner size={14} label="Searching" /> } : {}),
+        ...(page?.indexing ? { chip: <span className="text-xs text-fg-tertiary">· still indexing, some may be missing</span> } : {}),
         onSelect: () => openSearch(searchFilters(query.trim())),
       },
     ]

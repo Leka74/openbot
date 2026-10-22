@@ -6,7 +6,7 @@
 // (`#/c/<id>/e/<entryId>`). On a phone it is a full screen of its own with a back button.
 import { Calendar, Check, ChevronDown, ChevronLeft, MessageSquare, Search, SlidersHorizontal, User, Users, X } from "lucide-react"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useAtomSet, useAtomValue } from "@effect/atom-react"
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Exit } from "effect"
 import { AsyncResult } from "effect/reactivity"
 import { type ConversationId, SEARCH_QUERY_MAX_CHARS, SEARCH_TOTAL_CAP, type SearchHit, type SearchSender } from "@openbot/contracts"
@@ -34,6 +34,9 @@ import { useLayoutMode } from "../app/layout.ts"
 import { useSelection } from "../app/uiState.ts"
 import { useDebouncedValue } from "../details/skills.ts"
 import { chatLabel, HitLeading, HitMeta, Snippet } from "./hits.tsx"
+
+/** How often a search asks again while the brain is still indexing. */
+const INDEXING_RETRY_MS = 3_000
 
 const TYPE_LABEL: Readonly<Record<SearchType, string>> = { messages: "Messages", cards: "Cards", events: "Events", tasks: "Task results", steps: "Steps" }
 const DATE_LABEL = { any: "Any time", "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days" } as const
@@ -317,7 +320,9 @@ export function SearchView({ filters, onClose }: { readonly filters: SearchFilte
   const now = useMemo(() => Date.now(), [filters]) // eslint-disable-line react-hooks/exhaustive-deps
   const input = useMemo(() => ({ ...searchQueryOf(filters, { now, groupIds }), limit: SEARCH_PAGE_SIZE }), [filters, now, groupIds])
   const searchable = isSearchable(filters.q)
-  const first = useAtomValue(searchable ? searchFirstPageAtom(input) : searchIdleAtom)
+  const firstAtom = searchable ? searchFirstPageAtom(input) : searchIdleAtom
+  const first = useAtomValue(firstAtom)
+  const refreshFirst = useAtomRefresh(firstAtom)
   const fetchMore = useAtomSet(commandAtom("search.query", "search-view"), { mode: "promiseExit" })
 
   // the first page, then the pages after it
@@ -338,6 +343,13 @@ export function SearchView({ filters, onClose }: { readonly filters: SearchFilte
       else setMoreFailed(true)
     })
   }, [results, input, fetchMore])
+  // While the brain is still building its index (after an upgrade), ask again until it is done.
+  const indexing = results?.indexing === true
+  useEffect(() => {
+    if (!indexing) return
+    const t = setInterval(refreshFirst, INDEXING_RETRY_MS)
+    return () => clearInterval(t)
+  }, [indexing, refreshFirst])
   const sentinel = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = sentinel.current
@@ -410,9 +422,14 @@ export function SearchView({ filters, onClose }: { readonly filters: SearchFilte
             </div>
           ) : (
             <>
+              {results.indexing && (
+                <div role="status" className="mx-1 mt-1 flex items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm text-fg-secondary" data-testid="search-indexing">
+                  <Spinner size={14} />
+                  Still indexing your chats. Some results may be missing for a minute.
+                </div>
+              )}
               <div className="flex h-8 items-center gap-2 px-3 text-xs text-fg-tertiary" aria-live="polite" data-testid="search-count">
                 {results.hits.length === 0 ? "No results" : resultCount(results.totalCapped, SEARCH_TOTAL_CAP)}
-                {results.indexing && <span>· Still indexing; some results may be missing</span>}
                 {busy && <Spinner size={12} label="Searching" />}
               </div>
               {results.hits.map((hit) => (

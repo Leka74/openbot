@@ -6,7 +6,7 @@
 // closes.
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react"
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
-import { useAtomValue } from "@effect/atom-react"
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react"
 import type { ConversationId, SearchKind } from "@openbot/contracts"
 import { findLabel, findStart, findStep, type FindPosition } from "@openbot/app-model"
 import { searchIdleAtom, searchPositionsAtom } from "@openbot/client"
@@ -39,11 +39,19 @@ export function FindBar({ conversationId, focusNonce, kinds, layout, onChange, o
   const settled = useDebouncedValue(query.trim(), 200)
   const atom = useMemo(() => (settled === "" ? searchIdleAtom : searchPositionsAtom(conversationId, settled, kinds)), [conversationId, settled, kinds])
   const result = useAtomValue(atom)
+  const refresh = useAtomRefresh(atom)
   const [position, setPosition] = useState<FindPosition>(() => findStart([]))
   const [step, setStep] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const value = AsyncResult.isSuccess(result) ? result.value : undefined
+  // the brain is still building its index: ask again until it is done
+  const indexing = value?.indexing === true
+  useEffect(() => {
+    if (!indexing) return
+    const t = setInterval(refresh, 3_000)
+    return () => clearInterval(t)
+  }, [indexing, refresh])
   const failed = AsyncResult.isFailure(result)
   const searching = settled !== query.trim() || (settled !== "" && (AsyncResult.isInitial(result) || result.waiting))
 
@@ -116,8 +124,14 @@ export function FindBar({ conversationId, focusNonce, kinds, layout, onChange, o
           className={cn("min-w-0 flex-1 bg-transparent px-1.5 text-fg outline-none placeholder:text-fg-tertiary focus-visible:outline-none", phone ? "text-[16px]" : "text-base")}
           data-testid="find-input"
         />
-        <span className="flex shrink-0 items-center px-1 text-xs whitespace-nowrap text-fg-tertiary tabular-nums" aria-live="polite" data-testid="find-count">
+        <span
+          className="flex shrink-0 items-center gap-1 px-1 text-xs whitespace-nowrap text-fg-tertiary tabular-nums"
+          aria-live="polite"
+          title={indexing ? "Still indexing this chat: some matches may be missing" : undefined}
+          data-testid="find-count"
+        >
           {searching && settled !== "" ? <Spinner size={12} label="Searching" /> : label}
+          {indexing && !searching && <span data-testid="find-indexing">· indexing</span>}
         </span>
         <IconButton icon={ChevronUp} label="Older match" size={phone ? 36 : 28} disabled={position.hits.length === 0} onClick={() => go("older")} data-testid="find-older" />
         <IconButton icon={ChevronDown} label="Newer match" size={phone ? 36 : 28} disabled={position.hits.length === 0} onClick={() => go("newer")} data-testid="find-newer" />
