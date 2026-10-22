@@ -196,6 +196,12 @@ describe.skipIf(!hasChromium)("e2e: message search", () => {
     await page.getByTestId("exchange-title").waitFor()
     await eventually(() => page.locator("[data-exchange-item][data-target]").count(), (n) => n === 1)
     expect(await page.locator("[data-exchange-item][data-target]").textContent()).toContain("Wonka")
+    // its words marked as in the chat
+    const marked = await eventually(
+      () => page.evaluate(() => [...((CSS as unknown as { highlights: Map<string, Iterable<Range>> }).highlights.get("ob-find-exchange-current") ?? [])].map((r) => r.toString())),
+      (all) => all.length > 0,
+    )
+    expect(marked).toEqual(["Wonka"])
     await app.shot("e2e-search-exchange")
     await page.keyboard.press("Escape")
 

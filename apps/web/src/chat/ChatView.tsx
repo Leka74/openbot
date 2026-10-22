@@ -383,7 +383,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
     if (t.link && t.openExchange && found.exchange) {
       const row = rows.find((r) => r.type === "exchange" && r.entries.some((e) => e.id === t.entryId))
       const entry = entries.find((e) => e.id === t.entryId)
-      if (row?.type === "exchange" && entry) setExchange({ a: row.ownerBotId, b: row.peerBotId, target: { at: entry.createdAt, entryIds: [t.entryId] } })
+      if (row?.type === "exchange" && entry) setExchange({ a: row.ownerBotId, b: row.peerBotId, target: { at: entry.createdAt, entryIds: [t.entryId] }, terms: t.terms })
     }
   }, [rows, entries, target, win])
 
@@ -410,7 +410,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
     })
     setReplyTo(undefined)
   }
-  const [exchange, setExchange] = useState<{ readonly a: string; readonly b: string; readonly target: ExchangeTarget } | undefined>(undefined)
+  const [exchange, setExchange] = useState<{ readonly a: string; readonly b: string; readonly target: ExchangeTarget; readonly terms?: ReadonlyArray<string> } | undefined>(undefined)
   const authorName = (e: MessageEntry) => (e.author.kind === "bot" ? (roster.botById(e.author.botId)?.name ?? "Bot") : "you")
 
   const ctx: EventContext = {
@@ -720,7 +720,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
         />
       )}
       {exchange && exchangeBots?.[0] && exchangeBots[1] && (
-        <ExchangeDialog a={exchangeBots[0]} b={exchangeBots[1]} target={exchange.target} onClose={() => setExchange(undefined)} onOpenConversation={select} />
+        <ExchangeDialog a={exchangeBots[0]} b={exchangeBots[1]} target={exchange.target} terms={exchange.terms} onClose={() => setExchange(undefined)} onOpenConversation={select} />
       )}
     </main>
   )

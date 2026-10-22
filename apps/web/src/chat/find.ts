@@ -81,8 +81,19 @@ const rangesIn = (element: HTMLElement, terms: ReadonlyArray<string>): Range[] =
   return out
 }
 
+/** Where `useTermHighlights` finds the hits (rows carrying their entry id) and the highlights' name. */
+export interface HighlightIn {
+  /** The attribute holding a row's entry id. */
+  readonly attribute: string
+  /** `::highlight(<name>)` for the hits, `::highlight(<name>-current)` for the current one (app.css). */
+  readonly name: string
+}
+
+const CHAT: HighlightIn = { attribute: "data-entry", name: "ob-find" }
+
 /** Highlights `terms` in the hits under `root` (the current hit in its own color); redone on `deps`. */
-export const useTermHighlights = (root: RefObject<HTMLElement | null>, highlighted: Highlighted | undefined, rows: unknown): void => {
+export const useTermHighlights = (root: RefObject<HTMLElement | null>, highlighted: Highlighted | undefined, rows: unknown, where: HighlightIn = CHAT): void => {
+  const { attribute, name } = where
   useEffect(() => {
     const reg = registry()
     const el = root.current
@@ -90,17 +101,17 @@ export const useTermHighlights = (root: RefObject<HTMLElement | null>, highlight
     const ids = new Set(highlighted.ids)
     const all: Range[] = []
     const current: Range[] = []
-    for (const row of el.querySelectorAll<HTMLElement>("[data-entry]")) {
-      const id = row.dataset.entry!
+    for (const row of el.querySelectorAll<HTMLElement>(`[${attribute}]`)) {
+      const id = row.getAttribute(attribute)!
       if (!ids.has(id)) continue
       const ranges = rangesIn(row, highlighted.terms)
       ;(id === highlighted.current ? current : all).push(...ranges)
     }
-    reg.highlights.set("ob-find", new reg.Highlight(...all))
-    reg.highlights.set("ob-find-current", new reg.Highlight(...current))
+    reg.highlights.set(name, new reg.Highlight(...all))
+    reg.highlights.set(`${name}-current`, new reg.Highlight(...current))
     return () => {
-      reg.highlights.delete("ob-find")
-      reg.highlights.delete("ob-find-current")
+      reg.highlights.delete(name)
+      reg.highlights.delete(`${name}-current`)
     }
-  }, [root, highlighted, rows])
+  }, [root, highlighted, rows, attribute, name])
 }

@@ -105,8 +105,8 @@
 @media (prefers-reduced-motion: reduce) {
   [data-flash] { animation: none; box-shadow: 0 0 0 3px var(--ob-accent-soft-hover); }
 }
-::highlight(ob-find) { background-color: light-dark(#fde68a, #facc15); color: #111; }
-::highlight(ob-find-current) { background-color: light-dark(#fb923c, #f59e0b); color: #111; }
+::highlight(ob-find), ::highlight(ob-find-exchange) { background-color: light-dark(#fde68a, #facc15); color: #111; }
+::highlight(ob-find-current), ::highlight(ob-find-exchange-current) { background-color: light-dark(#fb923c, #f59e0b); color: #111; }
 
 /* Hover actions next to a bubble. */
 .ob-msg .ob-msg-actions { opacity: 0; transition: opacity 100ms; }

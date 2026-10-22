@@ -1,7 +1,8 @@
 // The bot-to-bot exchange (Grok's "2 messages with ‹Bot›" line → the conversation between the
 // agents): every message_bot / handoff_task message between bots A and B, both directions, in order.
 // Paged from the brain (`conversations.exchange`, both direct conversations at once): it opens
-// around the clicked line's message(s), which light up, and loads older / newer pages near the
+// around the clicked line's message(s), which light up (a search hit's words marked as in the chat),
+// and loads older / newer pages near the
 // edges while scrolling (older ones keep the scroll position). Once the window reaches the newest
 // message, new ones arrive live from the two direct-conversation replicas (B → A lives in A's DM,
 // A → B in B's; the open chat's is already live, the other subscribes while this is open).
@@ -15,6 +16,7 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { valueOr } from "../app/data.ts"
 import { formatTimestamp } from "../app/format.ts"
 import { Attachments } from "./Attachments.tsx"
+import { useTermHighlights } from "./find.ts"
 import { anchorIdIn, applyPage, type ExchangeTarget, type ExchangeWindow, targetIdsIn, withLive } from "./exchange.ts"
 import { exchangeBetween } from "./grouping.ts"
 import { Markdown } from "./Markdown.tsx"
@@ -25,6 +27,8 @@ const PAGE = 30
 const EDGE = 240
 /** Space kept above the target when it does not fit centered (px). */
 const INSET = 12
+/** Its own highlights: the chat under the dialog keeps its own. */
+const EXCHANGE_HIGHLIGHTS = { attribute: "data-exchange-item", name: "ob-find-exchange" }
 
 export interface ExchangeDialogProps {
   /** The bot whose chat is open. */
@@ -33,11 +37,13 @@ export interface ExchangeDialogProps {
   readonly b: Bot
   /** The message(s) the clicked line stands for; absent = open at the newest message. */
   readonly target?: ExchangeTarget | undefined
+  /** A search hit's matched words, marked in the target message(s). */
+  readonly terms?: ReadonlyArray<string> | undefined
   readonly onClose: () => void
   readonly onOpenConversation: (id: ConversationId) => void
 }
 
-export function ExchangeDialog({ a, b, target, onClose, onOpenConversation }: ExchangeDialogProps): ReactNode {
+export function ExchangeDialog({ a, b, target, terms, onClose, onOpenConversation }: ExchangeDialogProps): ReactNode {
   const ra = useAtomValue(conversationAtom(a.directConversationId))
   const rb = useAtomValue(conversationAtom(b.directConversationId))
   const sa = valueOr(ra, emptyConversationState)
@@ -88,6 +94,8 @@ export function ExchangeDialog({ a, b, target, onClose, onOpenConversation }: Ex
 
   const items = useMemo(() => (win === undefined ? [] : withLive(win, live)), [win, live])
   const targetIds = useMemo(() => new Set(target ? targetIdsIn(items, target) : []), [items, target])
+  const highlighted = useMemo(() => (terms && terms.length > 0 && targetIds.size > 0 ? { ids: [...targetIds], current: [...targetIds][0], terms } : undefined), [terms, targetIds])
+  useTermHighlights(scrollRef, highlighted, items, EXCHANGE_HIGHLIGHTS)
 
   // ------------------------------------------------------------------------------ scroll
   useLayoutEffect(() => {
