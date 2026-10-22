@@ -7,7 +7,7 @@
 // (`event.toolKey` = `toolCallId`), else a row of their own. A background task's updates (D5.7
 // `update_task`: changes passed on while it runs) are rows of their own too ("Update", by time).
 import { Brain, ChevronDown, ChevronRight, CircleX, FilePen, FileText, Globe, LoaderCircle, MessageSquarePlus, Monitor, Plug, Search, ShieldCheck, SquareTerminal, Users, Wrench } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useEffect, useState } from "react"
 import { Icon, cn } from "@openbot/ui"
 import type { EventEntry, MessageEntry, ReasoningEntry, ToolCallEntry } from "./grouping.ts"
 
@@ -118,7 +118,7 @@ const detail = (step: ToolCallEntry | ReasoningEntry): string => {
 
 function DecisionRow({ entry, decision }: { readonly entry: EventEntry; readonly decision: Decision }): ReactNode {
   return (
-    <div className="flex h-7 w-full items-center gap-2 rounded-lg px-2" data-decision={entry.id}>
+    <div className="flex h-7 w-full items-center gap-2 rounded-lg px-2" data-decision={entry.id} data-entry={entry.id}>
       <Icon icon={ShieldCheck} size="xs" glyph={12} className="text-fg-tertiary" />
       <span className="shrink-0 text-xs leading-[18px] font-medium text-fg">{decision.toolName ?? "Request"}</span>
       <span className="min-w-0 flex-1 truncate text-xs leading-[18px] text-fg-tertiary">{decision.summary}</span>
@@ -137,7 +137,7 @@ function StepRow({ step, decision }: { readonly step: ToolCallEntry | ReasoningE
   const lines = text.split("\n")
   const clipped = !more && lines.length > 12
   return (
-    <div className={cn("rounded-lg", open && "bg-hover")}>
+    <div className={cn("rounded-lg", open && "bg-hover")} data-entry={step.id}>
       <button
         type="button"
         aria-expanded={open}
@@ -173,7 +173,7 @@ function StepRow({ step, decision }: { readonly step: ToolCallEntry | ReasoningE
 function UpdateRow({ entry }: { readonly entry: MessageEntry }): ReactNode {
   const [open, setOpen] = useState(false)
   return (
-    <div className={cn("rounded-lg", open && "bg-hover")} data-testid="task-update">
+    <div className={cn("rounded-lg", open && "bg-hover")} data-testid="task-update" data-entry={entry.id}>
       <button
         type="button"
         aria-expanded={open}
@@ -270,12 +270,18 @@ export function StepsDisclosure({
   steps,
   decisions = [],
   failed,
+  reveal,
 }: {
   readonly steps: ReadonlyArray<ToolCallEntry | ReasoningEntry>
   readonly decisions?: ReadonlyArray<EventEntry>
   readonly failed: boolean
+  /** Opens the sheet whenever it changes (a search hit on one of these steps). */
+  readonly reveal?: number | undefined
 }): ReactNode {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(reveal !== undefined)
+  useEffect(() => {
+    if (reveal !== undefined) setOpen(true)
+  }, [reveal])
   const items = stepItems(steps, decisions)
   const n = items.length
   const auto = items.filter((i) => i.kind === "decision" || (i.kind === "step" && i.decision !== undefined)).length

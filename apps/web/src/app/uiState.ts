@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Atom } from "effect/reactivity"
-import type { BotId, ConversationId } from "@openbot/contracts"
+import type { BotId, ConversationId, EntryId } from "@openbot/contracts"
+import type { SearchFilters } from "@openbot/app-model"
 import { botsAtom, settingsAtom } from "@openbot/client"
 import { AsyncResult } from "effect/reactivity"
 import type { DetailsTab, SettingsPage } from "../contracts.ts"
 import { isPhoneNow } from "./layout.ts"
+import { chatHash, parseRoute, searchHash } from "./route.ts"
 
 // ---------------------------------------------------------------------------------------------
 // Atoms
@@ -15,20 +17,45 @@ import { isPhoneNow } from "./layout.ts"
 /** `#/new` is the explicit new-chat view; no hash = "open the most recent conversation". */
 export const isNewChatHash = (): boolean => typeof location !== "undefined" && /^#\/new\b/.test(location.hash)
 
-const readHash = (): ConversationId | null => {
-  if (typeof location === "undefined") return null
-  const m = /^#\/c\/([^/?#]+)/.exec(location.hash)
-  return m ? (decodeURIComponent(m[1]!) as ConversationId) : null
-}
+const bootRoute = parseRoute(typeof location === "undefined" ? "" : location.hash)
 
 /** The open conversation (null = the empty / new-chat state). Mirrored to `#/c/<id>`. */
-export const selectedConversationAtom: Atom.Writable<ConversationId | null> = Atom.make<ConversationId | null>(readHash()).pipe(
+export const selectedConversationAtom: Atom.Writable<ConversationId | null> = Atom.make<ConversationId | null>(
+  bootRoute.kind === "chat" ? bootRoute.conversationId : null,
+).pipe(Atom.keepAlive, Atom.withLabel("openbot/web/selectedConversation"))
+
+/**
+ * Open a chat at one entry (a search hit, `#/c/<id>/e/<entryId>`): the chat scrolls to it, loading
+ * the part of the chat around it when needed. `nonce` makes the same hit jump again; `terms` are
+ * highlighted in it; `exchange` opens a bot-to-bot hit's exchange dialog.
+ */
+export interface JumpTarget {
+  readonly conversationId: ConversationId
+  readonly entryId: EntryId
+  readonly nonce: number
+  readonly terms?: ReadonlyArray<string> | undefined
+  readonly openExchange?: boolean | undefined
+}
+let jumps = 0
+export const nextJumpNonce = (): number => ++jumps
+export const jumpTargetAtom: Atom.Writable<JumpTarget | null> = Atom.make<JumpTarget | null>(
+  bootRoute.kind === "chat" && bootRoute.entryId !== undefined ? { conversationId: bootRoute.conversationId, entryId: bootRoute.entryId, nonce: nextJumpNonce(), openExchange: true } : null,
+).pipe(Atom.keepAlive, Atom.withLabel("openbot/web/jumpTarget"))
+
+/** The Search view and its filters (`#/search?…`); null = not shown. It takes the chat column. */
+export const searchViewAtom: Atom.Writable<SearchFilters | null> = Atom.make<SearchFilters | null>(bootRoute.kind === "search" ? bootRoute.filters : null).pipe(
   Atom.keepAlive,
-  Atom.withLabel("openbot/web/selectedConversation"),
+  Atom.withLabel("openbot/web/searchView"),
 )
 
-/** `#/c/<id>` or `#/new`: a chat screen. Anything else (`#/`, no hash) is Home on a phone. */
-export const isChatHash = (): boolean => typeof location !== "undefined" && /^#\/(c\/|new\b)/.test(location.hash)
+/** The in-chat Find bar (Cmd/Ctrl+F) of one chat; `nonce` refocuses it when asked again. */
+export const findBarAtom: Atom.Writable<{ readonly conversationId: ConversationId; readonly nonce: number } | null> = Atom.make<{
+  readonly conversationId: ConversationId
+  readonly nonce: number
+} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("openbot/web/findBar"))
+
+/** `#/c/<id>`, `#/new` or `#/search`: a screen of the chat column. Anything else (`#/`, no hash) is Home on a phone. */
+export const isChatHash = (): boolean => typeof location !== "undefined" && parseRoute(location.hash).kind !== "other"
 
 /**
  * Phone navigation (layout.ts): true = Home (the full-width sidebar list), false = the pushed chat
@@ -118,34 +145,64 @@ export const dialogAtom: Atom.Writable<ActiveDialog> = Atom.make<ActiveDialog>(n
 // ---------------------------------------------------------------------------------------------
 // Hooks
 
+/** Puts `hash` in the address bar the way a chat screen does (see `select` below). */
+const showHash = (hash: string, home: boolean) => {
+  if (typeof history === "undefined") return
+  if (!isPhoneNow()) {
+    if (location.hash !== hash) history.replaceState(null, "", hash)
+    return
+  }
+  // Phone: Home → chat pushes an entry (Back and iOS swipe-back return Home). A sheet's entry
+  // (search, details…) becomes the chat entry; chat → chat replaces in place.
+  // Already on this entry (Back / Forward, a deep link): leave the history alone.
+  const mark = historyMark()
+  if (mark?.ob !== "sheet" && location.hash === hash) return
+  if (home && mark?.ob !== "sheet") history.pushState({ ob: "chat" }, "", hash)
+  else history.replaceState({ ob: "chat" }, "", hash)
+}
+
+export interface SelectOptions {
+  /** Open the chat at this entry (a search hit); see `JumpTarget`. */
+  readonly entryId?: EntryId | undefined
+  readonly terms?: ReadonlyArray<string> | undefined
+  readonly openExchange?: boolean | undefined
+}
+
 export const useSelection = () => {
   const [conversationId, set] = useAtom(selectedConversationAtom)
   const setPrevious = useAtomSet(previousConversationAtom)
   const [home, setHome] = useAtom(phoneHomeAtom)
+  const setJump = useAtomSet(jumpTargetAtom)
+  const [search, setSearch] = useAtom(searchViewAtom)
   const bots = useAtomValue(botsAtom)
   const select = useCallback(
-    (id: ConversationId | null) => {
+    (id: ConversationId | null, options?: SelectOptions) => {
       if (conversationId && conversationId !== id) setPrevious(conversationId)
       set(id)
-      const phone = isPhoneNow()
-      if (home) setHome(false)
-      if (typeof history !== "undefined") {
-        const hash = id ? `#/c/${encodeURIComponent(id)}` : "#/new"
-        if (!phone) {
-          if (location.hash !== hash) history.replaceState(null, "", hash)
-          return
-        }
-        // Phone: Home → chat pushes an entry (Back and iOS swipe-back return Home). A sheet's entry
-        // (search, details…) becomes the chat entry; chat → chat replaces in place.
-        // Already on this entry (Back / Forward, a deep link): leave the history alone.
-        const mark = historyMark()
-        if (mark?.ob !== "sheet" && location.hash === hash) return
-        if (home && mark?.ob !== "sheet") history.pushState({ ob: "chat" }, "", hash)
-        else history.replaceState({ ob: "chat" }, "", hash)
+      if (search !== null) setSearch(null)
+      const entryId = id === null ? undefined : options?.entryId
+      if (id !== null && entryId !== undefined) {
+        setJump({ conversationId: id, entryId, nonce: nextJumpNonce(), terms: options?.terms, openExchange: options?.openExchange })
       }
+      if (home) setHome(false)
+      showHash(id ? chatHash(id, entryId) : "#/new", home)
     },
-    [conversationId, set, setPrevious, home, setHome],
+    [conversationId, set, setPrevious, home, setHome, setJump, search, setSearch],
   )
+  /** Shows the Search view with `filters` (the selected chat stays selected under it). */
+  const openSearch = useCallback(
+    (filters: SearchFilters) => {
+      setSearch(filters)
+      if (home) setHome(false)
+      showHash(searchHash(filters), home)
+    },
+    [setSearch, home, setHome],
+  )
+  /** Leaves the Search view for the selected chat (or New chat). */
+  const closeSearch = useCallback(() => {
+    setSearch(null)
+    showHash(conversationId ? chatHash(conversationId) : "#/new", home)
+  }, [setSearch, conversationId, home])
   const selectBot = useCallback(
     (botId: BotId) => {
       if (!AsyncResult.isSuccess(bots)) return
@@ -154,7 +211,7 @@ export const useSelection = () => {
     },
     [bots, select],
   )
-  return { conversationId, select, selectBot }
+  return { conversationId, select, selectBot, search, openSearch, closeSearch }
 }
 
 /**

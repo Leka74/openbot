@@ -4,26 +4,35 @@
 // settings.accent = "bot" (botTintStyle). On a phone the header becomes Grok iOS's floating glass
 // row (back · name pill · computer), a long-press on a bubble opens its action sheet, and the
 // transcript / composer respect the safe areas.
+// Search (find.ts): the chat opens at a hit (`jumpTargetAtom`, `#/c/<id>/e/<entryId>`) or steps
+// through the Find bar's hits. A hit the replica holds is scrolled to; an older one opens a window
+// of the chat around it (`conversations.around`, paged near the edges) until "Jump to latest", and
+// the window joins the live chat once it reaches it. Hits light up and their words are highlighted.
 import { ArrowDown, ChevronLeft, type LucideIcon, Monitor, X } from "lucide-react"
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { useAtomSet, useAtomValue } from "@effect/atom-react"
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Exit } from "effect"
 import {
+  DEFAULT_SEARCH_KINDS,
   DEFAULT_SETTINGS,
   emptyConversationState,
   transcriptOf,
   type Bot,
   type BotId,
   type ConversationId,
+  type TranscriptEntry,
   type Turn,
+  type TurnId,
 } from "@openbot/contracts"
-import { commands, conversationAtom, discardOutboxItemAtom, loadOlderAtom, outboxAtom, retrySendAtom, retryTurnAtom, sendMessageAtom, interruptTurnAtom, voiceStatusAtom } from "@openbot/client"
+import { applyWindowPage, type ChatWindow, messagesAfter, newestOf, windowView } from "@openbot/app-model"
+import { commandAtom, commands, conversationAtom, discardOutboxItemAtom, loadOlderAtom, outboxAtom, retrySendAtom, retryTurnAtom, sendMessageAtom, interruptTurnAtom, voiceStatusAtom } from "@openbot/client"
 import { ActivityRow, Avatar, AvatarStack, HeaderPill, Icon, IconButton, NewDivider, PillButton, Spinner, Timestamp, botTintStyle, cn, useToast } from "@openbot/ui"
 import { useRoster, valueOr } from "../app/data.ts"
 import { formatTimestamp } from "../app/format.ts"
 import { useLayoutMode } from "../app/layout.ts"
 import { useLongPressWithin } from "../app/longPress.ts"
-import { useComputerView, useDetailsPane, usePhoneNav, useSelection, useSettingsDialog } from "../app/uiState.ts"
+import { chatHash } from "../app/route.ts"
+import { findBarAtom, jumpTargetAtom, useComputerView, useDetailsPane, usePhoneNav, useSelection, useSettingsDialog } from "../app/uiState.ts"
 import { CardView, WarnIcon } from "../cards/index.ts"
 import { describeFailure } from "../cards/useRespond.ts"
 import { activityPhrase } from "./activity.ts"
@@ -31,6 +40,8 @@ import { type ChatStatus, chatStatuses, HANDLING } from "./busy.ts"
 import { Composer, type ComposerSubmit } from "./Composer.tsx"
 import { EventRow, ExchangeLine, NoticeRow, UnknownRow, type EventContext } from "./Events.tsx"
 import { ExchangeDialog } from "./ExchangeDialog.tsx"
+import { FindBar, type FindState } from "./FindBar.tsx"
+import { centerIn, flash, rowOf, useTermHighlights } from "./find.ts"
 import type { ExchangeTarget } from "./exchange.ts"
 import { failedTurnOf, layoutTranscript, messageIndex, positionIn, requestForCard, unreadBoundaryOf, type MessageEntry, type PendingMessage, type Row } from "./grouping.ts"
 import { AddresseeChip, MessageBubble, PendingBubble } from "./Message.tsx"
@@ -41,6 +52,30 @@ import { useVoiceCall } from "../voice/CallBar.tsx"
 import { startCall } from "../voice/voiceCall.ts"
 
 const ACTIVE = new Set<Turn["status"]>(["queued", "running", "waiting"])
+
+/** Entries per `conversations.around` page. */
+const WINDOW_PAGE = 60
+/** Load the window's next page when the view is this close to its edge (px). */
+const EDGE = 240
+
+/** The entry the chat is showing: a search hit (a link) or the Find bar's current hit. */
+interface Target {
+  readonly entryId: string
+  /** Changes when the same entry is asked for again. */
+  readonly nonce: number
+  readonly terms: ReadonlyArray<string>
+  /** A link (not the Find bar): the hit lights up and a bot-to-bot one opens its exchange. */
+  readonly link: boolean
+  readonly openExchange: boolean
+}
+
+/** The chat opened around an older entry: loading, loaded (`window`), or it failed. */
+interface WindowState {
+  readonly entryId: string
+  readonly window: ChatWindow | undefined
+  /** The replica's newest entry when it opened ("New messages" count from there). */
+  readonly mark: TranscriptEntry | undefined
+}
 
 /** Grok iOS's round "liquid glass" header button (back, computer). */
 function GlassButton({ icon, label, onClick, testId }: { readonly icon: LucideIcon; readonly label: string; readonly onClick: () => void; readonly testId?: string }): ReactNode {
@@ -119,24 +154,60 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
     return undefined
   }, [capturedHere, unread, conversationId, markRead])
 
+  // ------------------------------------------------------------------------------ search
+  const [jump, setJump] = useAtom(jumpTargetAtom)
+  const [findBar, setFindBar] = useAtom(findBarAtom)
+  const findOpen = findBar?.conversationId === conversationId
+  const [find, setFind] = useState<FindState | undefined>(undefined)
+  const [target, setTarget] = useState<Target | undefined>(undefined)
+  const [win, setWin] = useState<WindowState | undefined>(undefined)
+  const fetchWindow = useAtomSet(commandAtom("conversations.around", `chat-window:${conversationId}`), { mode: "promiseExit" })
+  const view = win?.window ? windowView(win.window, state) : undefined
+  const joined = view?.joined ?? false
+  const inWindow = view !== undefined && !joined
+
+  // a link to an entry of this chat (search, `#/c/<id>/e/<entryId>`)
+  useEffect(() => {
+    if (jump === null || jump.conversationId !== conversationId) return
+    setTarget({ entryId: jump.entryId, nonce: jump.nonce, terms: jump.terms ?? [], link: true, openExchange: jump.openExchange === true })
+    setJump(null)
+  }, [jump, conversationId, setJump])
+  // the Find bar's current hit
+  useEffect(() => {
+    if (find?.current !== undefined) setTarget({ entryId: find.current, nonce: -find.step, terms: find.terms, link: false, openExchange: false })
+  }, [find?.current, find?.step, find?.terms])
+  useEffect(() => {
+    if (!findOpen) setFind(undefined)
+  }, [findOpen])
+  // the Find bar belongs to this visit of the chat
+  useEffect(() => () => setFindBar((f) => (f?.conversationId === conversationId ? null : f)), [conversationId, setFindBar])
+
   // ----------------------------------------------------------------------------------- rows
   const stateEntries = state.entries
-  const stateTurns = state.turns
-  const entries = useMemo(() => transcriptOf({ entries: stateEntries }), [stateEntries])
+  const stateTurns = view?.turns ?? state.turns
+  const replicaEntries = useMemo(() => transcriptOf({ entries: stateEntries }), [stateEntries])
+  const entries = view?.entries ?? replicaEntries
+  const requests = view?.requests ?? state.requests
   const nonces = useMemo(() => new Set(entries.flatMap((e) => (e.kind === "message" && e.clientNonce ? [e.clientNonce] : []))), [entries])
   const pending: ReadonlyArray<PendingMessage> = useMemo(
     () =>
-      outbox
-        .filter((o) => !nonces.has(o.clientNonce))
-        .map((o) => ({ clientNonce: o.clientNonce, text: o.input.text, createdAt: o.createdAt, status: o.status, error: o.error })),
-    [outbox, nonces],
+      inWindow
+        ? []
+        : outbox
+            .filter((o) => !nonces.has(o.clientNonce))
+            .map((o) => ({ clientNonce: o.clientNonce, text: o.input.text, createdAt: o.createdAt, status: o.status, error: o.error })),
+    [outbox, nonces, inWindow],
   )
-  const turns = useMemo(() => [...stateTurns.values()], [stateTurns])
+  const turns = useMemo(() => [...state.turns.values()], [state.turns])
   const showSteps = settings.showSteps
   const showCompactions = settings.showCompactions
+  // a hit on a tool step shows its turn's steps, even with steps hidden
+  const targetEntry = target === undefined ? undefined : entries.find((e) => e.id === target.entryId)
+  const revealTurn = targetEntry !== undefined && (targetEntry.kind === "tool-call" || targetEntry.kind === "reasoning" || targetEntry.kind === "event") ? targetEntry.turnId : undefined
+  const revealSteps = useMemo(() => (revealTurn === undefined ? undefined : new Set<TurnId>([revealTurn])), [revealTurn])
   const rows = useMemo(
-    () => layoutTranscript({ entries, turns: stateTurns, pending, unreadBoundaryAt: boundary, showSteps, showCompactions, direct: !isGroup }),
-    [entries, stateTurns, pending, boundary, showSteps, showCompactions, isGroup],
+    () => layoutTranscript({ entries, turns: stateTurns, pending, unreadBoundaryAt: boundary, showSteps, revealSteps, showCompactions, direct: !isGroup }),
+    [entries, stateTurns, pending, boundary, showSteps, revealSteps, showCompactions, isGroup],
   )
   const byId = useMemo(() => messageIndex(entries), [entries])
 
@@ -192,12 +263,39 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
   const [atBottom, setAtBottom] = useState(true)
   const loadingOlder = useRef(false)
   const prevHeight = useRef<number | null>(null)
+  /** An entry to scroll to once it is on screen (the target, after its rows render). */
+  const place = useRef<Target | undefined>(undefined)
+  const windowCursors = win?.window ? { before: win.window.beforeCursor, after: joined ? null : win.window.afterCursor } : undefined
+  const loadWindow = useCallback(
+    (side: "older" | "newer", cursor: string) => {
+      if (loadingOlder.current) return
+      loadingOlder.current = true
+      void fetchWindow({ conversationId, limit: WINDOW_PAGE, ...(side === "older" ? { beforeCursor: cursor } : { afterCursor: cursor }) }).then((exit) => {
+        loadingOlder.current = false
+        if (!Exit.isSuccess(exit)) return
+        const el = scrollRef.current
+        if (side === "older" && el) prevHeight.current = el.scrollHeight
+        setWin((w) => (w?.window ? { ...w, window: applyWindowPage(w.window, exit.value, side) } : w))
+      })
+    },
+    [fetchWindow, conversationId],
+  )
+  /** Back at the newest messages: a link to an entry (`/e/<id>`) becomes the chat's link again. */
+  const dropEntryLink = useCallback(() => {
+    if (typeof location !== "undefined" && location.hash.startsWith(`${chatHash(conversationId)}/e/`)) history.replaceState(history.state, "", chatHash(conversationId))
+  }, [conversationId])
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    stick.current = bottom
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const bottom = fromBottom < 80
+    stick.current = bottom && windowCursors?.after == null
     setAtBottom(bottom)
+    if (windowCursors !== undefined) {
+      if (el.scrollTop < EDGE && windowCursors.before !== null) loadWindow("older", windowCursors.before)
+      else if (fromBottom < EDGE && windowCursors.after !== null) loadWindow("newer", windowCursors.after)
+      return
+    }
     if (el.scrollTop < 160 && state.hasMoreBefore && !loadingOlder.current) {
       loadingOlder.current = true
       prevHeight.current = el.scrollHeight
@@ -205,7 +303,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
         loadingOlder.current = false
       })
     }
-  }, [state.hasMoreBefore, loadOlder, conversationId])
+  }, [state.hasMoreBefore, loadOlder, conversationId, windowCursors?.before, windowCursors?.after, loadWindow])
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -226,11 +324,81 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
   const scrollToBottom = () => {
     const el = scrollRef.current
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    dropEntryLink()
   }
+  /** Leaves the window for the live chat, at its newest message. */
+  const jumpToLatest = () => {
+    setWin(undefined)
+    setTarget(undefined)
+    place.current = undefined
+    stick.current = true
+    setAtBottom(true)
+    dropEntryLink()
+  }
+
+  // The target: on screen when the replica (or the open window) has it, else a window around it.
+  // (A layout effect, so the placement below sees it in the same commit.)
+  const synchronized = conversation !== undefined && result._tag === "Success"
+  useLayoutEffect(() => {
+    if (target === undefined || !synchronized) return
+    if (entries.some((e) => e.id === target.entryId)) {
+      place.current = target
+      return
+    }
+    let current = true
+    const mark = newestOf(state.entries)
+    setWin({ entryId: target.entryId, window: undefined, mark })
+    void fetchWindow({ conversationId, entryId: target.entryId as TranscriptEntry["id"], limit: WINDOW_PAGE }).then((exit) => {
+      if (!current) return
+      if (Exit.isSuccess(exit)) {
+        place.current = target
+        setWin({ entryId: target.entryId, window: applyWindowPage(undefined, exit.value, "first"), mark })
+      } else {
+        setWin(undefined)
+        toast({ title: "That message couldn't be opened. It may have been deleted.", tone: "danger" })
+      }
+    })
+    return () => {
+      current = false
+    }
+    // entries: only whether the target is in them when it changes (not on every new message)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, synchronized])
+
+  // Scroll the target into view once its row is rendered: centered, lit up, its exchange opened.
+  useLayoutEffect(() => {
+    const t = place.current
+    const el = scrollRef.current
+    if (t === undefined || !el) return
+    const found = rowOf(el, t.entryId)
+    if (found === null) {
+      // in the transcript but never shown as a row of its own (hidden kinds): stay where we are
+      if (entries.some((e) => e.id === t.entryId) && rows.length > 0) place.current = undefined
+      return
+    }
+    place.current = undefined
+    stick.current = false
+    centerIn(el, found.element)
+    flash(found.element, t.link)
+    if (t.link && t.openExchange && found.exchange) {
+      const row = rows.find((r) => r.type === "exchange" && r.entries.some((e) => e.id === t.entryId))
+      const entry = entries.find((e) => e.id === t.entryId)
+      if (row?.type === "exchange" && entry) setExchange({ a: row.ownerBotId, b: row.peerBotId, target: { at: entry.createdAt, entryIds: [t.entryId] } })
+    }
+  }, [rows, entries, target, win])
+
+  // The Find bar's hits (or a link's entry) with their words highlighted.
+  const highlighted = useMemo(
+    () => (find !== undefined ? { ids: find.hits, current: find.current, terms: find.terms } : target?.link && target.terms.length > 0 ? { ids: [target.entryId], current: target.entryId, terms: target.terms } : undefined),
+    [find, target],
+  )
+  useTermHighlights(scrollRef, highlighted, rows)
+  const newMessages = win?.window && !joined ? messagesAfter(state.entries, win.mark) : 0
 
   // ---------------------------------------------------------------------------------- send
   const [replyTo, setReplyTo] = useState<MessageEntry | undefined>()
   const onSubmit = (d: ComposerSubmit) => {
+    if (win !== undefined) jumpToLatest()
     stick.current = true
     send({
       conversationId,
@@ -264,17 +432,33 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
       case "new-divider":
         return <NewDivider key={row.key} className="my-1" />
       case "event":
-        return <EventRow key={row.key} entry={row.entry} ctx={ctx} />
+        return (
+          <div key={row.key} data-entry={row.entry.id}>
+            <EventRow entry={row.entry} ctx={ctx} />
+          </div>
+        )
       case "exchange":
-        return <ExchangeLine key={row.key} ctx={ctx} peerBotId={row.peerBotId} ownerBotId={row.ownerBotId} entries={row.entries} />
+        return (
+          <div key={row.key} data-entries={row.entries.map((e) => e.id).join(" ")}>
+            <ExchangeLine ctx={ctx} peerBotId={row.peerBotId} ownerBotId={row.ownerBotId} entries={row.entries} />
+          </div>
+        )
       case "notice":
-        return <NoticeRow key={row.key} entry={row.entry} />
+        return (
+          <div key={row.key} data-entry={row.entry.id}>
+            <NoticeRow entry={row.entry} />
+          </div>
+        )
       case "unknown":
-        return <UnknownRow key={row.key} entry={row.entry} />
+        return (
+          <div key={row.key} data-entry={row.entry.id}>
+            <UnknownRow entry={row.entry} />
+          </div>
+        )
       case "steps":
         return (
-          <div key={row.key} className={isGroup ? "ps-8" : undefined}>
-            <StepsDisclosure steps={row.steps} decisions={row.decisions} failed={row.failed} />
+          <div key={row.key} className={isGroup ? "ps-8" : undefined} data-turn={row.turnId}>
+            <StepsDisclosure steps={row.steps} decisions={row.decisions} failed={row.failed} reveal={row.turnId === revealTurn ? target?.nonce : undefined} />
           </div>
         )
       case "card": {
@@ -282,7 +466,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
         return (
           <div key={row.key} className="flex flex-col items-start py-1" data-entry={row.entry.id}>
             {isGroup && author && <span className="mb-0.5 ps-3 text-xs text-fg-secondary">{author.name}</span>}
-            <CardView card={row.entry.card} state={row.entry.state} request={requestForCard(row.entry, state.requests)} bot={author ?? primary} entryId={row.entry.id} />
+            <CardView card={row.entry.card} state={row.entry.state} request={requestForCard(row.entry, requests)} bot={author ?? primary} entryId={row.entry.id} />
           </div>
         )
       }
@@ -427,14 +611,25 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
           </div>
         </div>
       )}
-      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto scrollbar-thin" data-testid="transcript" {...longPress}>
+      {findOpen && findBar && (
+        <FindBar
+          conversationId={conversationId}
+          focusNonce={findBar.nonce}
+          kinds={showSteps ? [...DEFAULT_SEARCH_KINDS, "tool-call"] : undefined}
+          layout={mode}
+          onChange={setFind}
+          onClose={() => setFindBar(null)}
+        />
+      )}
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto scrollbar-thin" data-testid="transcript" data-window={win !== undefined ? (joined ? "joined" : "open") : undefined} {...longPress}>
         <div
           className={cn(
             "mx-auto flex w-full max-w-[992px] flex-col pb-4",
             phone ? "px-3 pt-[calc(64px+env(safe-area-inset-top))]" : mode === "tablet" ? "px-4 pt-[calc(72px+env(safe-area-inset-top))]" : "px-4 pt-[72px]",
           )}
         >
-          {state.hasMoreBefore && (
+          {findOpen && <div className="h-12 shrink-0" aria-hidden />}
+          {(windowCursors !== undefined ? windowCursors.before !== null : state.hasMoreBefore) && (
             <div className="flex justify-center py-2 text-fg-tertiary">
               <Spinner size={14} />
             </div>
@@ -448,13 +643,33 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
           {rows.map((row, i) => (
             <Fragment key={row.key}>{renderRow(row, i)}</Fragment>
           ))}
-          {statuses.map((status) => renderStatus(status))}
+          {windowCursors?.after != null && (
+            <div className="flex justify-center py-2 text-fg-tertiary">
+              <Spinner size={14} />
+            </div>
+          )}
+          {!inWindow && statuses.map((status) => renderStatus(status))}
         </div>
       </div>
-      {!atBottom && (
+      {win !== undefined && !joined ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-[84px] z-10 flex justify-center">
-          <IconButton icon={ArrowDown} label="Scroll to bottom" variant="elevated" className="pointer-events-auto" onClick={scrollToBottom} />
+          <PillButton
+            variant="secondary"
+            size="sm"
+            leadingIcon={ArrowDown}
+            className="pointer-events-auto bg-elevated! shadow-popover hairline border-line-secondary"
+            onClick={jumpToLatest}
+            data-testid="jump-to-latest"
+          >
+            {newMessages > 0 ? `${newMessages} new ${newMessages === 1 ? "message" : "messages"}` : "Jump to latest"}
+          </PillButton>
         </div>
+      ) : (
+        !atBottom && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-[84px] z-10 flex justify-center">
+            <IconButton icon={ArrowDown} label="Scroll to bottom" variant="elevated" className="pointer-events-auto" onClick={win !== undefined ? jumpToLatest : scrollToBottom} />
+          </div>
+        )
       )}
       <div className={cn("mx-auto flex w-full max-w-[992px] flex-col gap-2", mode === "desktop" ? "px-4 pb-4" : "ob-composer-dock px-4 pb-[max(16px,env(safe-area-inset-bottom))]")}>
         {showTray && failed && (

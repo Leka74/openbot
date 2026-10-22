@@ -1,20 +1,30 @@
 // Search palette (Cmd/Ctrl+K, grok-bot-ui.md §4.10): Bots (unread first), group chats, settings
-// pages and actions. Rows: 22 px avatar + name + label chip, unread dot at the right. Phone: a
-// full-screen sheet with an iOS "Cancel", without the keyboard-only actions.
-import { Blocks, ChartNoAxesColumn, Cpu, MessageSquarePlus, Monitor, Moon, PanelLeft, Plus, Settings, ShieldCheck, Sparkles, Sun, Users } from "lucide-react"
-import { type ReactNode, useMemo } from "react"
-import { useAtomSet } from "@effect/atom-react"
+// pages and actions. Rows: 22 px avatar + name + label chip, unread dot at the right. From two
+// characters on, a "Messages" section under them shows the best matches from every chat (the chat,
+// who wrote it, the snippet with the words marked) and "See all results", which opens the Search
+// view. Phone: a full-screen sheet with an iOS "Cancel", without the keyboard-only actions.
+import { Blocks, ChartNoAxesColumn, Cpu, MessageSquarePlus, Monitor, Moon, PanelLeft, Plus, Search, Settings, ShieldCheck, Sparkles, Sun, Users } from "lucide-react"
+import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { useAtomSet, useAtomValue } from "@effect/atom-react"
+import { AsyncResult } from "effect/reactivity"
 import { DEFAULT_SETTINGS, type ConversationSummary } from "@openbot/contracts"
-import { updateSettingsAtom } from "@openbot/client"
-import { Avatar, AvatarStack, CommandPalette, CommandPaletteBody, Dialog, Icon, KeyBadge, LabelChip, UnreadDot, type PaletteItem } from "@openbot/ui"
+import { hitEntryId, hitKey, isSearchable, searchFilters } from "@openbot/app-model"
+import { searchFirstPageAtom, searchIdleAtom, updateSettingsAtom } from "@openbot/client"
+import { Avatar, AvatarStack, CommandPalette, CommandPaletteBody, Dialog, Icon, KeyBadge, LabelChip, Spinner, UnreadDot, filterPaletteItems, type PaletteItem } from "@openbot/ui"
 import { useIsPhone } from "../app/layout.ts"
 import { useRoster } from "../app/data.ts"
+import { formatListTime } from "../app/format.ts"
+import { useDebouncedValue } from "../details/skills.ts"
+import { authorLabel, chatLabel, HitLeading, Snippet } from "../search/hits.tsx"
 import { useConnectApps, useDialogs, useResolvedTheme, useSelection, useSettingsDialog } from "../app/uiState.ts"
 import { APPS, AppTile } from "../connections/apps.tsx"
 import type { SettingsPage } from "../contracts.ts"
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
 export const modKey = isMac ? "⌘" : "Ctrl+"
+
+/** Message hits shown in the palette (the Search view has them all). */
+const PALETTE_HITS = 6
 
 export interface SearchPaletteProps {
   readonly open: boolean
@@ -24,7 +34,7 @@ export interface SearchPaletteProps {
 
 export function SearchPalette({ open, onOpenChange, onToggleCompact }: SearchPaletteProps): ReactNode {
   const roster = useRoster()
-  const { select } = useSelection()
+  const { select, openSearch } = useSelection()
   const dialogs = useDialogs()
   const settingsDialog = useSettingsDialog()
   const connectApps = useConnectApps()
@@ -32,6 +42,13 @@ export function SearchPalette({ open, onOpenChange, onToggleCompact }: SearchPal
   const updateSettings = useAtomSet(updateSettingsAtom)
   const settings = roster.state.settings ?? DEFAULT_SETTINGS
   const phone = useIsPhone()
+  const [query, setQuery] = useState("")
+  useEffect(() => {
+    if (!open) setQuery("")
+  }, [open])
+  const settled = useDebouncedValue(query.trim(), 150)
+  const searching = open && isSearchable(settled)
+  const hitsResult = useAtomValue(searching ? searchFirstPageAtom({ query: settled, limit: PALETTE_HITS }) : searchIdleAtom)
 
   const items = useMemo((): ReadonlyArray<PaletteItem> => {
     const summaries = roster.state.conversations
@@ -136,10 +153,38 @@ export function SearchPalette({ open, onOpenChange, onToggleCompact }: SearchPal
     ]
   }, [roster, select, dialogs, settingsDialog, connectApps, theme, settings.showSteps, updateSettings, onToggleCompact, phone])
 
+  // Roster, settings and actions filtered here; message hits come filtered by the brain.
+  const messages = useMemo((): ReadonlyArray<PaletteItem> => {
+    if (!isSearchable(query)) return []
+    const page = AsyncResult.isSuccess(hitsResult) && searching ? hitsResult.value : undefined
+    const hits: PaletteItem[] = (page?.hits ?? []).map((hit) => ({
+      id: `hit:${hitKey(hit)}`,
+      label: authorLabel(roster, hit) === chatLabel(roster, hit) ? chatLabel(roster, hit) : `${chatLabel(roster, hit)} · ${authorLabel(roster, hit)}`,
+      group: "Messages",
+      leading: <HitLeading roster={roster} hit={hit} size={22} />,
+      detail: <Snippet hit={hit} />,
+      trailing: <span className="text-xs text-fg-tertiary tabular-nums">{formatListTime(hit.createdAt)}</span>,
+      onSelect: () => select(hit.conversationId, { entryId: hitEntryId(hit), terms: page?.terms ?? [], openExchange: true }),
+    }))
+    const pending = settled !== query.trim() || AsyncResult.isInitial(hitsResult) || hitsResult.waiting
+    return [
+      ...hits,
+      {
+        id: "search:all",
+        label: `See all results for “${query.trim()}”`,
+        group: "Messages",
+        leading: <Icon icon={Search} size="xl" className="text-icon-secondary" />,
+        ...(pending && hits.length === 0 ? { trailing: <Spinner size={14} label="Searching" /> } : {}),
+        onSelect: () => openSearch(searchFilters(query.trim())),
+      },
+    ]
+  }, [query, settled, hitsResult, searching, roster, select, openSearch])
+  const shown = useMemo(() => [...filterPaletteItems(items, query), ...messages], [items, query, messages])
+
   if (phone) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange} width={560} label="Search" className="ob-phone-full ob-search-sheet">
-        <CommandPaletteBody open={open} onOpenChange={onOpenChange} items={items} placeholder="Search" emptyText="No results" />
+        <CommandPaletteBody open={open} onOpenChange={onOpenChange} items={shown} query={query} onQueryChange={setQuery} placeholder="Search" emptyText="No results" />
         <button
           type="button"
           onClick={() => onOpenChange(false)}
@@ -150,5 +195,5 @@ export function SearchPalette({ open, onOpenChange, onToggleCompact }: SearchPal
       </Dialog>
     )
   }
-  return <CommandPalette open={open} onOpenChange={onOpenChange} items={items} placeholder="Search" emptyText="No results" />
+  return <CommandPalette open={open} onOpenChange={onOpenChange} items={shown} query={query} onQueryChange={setQuery} placeholder="Search" emptyText="No results" />
 }

@@ -145,7 +145,10 @@ const useDismiss = (open: boolean, refs: ReadonlyArray<RefObject<HTMLElement | n
       onDismiss()
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onDismiss()
+      if (e.key !== "Escape") return
+      // handled: the app's own Esc (close a pane, leave a view) leaves it alone
+      e.preventDefault()
+      onDismiss()
     }
     document.addEventListener("pointerdown", onDown, true)
     document.addEventListener("keydown", onKey)
@@ -663,6 +666,8 @@ export interface PaletteItem {
   readonly leading?: ReactNode
   /** After the label (label chip). */
   readonly chip?: ReactNode
+  /** A second line under the label (a search hit's snippet); the row grows to fit it. */
+  readonly detail?: ReactNode
   /** Far right (unread dot, shortcut). */
   readonly trailing?: ReactNode
   readonly onSelect?: () => void
@@ -760,12 +765,24 @@ export function CommandPaletteBody({ items, placeholder = "Search", emptyText = 
                   data-index={i}
                   onPointerMove={() => setActive(i)}
                   onClick={() => choose(it)}
-                  className={cn("flex min-h-12 cursor-default items-center gap-2.5 rounded-xl px-3 text-base text-fg", i === active && "bg-hover")}
+                  className={cn("flex min-h-12 cursor-default items-center gap-2.5 rounded-xl px-3 text-base text-fg", it.detail !== undefined && "py-2", i === active && "bg-hover")}
                 >
                   {it.leading}
-                  <span className="truncate">{it.label}</span>
-                  {it.chip}
-                  {it.trailing && <span className="ms-auto shrink-0">{it.trailing}</span>}
+                  {it.detail !== undefined ? (
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm text-fg-secondary">{it.label}</span>
+                        {it.chip}
+                      </span>
+                      <span className="line-clamp-2 text-base break-words">{it.detail}</span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="truncate">{it.label}</span>
+                      {it.chip}
+                    </>
+                  )}
+                  {it.trailing && <span className={cn("ms-auto shrink-0", it.detail !== undefined && "self-start pt-0.5")}>{it.trailing}</span>}
                 </div>
               </div>
             )

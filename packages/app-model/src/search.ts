@@ -2,7 +2,7 @@
 // `search.query` payload they make, the results list across pages, the Find bar's position among a
 // chat's hits, and the client-side term matching that highlights hits in the chat (the same folding
 // the brain's index uses: case-insensitive, diacritics removed).
-import { type BotId, type ConversationId, DEFAULT_SEARCH_KINDS, type SearchHit, type SearchKind, type SearchPage, type SearchSender } from "@openbot/contracts"
+import { type BotId, type ConversationId, DEFAULT_SEARCH_KINDS, type EntryId, type SearchHit, type SearchKind, type SearchPage, type SearchSender } from "@openbot/contracts"
 
 // ------------------------------------------------------------------------------------- filters
 
@@ -119,7 +119,7 @@ export const SEARCH_MIN_CHARS = 2
 export const isSearchable = (q: string): boolean => q.trim().length >= SEARCH_MIN_CHARS
 
 /** Where a hit opens: its entry, a task's report (when the brain found one); undefined = the chat. */
-export const hitEntryId = (hit: SearchHit): string | undefined => (hit.ref.kind === "entry" ? hit.ref.entryId : hit.jumpEntryId)
+export const hitEntryId = (hit: SearchHit): EntryId | undefined => (hit.ref.kind === "entry" ? hit.ref.entryId : hit.jumpEntryId)
 
 /** A stable key per hit (entries and tasks have separate id spaces). */
 export const hitKey = (hit: SearchHit): string => (hit.ref.kind === "entry" ? `e:${hit.ref.entryId}` : `t:${hit.ref.taskId}`)

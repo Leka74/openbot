@@ -3,13 +3,14 @@
 // W2.3 mounts (details pane, computer view, settings, new bot / group forms, onboarding).
 import { WifiOff } from "lucide-react"
 import { lazy, type ReactNode, Suspense, useCallback, useEffect, useRef, useState } from "react"
-import { useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { BotId, ConversationId } from "@openbot/contracts"
+import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react"
+import type { BotId } from "@openbot/contracts"
 import { connectionAtom, reconnectAtom } from "@openbot/client"
 import { Dialog, DialogHeader, Icon, PillButton } from "@openbot/ui"
 import { ChatView } from "../chat/ChatView.tsx"
 import { NewChatView } from "../chat/NewChat.tsx"
 import { SearchPalette } from "../palette/SearchPalette.tsx"
+import { SearchView } from "../search/SearchView.tsx"
 import { Sidebar } from "../sidebar/Sidebar.tsx"
 import { AppShell } from "./AppShell.tsx"
 import { ConnectDeviceDialog } from "./ConnectDevice.tsx"
@@ -19,10 +20,12 @@ import { ComputerView, DetailsPane, NewBotForm, NewGroupForm, Onboarding, Settin
 import { isPhoneNow, useLayoutMode, useVisualViewport } from "./layout.ts"
 import { useBackDismiss } from "./nav.ts"
 import { useSystemNotifications } from "./notifications.ts"
+import { parseRoute } from "./route.ts"
 
 import { CallBar } from "../voice/CallBar.tsx"
 const ConnectAppsDialog = lazy(() => import("../connections/ConnectAppsDialog.tsx").then((m) => ({ default: m.ConnectAppsDialog })))
 import {
+  findBarAtom,
   isNewChatHash,
   previousConversationAtom,
   useComputerView,
@@ -85,7 +88,8 @@ export function App(): ReactNode {
   const phone = mode === "phone"
   const roster = useRoster()
   const info = useSessionInfo()
-  const { conversationId, select } = useSelection()
+  const { conversationId, select, search, openSearch, closeSearch } = useSelection()
+  const [findBar, setFindBar] = useAtom(findBarAtom)
   const nav = usePhoneNav()
   const details = useDetailsPane()
   const settings = useSettingsDialog()
@@ -138,7 +142,7 @@ export function App(): ReactNode {
   useEffect(() => {
     if (booted.current || !roster.loaded) return
     booted.current = true
-    const deepLink = (conversationId !== null && roster.state.conversations.has(conversationId)) || isNewChatHash()
+    const deepLink = (conversationId !== null && roster.state.conversations.has(conversationId)) || isNewChatHash() || search !== null
     if (isPhoneNow()) {
       if (deepLink && !nav.home) {
         const hash = location.hash
@@ -155,7 +159,7 @@ export function App(): ReactNode {
     const recent = [...roster.state.conversations.values()].filter((c) => !c.hiddenFromSidebar).sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0]
     const target = firstPinned?.directConversationId ?? recent?.id
     if (target) select(target)
-  }, [roster.loaded, roster.bots, roster.state.conversations, conversationId, select, nav])
+  }, [roster.loaded, roster.bots, roster.state.conversations, conversationId, select, nav, search])
 
   // A Bot created before its roster upsert arrived: open its chat as soon as it shows up.
   useEffect(() => {
@@ -187,25 +191,33 @@ export function App(): ReactNode {
     return undefined
   }, [roster.loaded, roster.state.conversations, conversationId, select, previous, nav])
 
-  // Back/forward and manual hash edits. On a phone, a hash that is not a chat is Home.
+  // Back/forward and manual hash edits. On a phone, a hash that is not a chat screen is Home.
   useEffect(() => {
     const on = () => {
-      const m = /^#\/c\/([^/?#]+)/.exec(location.hash)
-      if (m) return select(decodeURIComponent(m[1]!) as ConversationId)
-      if (isPhoneNow() && !isNewChatHash()) return nav.setHome(true)
+      const route = parseRoute(location.hash)
+      if (route.kind === "chat") return select(route.conversationId, { entryId: route.entryId, openExchange: true })
+      if (route.kind === "search") return openSearch(route.filters)
+      if (isPhoneNow() && route.kind !== "new") return nav.setHome(true)
       select(null)
     }
     window.addEventListener("hashchange", on)
     return () => window.removeEventListener("hashchange", on)
-  }, [select, nav])
+  }, [select, openSearch, nav])
 
-  // Keyboard shortcuts: Cmd/Ctrl+K search, Cmd/Ctrl+N new chat, Cmd/Ctrl+B compact sidebar,
-  // Cmd/Ctrl+, settings, Esc closes the top-most surface (dialogs handle their own Esc first).
+  // Keyboard shortcuts: Cmd/Ctrl+K search, Cmd/Ctrl+F find in the open chat, Cmd/Ctrl+N new chat,
+  // Cmd/Ctrl+B compact sidebar, Cmd/Ctrl+, settings, Esc closes the top-most surface (dialogs handle
+  // their own Esc first).
+  const chatOnScreen = conversationId !== null && search === null && !(phone && nav.home)
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
       const key = e.key.toLowerCase()
-      if (mod && !e.shiftKey && !e.altKey && key === "k") {
+      if (mod && !e.shiftKey && !e.altKey && key === "f") {
+        // Only while a chat is the main view and nothing covers it; elsewhere the browser finds.
+        if (!chatOnScreen || conversationId === null || dialogs.dialog || settings.open || connectApps.open || computer.botId || document.querySelector('[role="dialog"]')) return
+        e.preventDefault()
+        setFindBar({ conversationId, nonce: (findBar?.nonce ?? 0) + 1 })
+      } else if (mod && !e.shiftKey && !e.altKey && key === "k") {
         e.preventDefault()
         if (dialogs.dialog?.kind === "search") dialogs.hide()
         else dialogs.show({ kind: "search" })
@@ -222,13 +234,15 @@ export function App(): ReactNode {
       } else if (e.key === "Escape" && !e.defaultPrevented) {
         if (dialogs.dialog || settings.open) return
         if (computer.botId) computer.close()
+        else if (findBar !== null && findBar.conversationId === conversationId && chatOnScreen) setFindBar(null)
+        else if (search !== null) closeSearch()
         else if (details.open) details.hide()
         else if (conversationId === null && previous) select(previous)
       }
     }
     window.addEventListener("keydown", on)
     return () => window.removeEventListener("keydown", on)
-  }, [dialogs, select, setCompact, compact, settings, computer, details, conversationId, previous])
+  }, [dialogs, select, setCompact, compact, settings, computer, details, conversationId, previous, chatOnScreen, connectApps.open, findBar, setFindBar, search, closeSearch])
 
   // Phone sheets own a history entry: Back / swipe-back closes them (nav.ts).
   const dialog = dialogs.dialog
@@ -280,12 +294,18 @@ export function App(): ReactNode {
         )}
         chat={
           <>
-            {conversationId ? <ChatView key={conversationId} conversationId={conversationId} /> : <NewChatView onClose={newChatClose} />}
+            {search !== null ? (
+              <SearchView filters={search} onClose={phone ? nav.back : closeSearch} />
+            ) : conversationId ? (
+              <ChatView key={conversationId} conversationId={conversationId} />
+            ) : (
+              <NewChatView onClose={newChatClose} />
+            )}
             <CallBar />
           </>
         }
         details={
-          details.open && conversationId ? (
+          details.open && conversationId && search === null ? (
             <Suspense fallback={<PaneLoading />}>
               <DetailsPane key={conversationId} {...(detailsBotId ? { botId: detailsBotId } : {})} conversationId={conversationId} tab={details.tab} onClose={details.hide} />
             </Suspense>
