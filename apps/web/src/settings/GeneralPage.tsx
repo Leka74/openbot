@@ -112,6 +112,11 @@ export function GeneralPage(): ReactNode {
           control={<Switch checked={settings.compactIdleBots} onCheckedChange={(compactIdleBots) => void patch({ compactIdleBots })} label="Compact idle Bots" />}
         />
         <SettingsRow
+          title="Bots can search their chats"
+          description="Let Bots look back through the chats they are in, so they can find details from earlier conversations. They never see your chats with other Bots."
+          control={<Switch checked={settings.botSearch} onCheckedChange={(botSearch) => void patch({ botSearch })} label="Bots can search their chats" />}
+        />
+        <SettingsRow
           title="Default harness"
           description="Preselected when you create a Bot."
           control={

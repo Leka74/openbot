@@ -3,7 +3,7 @@
  *
  * - `McpGateway` / `McpGatewayLive`: HTTP handler for `/mcp/:botId` on the internal listener.
  * - `McpBindingIssuerLive`: per-run bearer tokens (hashed in `McpTokenRepo`) → `McpBinding`.
- * - Toolkits: `BotToolkit`, `NodeToolkit`, `BrowserToolkit`, `ComputerToolkit` (`computer`,
+ * - Toolkits: `BotToolkit`, `SearchToolkit` (a bot's own past conversations), `NodeToolkit`, `BrowserToolkit`, `ComputerToolkit` (`computer`,
  *   `request_takeover`), `SlackToolkit` (while Slack is connected) and the result/param helpers they use.
  */
 export * from "./McpGateway.ts"
@@ -14,6 +14,7 @@ export * as Params from "./params.ts"
 export { findUnsafeSchemaKeywords } from "./params.ts"
 export { BotToolkit, type BotToolkitServices, describeNode } from "./toolkits/bot.ts"
 export { describeTask, formatSpan, notInTask, TaskToolkit, type TaskToolkitServices } from "./toolkits/tasks.ts"
+export { neutralizeQuoted, parseWhen, searchTime, SearchToolkit, type SearchToolkitServices } from "./toolkits/search.ts"
 export {
   allowedNodeIds,
   approve,

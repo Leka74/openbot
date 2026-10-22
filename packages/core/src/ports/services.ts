@@ -1053,6 +1053,8 @@ export interface SearchInput {
   readonly conversationIds?: ReadonlyArray<ConversationId> | undefined
   readonly botIds?: ReadonlyArray<BotId> | undefined
   readonly senders?: ReadonlyArray<SearchSender> | undefined
+  /** Bots' search only: the messages between the bot and this one. */
+  readonly exchangeWith?: BotId | undefined
   /** Default `DEFAULT_SEARCH_KINDS`. */
   readonly kinds?: ReadonlyArray<SearchKind> | undefined
   readonly from?: number | undefined
@@ -1063,6 +1065,26 @@ export interface SearchInput {
   /** 1–`SEARCH_PAGE_MAX`. */
   readonly limit: number
 }
+
+/** A chat a bot names in its search tools ("current", "owner", a group, @Name; see `SearchService.resolveForBot`). */
+export type BotChatRef =
+  | { readonly kind: "all" }
+  | { readonly kind: "conversation"; readonly conversationId: ConversationId }
+  /** The messages the bot and `peerBotId` sent each other (they live in both bots' DMs). */
+  | { readonly kind: "exchange"; readonly peerBotId: BotId }
+
+/** What a bot reads back (`read_conversation`): entries oldest first, and where the next pages start. */
+export interface BotReadPage {
+  readonly chat: Exclude<BotChatRef, { readonly kind: "all" }>
+  readonly entries: ReadonlyArray<TranscriptEntry>
+  /** Read further back with `before` = this entry; absent at the start. */
+  readonly olderFrom?: EntryId | undefined
+  /** Read on with `after` = this entry; absent at the newest. */
+  readonly newerFrom?: EntryId | undefined
+}
+
+/** The model-readable refusal for anything a bot may not read (it never says whether it exists). */
+export const CANT_READ_MESSAGE = "You can't read that conversation."
 
 /** Message search over the index (layer 2: repositories only). */
 export class SearchService extends Context.Service<SearchService, {
@@ -1078,10 +1100,36 @@ export class SearchService extends Context.Service<SearchService, {
     readonly kinds?: ReadonlyArray<SearchKind> | undefined
     readonly limit: number
   }) => Effect.Effect<SearchPositions, NotFound | InvalidInput>
-  /** A bot's search (`search_messages`): only what it may read (`SearchFilter`). */
+  /** A bot's search (`search_messages`): only what it may read (`SearchFilter`), counted up to `BOT_SEARCH_TOTAL_CAP`. */
   readonly forBot: (botId: BotId, input: SearchInput) => Effect.Effect<SearchPage, InvalidInput>
   /** The bot may read this whole chat now: it is a member (its DM, a group it is in, its routine runs). */
   readonly canRead: (botId: BotId, conversationId: ConversationId) => Effect.Effect<boolean>
+  /**
+   * A chat as a bot names it: "all"; "current" (the conversation it works in); "owner" (its DM);
+   * a group's title or a conversation id (only chats it is a member of); "@Name" or a teammate's
+   * name (its messages with that bot). Undefined or "" → `fallback`. Refused: `InvalidInput`.
+   */
+  readonly resolveForBot: (
+    botId: BotId,
+    current: ConversationId,
+    ref: string | undefined,
+    fallback: "all" | "current",
+  ) => Effect.Effect<BotChatRef, InvalidInput>
+  /**
+   * A bot reads back a chat it may read: around an entry (a search hit; with no `chat` the entry
+   * decides which), before or after one, or the newest. Voice calls' work, reasoning and audit lines
+   * are left out; tool steps only its own and only with `includeTools`.
+   */
+  readonly readForBot: (botId: BotId, input: {
+    readonly chat?: Exclude<BotChatRef, { readonly kind: "all" }> | undefined
+    readonly around?: EntryId | undefined
+    readonly before?: EntryId | undefined
+    readonly after?: EntryId | undefined
+    readonly limit: number
+    readonly includeTools: boolean
+  }) => Effect.Effect<BotReadPage, InvalidInput>
+  /** The records of these chats (labels for what a bot found). */
+  readonly chats: (ids: ReadonlyArray<ConversationId>) => Effect.Effect<ReadonlyMap<ConversationId, Conversation>>
 }>()("openbot/core/SearchService") {}
 
 /**

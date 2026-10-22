@@ -127,9 +127,9 @@ describe("settings key/value codec", () => {
     )
     expect(out.first).toEqual({ ...DEFAULT_SETTINGS, theme: "light", defaultHarness: "codex" })
     expect(out.second).toEqual({ ...DEFAULT_SETTINGS, theme: "light" })
-    expect(out.keys).toEqual(["accent", "approvalExpiryMinutes", "botMessaging", "compactIdleBots", "defaultAutonomy", "sharedProjectFolders", "showCompactions", "showSteps", "slackMentions", "theme"])
+    expect(out.keys).toEqual(["accent", "approvalExpiryMinutes", "botMessaging", "botSearch", "compactIdleBots", "defaultAutonomy", "sharedProjectFolders", "showCompactions", "showSteps", "slackMentions", "theme"])
     expect(settingsToEntries(DEFAULT_SETTINGS).map(([k]) => k).sort()).toEqual(
-      ["accent", "approvalExpiryMinutes", "botMessaging", "compactIdleBots", "defaultAutonomy", "defaultHarness", "ownerName", "sharedProjectFolders", "showCompactions", "showSteps", "slackMentions", "slackSendTo", "theme"],
+      ["accent", "approvalExpiryMinutes", "botMessaging", "botSearch", "compactIdleBots", "defaultAutonomy", "defaultHarness", "ownerName", "sharedProjectFolders", "showCompactions", "showSteps", "slackMentions", "slackSendTo", "theme"],
     )
   })
 })

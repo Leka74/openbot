@@ -2,8 +2,9 @@
  * Test harness: the real gateway + real `McpBindingIssuerLive` over core's in-memory ports and
  * service fakes, served by `Bun.serve` on an ephemeral port, driven by the MCP SDK `Client`.
  */
-import type { Bot, BotId, ConversationId, EntryId, HarnessRequestResolution, NodeSummary } from "@openbot/contracts"
+import type { Bot, BotId, ConversationId, EntryId, HarnessRequestResolution, NodeSummary, Settings } from "@openbot/contracts"
 import {
+  BotRepo,
   BotService,
   InternalAddress,
   type McpBinding,
@@ -14,6 +15,7 @@ import {
   NodeDirectory,
   RoutineScheduler,
   MessagingLive,
+  SearchServiceLive,
   SkillService,
 } from "@openbot/core"
 import {
@@ -75,6 +77,8 @@ export interface HarnessOptions {
   readonly toolApproval?: HarnessRequestResolution
   readonly tools?: ReadonlyArray<AnyTool<GatewayToolServices>>
   readonly progressIntervalMs?: number
+  /** Settings (SettingsServiceFake) when messaging is mocked. */
+  readonly settings?: Partial<Settings>
 }
 
 export const startHarness = async (options?: HarnessOptions): Promise<Harness> => {
@@ -180,6 +184,8 @@ export const startHarness = async (options?: HarnessOptions): Promise<Harness> =
       Layer.provideMerge(LiveHubFake.layer),
     )
     : Layer.merge(MessagingTest, orchestrator)
+  // the real SearchService over the in-memory repositories (the search tools' access rules live there)
+  const settings = options?.realMessaging === true ? Layer.empty : SettingsServiceFake.layer({ initial: options?.settings ?? {} })
   const services = Layer.mergeAll(
     ApprovalServiceFake.layer(),
     BackgroundTasksFake.layer(),
@@ -188,6 +194,8 @@ export const startHarness = async (options?: HarnessOptions): Promise<Harness> =
     BotServiceTest,
     RoutineSchedulerTest,
     SkillServiceTest,
+    SearchServiceLive,
+    settings,
   ).pipe(Layer.provideMerge(ports))
   const issuer = McpBindingIssuerLive.pipe(Layer.provide(ports))
   const gateway = McpGatewayLayer({
@@ -201,6 +209,8 @@ export const startHarness = async (options?: HarnessOptions): Promise<Harness> =
 
   const gw = await run(McpGateway)
   gatewayHandle = gw.handle
+  // the bots exist in the repositories too (search reads them there)
+  await run(Effect.flatMap(BotRepo, (repo) => Effect.forEach(bots, (bot) => repo.upsert(bot), { discard: true })))
 
   const clients: Array<Client> = []
   const scopes: Array<Scope.Closeable> = []

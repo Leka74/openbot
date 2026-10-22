@@ -265,6 +265,8 @@ export interface SearchFilter {
   /** Chats the bot is in, or written by it. */
   readonly botIds?: ReadonlyArray<BotId> | undefined
   readonly senders?: ReadonlyArray<SearchSender> | undefined
+  /** Bot scope only: the messages between the bot and this one (`message_bot` both ways). */
+  readonly exchangeWith?: BotId | undefined
   /** Inclusive bounds on `createdAt`. */
   readonly from?: number | undefined
   readonly to?: number | undefined
@@ -276,6 +278,8 @@ export interface SearchRepoQuery extends SearchFilter {
   /** Keyset position after which the page starts (from a previous page's `next`). */
   readonly after?: SearchCursor | undefined
   readonly limit: number
+  /** Count matches up to this many (default `SEARCH_TOTAL_CAP`). */
+  readonly totalCap?: number | undefined
 }
 
 export interface SearchRepoHit {
@@ -292,7 +296,7 @@ export interface SearchRepoPage {
   readonly hits: ReadonlyArray<SearchRepoHit>
   /** Where the next page starts; undefined on the last page. */
   readonly next: SearchCursor | undefined
-  /** Matches in total, counted up to `SEARCH_TOTAL_CAP`. */
+  /** Matches in total, counted up to `totalCap`. */
   readonly total: number
 }
 

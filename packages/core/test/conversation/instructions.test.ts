@@ -53,6 +53,17 @@ describe("InstructionRenderer: screen tools", () => {
   })
 })
 
+describe("InstructionRenderer: looking back", () => {
+  const bot = makeBot({ name: "Scout" })
+
+  test("while bots may search their chats: look up exact detail instead of relying on recollection", () => {
+    const text = renderBase(bot, placement(["bot"]))
+    expect(text).toContain("`search_messages` and `read_conversation` look back through your conversations")
+    expect(text).toContain("instead of relying on recollection")
+    expect(renderBase(bot, placement(["bot"]), false)).not.toContain("search_messages")
+  })
+})
+
 describe("InstructionRenderer: groups", () => {
   const lead = makeBot({ id: botId("bot_lead"), name: "Engineering Lead" })
   const claude = makeBot({ id: botId("bot_claude"), name: "Claude Engineer" })

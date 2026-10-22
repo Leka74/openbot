@@ -38,6 +38,8 @@ export interface ToolAvailability {
   readonly hostNode: NodeSummary | undefined
   /** The owner's Slack is connected (D3.4). */
   readonly slack?: boolean | undefined
+  /** Settings › "Bots can search their chats" (default on). */
+  readonly botSearch?: boolean | undefined
 }
 
 export interface ToolDef<A, R> {

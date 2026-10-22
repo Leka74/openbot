@@ -6,7 +6,7 @@
  *
  * The text is conversation-independent on purpose: a bot has ONE session for all of its
  * conversations (D5.0), and the hash only changes when the persona, the team, its groups, the memory
- * index or the placement or the project folders change, which is when a session must be reopened (Claude
+ * index or the placement or the project folders (or whether bots may search their chats) change, which is when a session must be reopened (Claude
  * snapshot semantics).
  * Conversation context (origin tags, group catch-up, sender attribution) travels in the turn text.
  */
@@ -19,7 +19,7 @@ import { InstructionRenderer, MemoryService, SettingsService } from "../../ports
 import { SlackConnector } from "../../ports/Slack.ts"
 import { hashText, orDie } from "./internal/util.ts"
 
-const toolLines = (placement: PlacementSummary): ReadonlyArray<string> => {
+const toolLines = (placement: PlacementSummary, botSearch: boolean): ReadonlyArray<string> => {
   const lines = [
     "- In a group chat, everything stays in the group: your reply is posted in the group. Address teammates by @mentioning them in your reply (`message_bot` / `handoff_task` to a member only note who to wake; put your message to them in your reply). Never move group work to direct messages; reply to the owner in the group.",
     "- Only @mention a teammate when you need them to do something or to answer a question. Do not @mention to thank or acknowledge. If a message needs nothing from you, reply with exactly `NO_REPLY` (nothing is posted); you may first `react` with an emoji (e.g. 👍) instead of posting an acknowledgement.",
@@ -35,6 +35,11 @@ const toolLines = (placement: PlacementSummary): ReadonlyArray<string> => {
     "- Files sent to you (by the owner or another Bot) are copied into your workspace under `inbox/` before your turn; an `[Attachments: …]` line lists their paths.",
     "- `start_task` starts a piece of work that runs in parallel, so you stay available in your conversations while it runs. Use it for work likely to take more than about a minute or many tool steps; quick things you just do directly. Give it a short title and a short brief, one to a few sentences: what to do and what done looks like. The work runs with your tools, files and memory and sees the recent messages of the conversation it was started from, so do not repeat them; add only what they do not say. Its result comes back to you later in that conversation, as a message whose first line is `[Result of \"<title>\"]`; then tell the owner what came out of it. `list_tasks`, `check_task` and `cancel_task` show, check and stop your running work; `update_task` passes feedback or changes on to work that is still running.",
     "- `remember`, `forget` and `recall_memory` manage your memory; `create_routine`, `update_routine` and `list_routines` manage your scheduled routines.",
+    ...(botSearch
+      ? [
+        "- `search_messages` and `read_conversation` look back through your conversations as they were said: your DM with the owner, your groups, your routine runs and your messages with other Bots. Earlier parts of your conversations may only survive as a summary in your context, so when you need exact detail from before (what someone said or decided, a name, a path, a number, a link), look it up there instead of relying on recollection.",
+      ]
+      : []),
     "- Skills are reusable how-tos from a shared library; you see only the ones you have. `save_skill` writes a new one (or updates one of yours) and gives it to you, `list_skills` shows the library and which you have, `enable_skill` asks the owner to give you (or a teammate) a library skill, and `disable_skill` drops one you no longer need. For skills from outside, `find_skills` searches skills.sh (the public catalog), `preview_skill` reads one, and `install_skill` installs it for you or teammates once the owner approves. Skills come only through these tools: never install one by downloading or copying its files (into `.claude/skills`, `.agents/skills` or a workspace), since such copies are not loaded and skip the owner. If an install fails, tell the owner what failed.",
     "- `list_nodes` lists the computers you can use.",
   ]
@@ -62,7 +67,8 @@ const toolLines = (placement: PlacementSummary): ReadonlyArray<string> => {
   return lines
 }
 
-export const renderBase = (bot: Bot, placement: PlacementSummary): string =>
+/** `botSearch`: Settings › "Bots can search their chats" (the search tools are offered). */
+export const renderBase = (bot: Bot, placement: PlacementSummary, botSearch = true): string =>
   [
     `You are ${bot.name}${bot.label === undefined || bot.label.trim() === "" ? "" : ` (${bot.label.trim()})`}, a Bot on your owner's OpenBot team. You work for one owner (a human) together with the other Bots listed below.`,
     "",
@@ -85,7 +91,7 @@ export const renderBase = (bot: Bot, placement: PlacementSummary): string =>
     "A teammate's message in your direct chat (`[Direct message from @Name]`) is for you, but your reply to it is posted in your chat with the owner; the teammate does not see it (answer them with `message_bot`). Reply there only when the owner needs to hear something new: a result they are waiting for, a problem, or a decision only they can make. Otherwise reply `NO_REPLY`.",
     "",
     "Your OpenBot tools (MCP server `openbot`):",
-    ...toolLines(placement),
+    ...toolLines(placement, botSearch),
   ].join("\n")
 
 /**
@@ -177,10 +183,10 @@ export const InstructionRendererLive: Layer.Layer<
         const team = yield* orDie(bots.list)
         const groups = yield* orDie(conversations.list({ kind: "group", botId: bot.id, includeHidden: false }))
         const memoryIndex = yield* memory.promptIndex(bot.id)
-        const { sharedProjectFolders } = yield* settings.get
+        const { sharedProjectFolders, botSearch } = yield* settings.get
         const folders = renderProjectFolders([...sharedProjectFolders, ...bot.projectFolders])
         return assembleInstructions({
-          base: renderBase(bot, placement),
+          base: renderBase(bot, placement, botSearch),
           persona: bot.instructions,
           team: renderTeam(bot, team),
           groups: renderGroups(bot, groups, team),

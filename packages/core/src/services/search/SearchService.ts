@@ -3,9 +3,25 @@
  * `search.inConversation`) and for bots (`search_messages`; the repository enforces what a bot may
  * read). Validates input, turns words into a query (`parseSearchQuery`; never raw FTS syntax), and
  * maps repository hits to the contract (`SearchHit`).
+ *
+ * Bots also read chats back (`read_conversation`): the chats they are a member of now, and their own
+ * messages with another bot (which live in both bots' DMs). Nothing else of the owner's chats with
+ * other bots, and nothing of a group they left (Lekë's v1 rules, `SearchFilter`).
  */
-import type { BotId, ConversationId, EntryId, SearchHit, SearchPage, SearchPositions, TaskId } from "@openbot/contracts"
+import type {
+  Bot,
+  BotId,
+  Conversation,
+  ConversationId,
+  EntryId,
+  SearchHit,
+  SearchPage,
+  SearchPositions,
+  TaskId,
+  TranscriptEntry,
+} from "@openbot/contracts"
 import {
+  BOT_SEARCH_TOTAL_CAP,
   DEFAULT_SEARCH_KINDS,
   InvalidInput,
   NotFound,
@@ -14,18 +30,42 @@ import {
   SEARCH_QUERY_MAX_CHARS,
 } from "@openbot/contracts"
 import { Effect, Layer, Option } from "effect"
-import { ConversationRepo, type SearchRepoHit, SearchRepo, type SearchScope } from "../../ports/repos.ts"
-import { type SearchInput, SearchService } from "../../ports/services.ts"
-import { compact, orDie } from "../conversation/internal/util.ts"
+import {
+  BotRepo,
+  ConversationRepo,
+  EntryRepo,
+  type EntryPosition,
+  type SearchRepoHit,
+  SearchRepo,
+  type SearchScope,
+  TurnRepo,
+} from "../../ports/repos.ts"
+import { type BotChatRef, type BotReadPage, CANT_READ_MESSAGE, type SearchInput, SearchService } from "../../ports/services.ts"
+import { visiblePage, visiblePageAfter } from "../conversation/internal/summary.ts"
+import { compact, findBotByRef, isHousekeeping, orDie } from "../conversation/internal/util.ts"
 import { decodeSearchCursor, encodeSearchCursor, parseSearchQuery, parseSnippet } from "./text.ts"
 
 const invalid = (message: string) => new InvalidInput({ message })
 
-export const SearchServiceLive: Layer.Layer<SearchService, never, SearchRepo | ConversationRepo> = Layer.effect(
+/** Most entries a bot reads back at once. */
+export const MAX_BOT_READ = 50
+
+type ReadChat = Exclude<BotChatRef, { readonly kind: "all" }>
+
+const cursorOf = (at: EntryPosition) => `${at.createdAt}:${at.id}`
+
+export const SearchServiceLive: Layer.Layer<
+  SearchService,
+  never,
+  SearchRepo | ConversationRepo | BotRepo | EntryRepo | TurnRepo
+> = Layer.effect(
   SearchService,
   Effect.gen(function*() {
     const repo = yield* SearchRepo
     const conversations = yield* ConversationRepo
+    const bots = yield* BotRepo
+    const entries = yield* EntryRepo
+    const transcript = yield* Effect.context<EntryRepo | TurnRepo>()
 
     const checkQuery = (query: string) =>
       query.length > SEARCH_QUERY_MAX_CHARS
@@ -76,11 +116,13 @@ export const SearchServiceLive: Layer.Layer<SearchService, never, SearchRepo | C
         conversationIds: input.conversationIds,
         botIds: input.botIds,
         senders: input.senders,
+        exchangeWith: input.exchangeWith,
         from: input.from,
         to: input.to,
         sort,
         after,
         limit: input.limit,
+        ...(scope.kind === "bot" ? { totalCap: BOT_SEARCH_TOTAL_CAP } : {}),
       }))
       return compact<SearchPage>({
         hits: page.hits.map(toHit),
@@ -89,6 +131,214 @@ export const SearchServiceLive: Layer.Layer<SearchService, never, SearchRepo | C
         terms: match.terms,
         indexing: indexing || undefined,
       })
+    })
+
+    // ------------------------------------------------------------------ bots reading back
+
+    const cantRead = () => invalid(CANT_READ_MESSAGE)
+    const isMember = (botId: BotId, conversationId: ConversationId) =>
+      orDie(conversations.members(conversationId)).pipe(Effect.map((members) => members.includes(botId)))
+    const botOf = (botId: BotId) =>
+      orDie(bots.get(botId)).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.fail(cantRead()), onSome: Effect.succeed })))
+
+    /** The other bot of a bot-to-bot message of `botId` in a DM, if `entry` is one. */
+    const peerOf = (botId: BotId, entry: TranscriptEntry) =>
+      Effect.gen(function*() {
+        if (entry.kind !== "message" || entry.author.kind !== "bot" || entry.toBotId === undefined) return undefined
+        const conversation = yield* orDie(conversations.get(entry.conversationId))
+        if (Option.isNone(conversation) || conversation.value.kind !== "direct") return undefined
+        if (entry.author.botId === botId && entry.toBotId !== botId) return entry.toBotId
+        if (entry.toBotId === botId && entry.author.botId !== botId) return entry.author.botId
+        return undefined
+      })
+
+    /** What a bot reads in a chat: no reasoning, audit or housekeeping lines; its own steps when asked. */
+    const shown = (botId: BotId, includeTools: boolean) => (entry: TranscriptEntry): boolean => {
+      switch (entry.kind) {
+        case "unknown":
+        case "reasoning":
+          return false
+        case "tool-call":
+          return includeTools && entry.author.kind === "bot" && entry.author.botId === botId
+        case "event":
+          return entry.event.type !== "auto-decided" && !isHousekeeping(entry)
+        default:
+          return true
+      }
+    }
+
+    interface Scan {
+      readonly entries: ReadonlyArray<TranscriptEntry>
+      readonly more: boolean
+    }
+
+    /** `want` shown entries before (`older`) or after a position, oldest first. */
+    const scan = (
+      bot: Bot,
+      chat: ReadChat,
+      direction: "older" | "newer",
+      from: EntryPosition | undefined,
+      want: number,
+      keep: (entry: TranscriptEntry) => boolean,
+    ): Effect.Effect<Scan> =>
+      Effect.gen(function*() {
+        if (want <= 0) return { entries: [], more: true }
+        if (chat.kind === "exchange") {
+          const peer = yield* orDie(bots.get(chat.peerBotId))
+          if (Option.isNone(peer)) return { entries: [], more: false }
+          const slice = yield* orDie(entries.listExchange({
+            botIds: [bot.id, peer.value.id],
+            conversationIds: [bot.directConversationId, peer.value.directConversationId],
+            direction,
+            from,
+            limit: want,
+          }))
+          return { entries: slice.entries, more: slice.more }
+        }
+        const kept: Array<TranscriptEntry> = []
+        let at = from
+        const size = Math.max(want * 2, 20)
+        while (true) {
+          if (direction === "older") {
+            const page = yield* orDie(Effect.provide(
+              visiblePage({ conversationId: chat.conversationId, before: at === undefined ? undefined : cursorOf(at), limit: size }),
+              transcript,
+            ))
+            kept.unshift(...page.entries.filter(keep))
+            const first = page.entries[0]
+            if (kept.length >= want || !page.hasMoreBefore || first === undefined) {
+              return { entries: kept.slice(Math.max(0, kept.length - want)), more: kept.length > want || page.hasMoreBefore }
+            }
+            at = first
+          } else {
+            const page = yield* orDie(Effect.provide(
+              visiblePageAfter({ conversationId: chat.conversationId, after: cursorOf(at ?? { createdAt: -1, id: "0" }), limit: size }),
+              transcript,
+            ))
+            kept.push(...page.entries.filter(keep))
+            const last = page.entries[page.entries.length - 1]
+            if (kept.length >= want || !page.hasMoreAfter || last === undefined) {
+              return { entries: kept.slice(0, want), more: kept.length > want || page.hasMoreAfter }
+            }
+            at = last
+          }
+        }
+      })
+
+    const resolveForBot = Effect.fn("SearchService.resolveForBot")(function*(
+      botId: BotId,
+      current: ConversationId,
+      ref: string | undefined,
+      fallback: "all" | "current",
+    ) {
+      const bot = yield* botOf(botId)
+      const raw = (ref ?? "").trim().replace(/^["']|["']$/g, "").trim()
+      const key = raw.toLowerCase()
+      if (key === "") return fallback === "all" ? { kind: "all" } as const : { kind: "conversation", conversationId: current } as const
+      if (key === "all") return { kind: "all" } as const
+      if (key === "current" || key === "this" || key === "here") return { kind: "conversation", conversationId: current } as const
+      if (key === "owner" || key === "dm" || key === "my dm") return { kind: "conversation", conversationId: bot.directConversationId } as const
+      const team = yield* orDie(bots.list)
+      const teammate = findBotByRef(team, raw)
+      if (teammate !== undefined) {
+        if (teammate.id === botId) return { kind: "conversation", conversationId: bot.directConversationId } as const
+        return { kind: "exchange", peerBotId: teammate.id } as const
+      }
+      if (raw.startsWith("@")) return yield* invalid(`No teammate is called ${raw}. list_bots lists the team.`)
+      const byId = yield* orDie(conversations.get(raw as ConversationId))
+      if (Option.isSome(byId)) {
+        if (!(yield* isMember(botId, byId.value.id))) return yield* cantRead()
+        return { kind: "conversation", conversationId: byId.value.id } as const
+      }
+      const groups = yield* orDie(conversations.list({ botId, kind: "group" }))
+      const group = groups.find((g) => g.title.trim().toLowerCase() === key)
+      if (group !== undefined) return { kind: "conversation", conversationId: group.id } as const
+      return yield* invalid(
+        `None of your conversations is called "${raw}". Use "current", "owner" (your DM with the owner), a group's title or id, or @Name (your messages with a teammate).`,
+      )
+    })
+
+    const readForBot = Effect.fn("SearchService.readForBot")(function*(botId: BotId, input: {
+      readonly chat?: ReadChat | undefined
+      readonly around?: EntryId | undefined
+      readonly before?: EntryId | undefined
+      readonly after?: EntryId | undefined
+      readonly limit: number
+      readonly includeTools: boolean
+    }) {
+      const { limit } = input
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BOT_READ) {
+        return yield* invalid(`limit must be between 1 and ${MAX_BOT_READ}.`)
+      }
+      if ([input.around, input.before, input.after].filter((x) => x !== undefined).length > 1) {
+        return yield* invalid("Pass at most one of around, before and after.")
+      }
+      const bot = yield* botOf(botId)
+      const anchorId = input.around ?? input.before ?? input.after
+      const anchor = anchorId === undefined ? undefined : Option.getOrUndefined(yield* orDie(entries.get(anchorId)))
+      if (anchorId !== undefined && (anchor === undefined || anchor.kind === "unknown")) return yield* cantRead()
+
+      // the chat: asked for, or the one the entry belongs to as this bot may read it
+      let chat = input.chat
+      if (anchor !== undefined) {
+        const member = yield* isMember(botId, anchor.conversationId)
+        const peer = member ? undefined : yield* peerOf(botId, anchor)
+        if (!member && peer === undefined) return yield* cantRead()
+        const own: ReadChat = member
+          ? { kind: "conversation", conversationId: anchor.conversationId }
+          : { kind: "exchange", peerBotId: peer! }
+        if (chat === undefined) chat = own
+        else if (
+          chat.kind === "conversation"
+            ? chat.conversationId !== anchor.conversationId
+            : (yield* peerOf(botId, anchor)) !== chat.peerBotId
+        ) return yield* invalid("That message is not in that conversation.")
+      }
+      if (chat === undefined) return yield* invalid("Name the conversation to read.")
+      if (chat.kind === "conversation" && !(yield* isMember(botId, chat.conversationId))) return yield* cantRead()
+      if (chat.kind === "exchange" && (chat.peerBotId === botId || Option.isNone(yield* orDie(bots.get(chat.peerBotId))))) {
+        return yield* cantRead()
+      }
+
+      const keep = shown(botId, input.includeTools)
+      let list: ReadonlyArray<TranscriptEntry>
+      let moreBefore: boolean
+      let moreAfter: boolean
+      if (anchor !== undefined && input.around !== undefined) {
+        // up to half before it, the entry, the rest after; a short side leaves its room to the other
+        const room = limit - 1
+        const older = yield* scan(bot, chat, "older", anchor, room, keep)
+        const newer = yield* scan(bot, chat, "newer", anchor, room, keep)
+        const takeNewer = Math.min(newer.entries.length, Math.max(Math.floor(room / 2), room - older.entries.length))
+        const takeOlder = Math.min(older.entries.length, room - takeNewer)
+        list = [...older.entries.slice(older.entries.length - takeOlder), anchor, ...newer.entries.slice(0, takeNewer)]
+        moreBefore = older.more || takeOlder < older.entries.length
+        moreAfter = newer.more || takeNewer < newer.entries.length
+      } else if (anchor !== undefined && input.before !== undefined) {
+        const older = yield* scan(bot, chat, "older", anchor, limit, keep)
+        list = older.entries
+        moreBefore = older.more
+        moreAfter = true
+      } else if (anchor !== undefined) {
+        const newer = yield* scan(bot, chat, "newer", anchor, limit, keep)
+        list = newer.entries
+        moreBefore = true
+        moreAfter = newer.more
+      } else {
+        const tail = yield* scan(bot, chat, "older", undefined, limit, keep)
+        list = tail.entries
+        moreBefore = tail.more
+        moreAfter = false
+      }
+      const first = list[0]
+      const last = list[list.length - 1]
+      const page: BotReadPage = {
+        chat,
+        entries: list,
+        olderFrom: moreBefore ? first?.id ?? input.after : undefined,
+        newerFrom: moreAfter ? last?.id ?? input.before : undefined,
+      }
+      return page
     })
 
     return SearchService.of({
@@ -122,8 +372,18 @@ export const SearchServiceLive: Layer.Layer<SearchService, never, SearchRepo | C
         return compact<SearchPositions>({ ...found, terms: [substring.toLowerCase()], indexing })
       }),
 
-      canRead: (botId: BotId, conversationId: ConversationId) =>
-        orDie(conversations.members(conversationId)).pipe(Effect.map((members) => members.includes(botId))),
+      canRead: isMember,
+      resolveForBot,
+      readForBot,
+      chats: (ids) =>
+        Effect.gen(function*() {
+          const found = new Map<ConversationId, Conversation>()
+          for (const id of new Set(ids)) {
+            const conversation = yield* orDie(conversations.get(id))
+            if (Option.isSome(conversation)) found.set(id, conversation.value)
+          }
+          return found
+        }),
     })
   }),
 )

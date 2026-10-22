@@ -22,6 +22,8 @@ export const Settings = Schema.Struct({
   botMessaging: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   /** Compact a Bot's large context when it goes idle, while the prompt cache is still warm. */
   compactIdleBots: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /** Bots can search and read back their own chats (`search_messages`, `read_conversation`). */
+  botSearch: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   /** Preselected harness in New Bot. */
   defaultHarness: Schema.optionalKey(HarnessKindName),
   /** Unattended approvals expire after this many minutes (D5.6). */
@@ -52,6 +54,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showCompactions: false,
   botMessaging: true,
   compactIdleBots: true,
+  botSearch: true,
   approvalExpiryMinutes: DEFAULT_APPROVAL_EXPIRY_MINUTES,
   sharedProjectFolders: [],
   defaultAutonomy: DEFAULT_BOT_AUTONOMY,
@@ -66,6 +69,7 @@ export const SettingsPatch = Schema.Struct({
   showCompactions: Schema.optionalKey(Schema.Boolean),
   botMessaging: Schema.optionalKey(Schema.Boolean),
   compactIdleBots: Schema.optionalKey(Schema.Boolean),
+  botSearch: Schema.optionalKey(Schema.Boolean),
   /** `null` clears the default. */
   defaultHarness: Schema.optionalKey(Schema.NullOr(HarnessKindName)),
   approvalExpiryMinutes: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))),
@@ -87,6 +91,7 @@ export const applySettingsPatch = (settings: Settings, patch: SettingsPatch): Se
   if (patch.showCompactions !== undefined) next.showCompactions = patch.showCompactions
   if (patch.botMessaging !== undefined) next.botMessaging = patch.botMessaging
   if (patch.compactIdleBots !== undefined) next.compactIdleBots = patch.compactIdleBots
+  if (patch.botSearch !== undefined) next.botSearch = patch.botSearch
   if (patch.approvalExpiryMinutes !== undefined) next.approvalExpiryMinutes = patch.approvalExpiryMinutes
   if (patch.sharedProjectFolders !== undefined) next.sharedProjectFolders = patch.sharedProjectFolders
   if (patch.defaultAutonomy !== undefined) next.defaultAutonomy = patch.defaultAutonomy

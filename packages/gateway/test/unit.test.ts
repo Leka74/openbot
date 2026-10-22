@@ -71,7 +71,7 @@ describe("params", () => {
     expect([...names].sort()).toEqual(
       [
         "message_bot", "post_to_group", "react", "handoff_task", "list_bots", "list_models", "create_bot", "update_bot", "list_sections", "create_section", "rename_section", "delete_section", "move_bot_to_section", "ask_user", "request_approval", "notify_user", "send_file",
-        "remember", "forget", "recall_memory", "create_routine", "update_routine", "list_routines", "save_skill",
+        "remember", "forget", "recall_memory", "search_messages", "read_conversation", "create_routine", "update_routine", "list_routines", "save_skill",
         "list_skills", "enable_skill", "disable_skill", "find_skills", "preview_skill", "install_skill", "list_nodes", "start_task", "list_tasks", "check_task", "cancel_task", "update_task", "shell", "read_file", "write_file", "edit_file", "list_dir", "glob", "grep",
         "browser", "computer", "request_takeover", "slack_search", "slack_read", "slack_find", "slack_draft",
       ].sort(),

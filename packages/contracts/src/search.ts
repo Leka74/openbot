@@ -88,3 +88,5 @@ export const SEARCH_QUERY_MAX_CHARS = 200
 export const SEARCH_PAGE_MAX = 50
 export const SEARCH_POSITIONS_MAX = 1_000
 export const SEARCH_TOTAL_CAP = 1_000
+/** A bot's search counts less far ("100+"): counting is most of a broad search's time. */
+export const BOT_SEARCH_TOTAL_CAP = 100

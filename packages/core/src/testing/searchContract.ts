@@ -48,7 +48,7 @@ const asBot = (id: BotId): SearchScope => ({ kind: "bot", botId: id })
 const find = (
   words: string,
   scope: SearchScope,
-  filter?: Partial<Omit<SearchFilter, "scope">> & { readonly sort?: SearchSort; readonly limit?: number },
+  filter?: Partial<Omit<SearchFilter, "scope">> & { readonly sort?: SearchSort; readonly limit?: number; readonly totalCap?: number },
 ) =>
   Effect.gen(function*() {
     const repo = yield* SearchRepo
@@ -65,11 +65,13 @@ const find = (
         conversationIds: filter?.conversationIds,
         botIds: filter?.botIds,
         senders: filter?.senders,
+        exchangeWith: filter?.exchangeWith,
         from: filter?.from,
         to: filter?.to,
         sort: filter?.sort ?? "newest",
         after,
         limit: filter?.limit ?? 50,
+        totalCap: filter?.totalCap,
       })
       if (total === -1) total = page.total
       refs.push(...page.hits.map((hit) => hit.doc.refId))
@@ -142,6 +144,9 @@ export const searchContractCases: ReadonlyArray<RepoContractCase> = [
     yield* sameSet(forBeta.refs, ["ent_c3", "ent_b1", "ent_b2"], "Beta's view")
     yield* equal(forBeta.total, 3, "the count never includes what Beta may not read")
     yield* sameSet(yield* refsOf("zebra", asBot(B), { conversationIds: [dmC] }), ["ent_c3"], "asking for Gamma's DM directly")
+    yield* sameSet(yield* refsOf("zebra", asBot(B), { exchangeWith: C }), ["ent_c3", "ent_b2"], "Beta's messages with Gamma, both ways")
+    yield* sameSet(yield* refsOf("zebra", asBot(B), { exchangeWith: A }), [], "nothing with Alpha")
+    yield* sameSet(yield* refsOf("zebra", OWNER, { exchangeWith: C }), [], "an exchange is a bot's view")
     yield* sameSet(yield* refsOf("private plan", asBot(B)), [], "a phrase only in the owner's DM with Gamma")
     yield* sameSet(
       yield* refsOf("zebra", OWNER),
@@ -268,6 +273,9 @@ export const searchContractCases: ReadonlyArray<RepoContractCase> = [
       yield* equal(found.refs.length, 23, `${sort}: every hit once`)
       yield* sameSet(found.refs, all, `${sort}: the same hits`)
       yield* equal(found.total, 23, `${sort}: total`)
+      yield* equal((yield* find("wren", OWNER, { sort, limit: 4, totalCap: 10 })).total, 10, `${sort}: total up to the cap`)
+      yield* equal((yield* find("wren", OWNER, { sort, limit: 30, totalCap: 10 })).total, 10, `${sort}: one page, up to the cap`)
+      yield* equal((yield* find("wren", OWNER, { sort, limit: 30 })).total, 23, `${sort}: one page holds every match`)
     }
     const newest = (yield* find("wren", OWNER, { sort: "newest", limit: 5 })).refs
     yield* equal(newest.slice(0, 3), ["ent_p23", "ent_p22", "ent_p21"], "newest first, ties by id")

@@ -103,6 +103,14 @@ export const makeMemorySearchRepo = (index: MemorySearchIndex) =>
               sender === "owner" ? doc.authorKind === "user" : sender === "system" ? doc.authorKind === "system" : doc.authorBotId === sender
             )
           ) continue
+          if (filter.exchangeWith !== undefined) {
+            const me = filter.scope.kind === "bot" ? filter.scope.botId : undefined
+            const peer = filter.exchangeWith
+            if (
+              me === undefined || doc.kind !== "message" ||
+              !((doc.authorBotId === me && doc.toBotId === peer) || (doc.authorBotId === peer && doc.toBotId === me))
+            ) continue
+          }
           if (filter.from !== undefined && doc.createdAt < filter.from) continue
           if (filter.to !== undefined && doc.createdAt > filter.to) continue
           if (yield* hidden(doc)) continue
@@ -151,7 +159,7 @@ export const makeMemorySearchRepo = (index: MemorySearchIndex) =>
               ? { sort: "relevance", rank: last.rank, createdAt: last.doc.createdAt, refId: last.doc.refId }
               : { sort: query.sort, createdAt: last.doc.createdAt, refId: last.doc.refId }
             : undefined
-          return { hits: page, next, total: Math.min(scored.length, SEARCH_TOTAL_CAP) }
+          return { hits: page, next, total: Math.min(scored.length, query.totalCap ?? SEARCH_TOTAL_CAP) }
         }),
 
       positions: (query) =>
