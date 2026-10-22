@@ -5,10 +5,11 @@
  */
 import type { KnownTranscriptEntry, Millis, TranscriptEntry } from "@openbot/contracts"
 import { KnownTranscriptEntry as KnownTranscriptEntrySchema, TranscriptEntry as TranscriptEntrySchema } from "@openbot/contracts"
-import { type EntryPage, EntryRepo, type ExchangeSlice, RepoError, type UpsertOutcome } from "@openbot/core"
+import { type EntryPage, type EntryPageAfter, EntryRepo, type ExchangeSlice, RepoError, type UpsertOutcome } from "@openbot/core"
 import { Effect, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { jsonCodec, repoOp } from "../codec.ts"
+import { indexEntry } from "./search.ts"
 
 interface EntryRow {
   readonly id: string
@@ -72,6 +73,7 @@ export const makeSqlEntryRepo = Effect.gen(function*() {
           ON CONFLICT (id) DO UPDATE SET conversation_id = excluded.conversation_id, revision = excluded.revision,
             kind = excluded.kind, turn_id = excluded.turn_id, client_nonce = excluded.client_nonce,
             native_id = excluded.native_id, payload_json = excluded.payload_json`
+        yield* indexEntry(sql, value)
         return { applied: true, value } satisfies UpsertOutcome<TranscriptEntry>
       }).pipe(sql.withTransaction, repoOp("EntryRepo.upsert")),
 
@@ -112,6 +114,29 @@ export const makeSqlEntryRepo = Effect.gen(function*() {
         }
         return page
       }).pipe(repoOp("EntryRepo.page")),
+
+    pageAfter: ({ conversationId, after, limit }) =>
+      Effect.gen(function*() {
+        const size = Math.max(0, Math.floor(limit))
+        const cursor = decodeEntryCursor(after)
+        if (cursor === undefined) {
+          return yield* new RepoError({ op: "EntryRepo.pageAfter", message: `Invalid cursor: ${after}` })
+        }
+        const rows = yield* sql<EntryRow>`SELECT id, created_at, payload_json FROM entries
+          WHERE conversation_id = ${conversationId}
+            AND (created_at > ${cursor.createdAt} OR (created_at = ${cursor.createdAt} AND id > ${cursor.id}))
+          ORDER BY created_at, id LIMIT ${size + 1}`
+        const pageRows = rows.slice(0, size)
+        const entries = yield* decodeRows("EntryRepo.pageAfter", pageRows)
+        const last = pageRows[pageRows.length - 1]
+        const hasMoreAfter = rows.length > size
+        const page: EntryPageAfter = {
+          entries,
+          hasMoreAfter,
+          afterCursor: hasMoreAfter && last !== undefined ? encodeEntryCursor({ createdAt: last.created_at, id: last.id }) : null,
+        }
+        return page
+      }).pipe(repoOp("EntryRepo.pageAfter")),
 
     listExchange: ({ botIds: [a, b], conversationIds, direction, from, limit }) =>
       Effect.gen(function*() {

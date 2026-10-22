@@ -5,7 +5,15 @@
 import type { Conversation, ConversationSummary, TranscriptEntry } from "@openbot/contracts"
 import { Effect } from "effect"
 import type { RepoError } from "../../../ports/errors.ts"
-import { type EntryPage, type EntryPageQuery, EntryRepo, RequestRepo, TurnRepo } from "../../../ports/repos.ts"
+import {
+  type EntryPage,
+  type EntryPageAfter,
+  type EntryPageAfterQuery,
+  type EntryPageQuery,
+  EntryRepo,
+  RequestRepo,
+  TurnRepo,
+} from "../../../ports/repos.ts"
 import { attachmentsLine, compact, conversationBotIds, describeEvent, isHousekeeping, previewOf } from "./util.ts"
 
 /** How many tail entries are scanned for the preview line. */
@@ -40,6 +48,21 @@ export const visiblePage = (query: EntryPageQuery): Effect.Effect<EntryPage, Rep
       shown.unshift(...kept)
       if (shown.length >= query.limit || !page.hasMoreBefore || page.beforeCursor === null) return { ...page, entries: shown }
       before = page.beforeCursor
+    }
+  })
+
+/** `visiblePage` towards the newest: the entries after `after`, voice calls' work left out. */
+export const visiblePageAfter = (query: EntryPageAfterQuery): Effect.Effect<EntryPageAfter, RepoError, EntryRepo | TurnRepo> =>
+  Effect.gen(function*() {
+    const entries = yield* EntryRepo
+    const hidden = voiceWork(yield* TurnRepo)
+    const shown: Array<TranscriptEntry> = []
+    let after = query.after
+    while (true) {
+      const page = yield* entries.pageAfter({ ...query, after })
+      for (const entry of page.entries) if (!(yield* hidden(entry))) shown.push(entry)
+      if (shown.length >= query.limit || !page.hasMoreAfter || page.afterCursor === null) return { ...page, entries: shown }
+      after = page.afterCursor
     }
   })
 

@@ -27,7 +27,8 @@
  *      `ApprovalService.evaluateNode`; the node registry itself stays at layer 0.
  *   1. LiveHub                                    (snapshots read repositories + NodeDirectory;
  *                                                  forwards `NodeDirectory.changes` to the roster)
- *   2. SettingsService, UsageService, Notifier (LiveHub-backed), ConversationService, AttachmentService
+ *   2. SettingsService, UsageService, Notifier (LiveHub-backed), ConversationService, AttachmentService,
+ *      SearchService                          (repositories only)
  *   3. MemoryService, SkillService                (events via ConversationService)
  *   4. ApprovalService                            (never calls Orchestrator: emits `asyncAnswers`;
  *                                                  optional ComputerPort for hand-offs, D1.7)
@@ -94,6 +95,11 @@ import type {
   RoutineSpec,
   RuntimeRequest,
   RuntimeResponseInput,
+  SearchKind,
+  SearchPage,
+  SearchPositions,
+  SearchSender,
+  SearchSort,
   Section,
   SectionId,
   SidebarItemRef,
@@ -116,6 +122,7 @@ import type {
   TaskStoppedBy,
   TranscriptEntry,
   TranscriptPage,
+  TranscriptWindow,
   Unavailable,
   Turn,
   TurnId,
@@ -386,6 +393,18 @@ export class ConversationService extends Context.Service<ConversationService, {
     readonly after?: string | undefined
     readonly limit: number
   }) => Effect.Effect<ExchangePage, NotFound | InvalidInput>
+  /**
+   * `conversations.around`: a window of the chat around `entryId` (up to half before it, the entry,
+   * the rest after), or the page before / after a window's cursor, or the newest entries; voice
+   * calls' work left out. With the turns and card requests of its entries.
+   */
+  readonly around: (input: {
+    readonly conversationId: ConversationId
+    readonly entryId?: EntryId | undefined
+    readonly beforeCursor?: string | undefined
+    readonly afterCursor?: string | undefined
+    readonly limit: number
+  }) => Effect.Effect<TranscriptWindow, NotFound | InvalidInput>
   /** `conversations.createGroup`: 2–6 bots; idempotent on `clientNonce` when given. */
   readonly createGroup: (input: {
     readonly title: string
@@ -1026,6 +1045,44 @@ export class AttachmentService extends Context.Service<AttachmentService, {
   /** Contract view (`url` = `/api/attachments/<id>`). */
   readonly get: (attachmentId: AttachmentId) => Effect.Effect<Attachment, NotFound>
 }>()("openbot/core/AttachmentService") {}
+
+/** A search (`search.query`, and a bot's `search_messages`). See `SearchFilter` for what a bot may read. */
+export interface SearchInput {
+  /** Words or "an exact phrase"; `-word` excludes; at most `SEARCH_QUERY_MAX_CHARS`. */
+  readonly query: string
+  readonly conversationIds?: ReadonlyArray<ConversationId> | undefined
+  readonly botIds?: ReadonlyArray<BotId> | undefined
+  readonly senders?: ReadonlyArray<SearchSender> | undefined
+  /** Default `DEFAULT_SEARCH_KINDS`. */
+  readonly kinds?: ReadonlyArray<SearchKind> | undefined
+  readonly from?: number | undefined
+  readonly to?: number | undefined
+  /** Default relevance. */
+  readonly sort?: SearchSort | undefined
+  readonly cursor?: string | undefined
+  /** 1–`SEARCH_PAGE_MAX`. */
+  readonly limit: number
+}
+
+/** Message search over the index (layer 2: repositories only). */
+export class SearchService extends Context.Service<SearchService, {
+  /** `search.query`: the owner's search over every chat. */
+  readonly query: (input: SearchInput) => Effect.Effect<SearchPage, InvalidInput>
+  /**
+   * `search.inConversation`: every hit in one chat, for the Find bar. A query without words
+   * (punctuation), or whose words match nothing, falls back to a plain substring match.
+   */
+  readonly inConversation: (input: {
+    readonly conversationId: ConversationId
+    readonly query: string
+    readonly kinds?: ReadonlyArray<SearchKind> | undefined
+    readonly limit: number
+  }) => Effect.Effect<SearchPositions, NotFound | InvalidInput>
+  /** A bot's search (`search_messages`): only what it may read (`SearchFilter`). */
+  readonly forBot: (botId: BotId, input: SearchInput) => Effect.Effect<SearchPage, InvalidInput>
+  /** The bot may read this whole chat now: it is a member (its DM, a group it is in, its routine runs). */
+  readonly canRead: (botId: BotId, conversationId: ConversationId) => Effect.Effect<boolean>
+}>()("openbot/core/SearchService") {}
 
 /**
  * Voice calls (experiment): which Bots are on a call right now. Background work started on a call

@@ -36,6 +36,7 @@ import {
   RequestRepo,
   RoutineRepo,
   runBootRecovery,
+  SearchRepo,
   SectionRepo,
   SettingsRepo,
   SkillStore,
@@ -55,6 +56,7 @@ import { makeSqlEntryRepo } from "./repos/entries.ts"
 import { makeSqlNodeRepo } from "./repos/nodes.ts"
 import { makeSqlReplicaLog } from "./repos/replica.ts"
 import { makeSqlRoutineRepo } from "./repos/routines.ts"
+import { makeSqlSearchRepo } from "./repos/search.ts"
 import { makeSqlApprovalRuleRepo, makeSqlSettingsRepo, makeSqlUsageRepo } from "./repos/settings.ts"
 import { makeSqlMcpTokenRepo, makeSqlProcessLedger } from "./repos/system.ts"
 import { makeSqlTaskRepo } from "./repos/tasks.ts"
@@ -127,6 +129,7 @@ export const makeRepositories = (
       Context.add(SectionRepo, yield* makeSqlSectionRepo),
       Context.add(ConversationRepo, yield* makeSqlConversationRepo),
       Context.add(EntryRepo, yield* makeSqlEntryRepo),
+      Context.add(SearchRepo, yield* makeSqlSearchRepo),
       Context.add(RequestRepo, yield* makeSqlRequestRepo),
       Context.add(TurnRepo, yield* makeSqlTurnRepo),
       Context.add(TaskRepo, yield* makeSqlTaskRepo),

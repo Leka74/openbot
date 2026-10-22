@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Layer, Option } from "effect"
 import { EntryRepo } from "../../src/ports/index.ts"
-import { makeMemoryEntryRepo, MemoryPersistence, repoContractCases, SequentialIdGen } from "../../src/testing/index.ts"
+import { makeMemoryEntryRepo, MemoryPersistence, repoContractCases, searchContractCases, SequentialIdGen } from "../../src/testing/index.ts"
 
 const layer = MemoryPersistence.pipe(Layer.provide(SequentialIdGen()))
 
@@ -13,14 +13,21 @@ describe("in-memory repositories satisfy the repository contract", () => {
     })
   }
 
+  for (const c of searchContractCases) {
+    test(c.name, async () => {
+      await Effect.runPromise(Effect.provide(c.run, layer))
+    })
+  }
+
   test("the contract suite covers every repository and store port", () => {
-    const covered = new Set(repoContractCases.map((c) => c.name.split(":")[0]))
+    const covered = new Set([...repoContractCases, ...searchContractCases].map((c) => c.name.split(":")[0]))
     for (
       const port of [
         "BotRepo",
         "SectionRepo",
         "ConversationRepo",
         "EntryRepo",
+        "SearchRepo",
         "RequestRepo",
         "TurnRepo",
         "RoutineRepo",

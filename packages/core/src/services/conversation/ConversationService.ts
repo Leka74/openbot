@@ -7,23 +7,38 @@ import type {
   BotId,
   Conversation,
   ConversationId,
+  EntryId,
   ExchangePage,
   KnownConversationEvent,
   KnownTranscriptEntry,
   TranscriptEntry,
   TranscriptPage,
+  TranscriptWindow,
 } from "@openbot/contracts"
 import { Conflict, InvalidInput, MAX_GROUP_BOTS, MIN_GROUP_BOTS, NotFound } from "@openbot/contracts"
 import { Clock, Effect, Layer, Option } from "effect"
 import { IdGen } from "../../ports/IdGen.ts"
-import { BotRepo, ConversationRepo, EntryRepo, type EntryPosition, ReplicaLog, RequestRepo, SettingsRepo, TurnRepo } from "../../ports/repos.ts"
+import {
+  BotRepo,
+  ConversationRepo,
+  type EntryPage,
+  type EntryPageAfter,
+  EntryRepo,
+  type EntryPosition,
+  ReplicaLog,
+  RequestRepo,
+  SettingsRepo,
+  TurnRepo,
+} from "../../ports/repos.ts"
 import { ConversationService, type EntryDraft, LiveHub } from "../../ports/services.ts"
 import { ConversationStore, ConversationStoreLive } from "./internal/ConversationStore.ts"
-import { summarize, visiblePage } from "./internal/summary.ts"
-import { compact, isHousekeeping, orDie, required } from "./internal/util.ts"
+import { summarize, visiblePage, visiblePageAfter } from "./internal/summary.ts"
+import { cardRequestId, compact, isHousekeeping, orDie, required } from "./internal/util.ts"
 
 /** Upper bound for `conversations.history` and `conversations.exchange` pages. */
 export const MAX_HISTORY_LIMIT = 500
+/** Upper bound for `conversations.around` windows. */
+export const MAX_AROUND_LIMIT = 200
 const MAX_TITLE_LENGTH = 200
 const groupNonceKey = (nonce: string) => `brain.groupNonce.${nonce}`
 
@@ -377,6 +392,91 @@ export const ConversationServiceLive: Layer.Layer<
       )
     })
 
+    const around = Effect.fn("ConversationService.around")(function*(input: {
+      readonly conversationId: ConversationId
+      readonly entryId?: EntryId | undefined
+      readonly beforeCursor?: string | undefined
+      readonly afterCursor?: string | undefined
+      readonly limit: number
+    }) {
+      yield* store.get(input.conversationId)
+      const { conversationId, limit } = input
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_AROUND_LIMIT) {
+        return yield* new InvalidInput({ message: `limit must be between 1 and ${MAX_AROUND_LIMIT}.` })
+      }
+      if ([input.entryId, input.beforeCursor, input.afterCursor].filter((x) => x !== undefined).length > 1) {
+        return yield* new InvalidInput({ message: "Pass at most one of entryId, beforeCursor and afterCursor." })
+      }
+      const cursorOf = (cursor: string) =>
+        parseExchangeCursor(cursor) === undefined
+          ? Effect.fail(new InvalidInput({ message: `Invalid cursor: ${cursor}` }))
+          : Effect.succeed(cursor)
+      const older = (before: string | undefined, size: number) =>
+        size <= 0
+          ? Effect.succeed({ entries: [], hasMoreBefore: before !== undefined, beforeCursor: before ?? null } as EntryPage)
+          : orDie(Effect.provide(visiblePage({ conversationId, before, limit: size }), repos))
+      const newer = (after: string, size: number) =>
+        size <= 0
+          ? Effect.succeed({ entries: [], hasMoreAfter: true, afterCursor: after } as EntryPageAfter)
+          : orDie(Effect.provide(visiblePageAfter({ conversationId, after, limit: size }), repos))
+
+      let list: ReadonlyArray<TranscriptEntry>
+      let hasMoreBefore: boolean
+      let hasMoreAfter: boolean
+      let precedingTimestamp: number | undefined
+      if (input.afterCursor !== undefined) {
+        const page = yield* newer(yield* cursorOf(input.afterCursor), limit)
+        list = page.entries
+        hasMoreBefore = true
+        hasMoreAfter = page.hasMoreAfter
+      } else if (input.entryId === undefined) {
+        // the page before a cursor, or the newest entries
+        const before = input.beforeCursor === undefined ? undefined : yield* cursorOf(input.beforeCursor)
+        const page = yield* older(before, limit)
+        list = page.entries
+        hasMoreBefore = page.hasMoreBefore
+        hasMoreAfter = before !== undefined
+        precedingTimestamp = page.precedingTimestamp
+      } else {
+        const anchor = yield* orDie(entries.get(input.entryId))
+        if (Option.isNone(anchor) || anchor.value.conversationId !== conversationId) {
+          return yield* new NotFound({ entity: "entry", id: input.entryId })
+        }
+        // Up to half before the entry, the rest after; a short side leaves its room to the other.
+        const at = exchangeCursor(anchor.value)
+        const room = limit - 1
+        const before = yield* older(at, room)
+        const after = yield* newer(at, room)
+        const takeNewer = Math.min(after.entries.length, Math.max(Math.floor(room / 2), room - before.entries.length))
+        const takeOlder = Math.min(before.entries.length, room - takeNewer)
+        list = [...before.entries.slice(before.entries.length - takeOlder), anchor.value, ...after.entries.slice(0, takeNewer)]
+        hasMoreBefore = before.hasMoreBefore || takeOlder < before.entries.length
+        hasMoreAfter = after.hasMoreAfter || takeNewer < after.entries.length
+        precedingTimestamp = takeOlder === before.entries.length ? before.precedingTimestamp : before.entries[before.entries.length - takeOlder - 1]?.createdAt
+      }
+      const shown = list.filter((e) => e.kind !== "unknown")
+      const first = list[0]
+      const last = list[list.length - 1]
+      // the turns and card requests of the window, as the live replica has them
+      const turnIds = [...new Set(shown.flatMap((e) => (e.turnId === undefined ? [] : [e.turnId])))]
+      const windowTurns = (yield* Effect.forEach(turnIds, (id) => orDie(turnRepo.get(id)))).flatMap((t) => Option.isSome(t) ? [t.value] : [])
+      const requestIds = [...new Set(shown.flatMap((e) => {
+        const id = e.kind === "card" ? cardRequestId(e.card) : undefined
+        return id === undefined ? [] : [id]
+      }))]
+      const windowRequests = (yield* Effect.forEach(requestIds, (id) => orDie(requests.get(id)))).flatMap((r) => Option.isSome(r) ? [r.value] : [])
+      return compact<TranscriptWindow>({
+        entries: shown,
+        hasMoreBefore,
+        hasMoreAfter,
+        beforeCursor: hasMoreBefore && first !== undefined ? exchangeCursor(first) : hasMoreBefore ? (input.afterCursor ?? null) : null,
+        afterCursor: hasMoreAfter && last !== undefined ? exchangeCursor(last) : hasMoreAfter ? (input.beforeCursor ?? null) : null,
+        precedingTimestamp: precedingTimestamp as TranscriptWindow["precedingTimestamp"],
+        turns: windowTurns,
+        requests: windowRequests,
+      })
+    })
+
     return ConversationService.of({
       get: (conversationId) => store.get(conversationId),
       summaries: Effect.gen(function*() {
@@ -387,6 +487,7 @@ export const ConversationServiceLive: Layer.Layer<
         Effect.flatMap(store.get(conversationId), (c) => Effect.provide(summarize(c), repos)),
       history,
       exchange,
+      around,
       createGroup,
       setMembers,
       rename: Effect.fn("ConversationService.rename")(function*(conversationId: ConversationId, title: string) {

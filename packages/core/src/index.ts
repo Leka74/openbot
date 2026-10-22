@@ -7,3 +7,4 @@
 export * from "./ports/index.ts"
 export * from "./services/conversation/index.ts"
 export * from "./services/automation/index.ts"
+export * from "./services/search/index.ts"

@@ -30,6 +30,9 @@ import type {
   RoutineRunId,
   RuntimeRequest,
   RuntimeRequestStatus,
+  SearchKind,
+  SearchSender,
+  SearchSort,
   Section,
   SectionId,
   StreamCursor,
@@ -57,6 +60,7 @@ import {
 } from "@openbot/contracts"
 import type { Settings } from "@openbot/contracts"
 import { Context, Effect, Option, Result, Schema } from "effect"
+import type { SearchCursor, SearchDoc, SearchMatch } from "../services/search/text.ts"
 import type { RepoError } from "./errors.ts"
 
 // ============================================================================ shared shapes
@@ -184,6 +188,21 @@ export interface EntryPageQuery {
   readonly limit: number
 }
 
+export interface EntryPageAfterQuery {
+  readonly conversationId: ConversationId
+  /** Opaque cursor `"<createdAt>:<id>"`: entries strictly after this position. */
+  readonly after: string
+  readonly limit: number
+}
+
+/** A page of entries after a position, oldest first. */
+export interface EntryPageAfter {
+  readonly entries: ReadonlyArray<TranscriptEntry>
+  readonly hasMoreAfter: boolean
+  /** Cursor of the page's last entry when more follow; `null` otherwise. */
+  readonly afterCursor: string | null
+}
+
 export class EntryRepo extends Context.Service<EntryRepo, {
   readonly get: (id: EntryId) => Effect.Effect<Option.Option<TranscriptEntry>, RepoError>
   /**
@@ -195,6 +214,11 @@ export class EntryRepo extends Context.Service<EntryRepo, {
   readonly remove: (id: EntryId) => Effect.Effect<boolean, RepoError>
   /** The `limit` entries before `before` (or the newest `limit`), returned oldest first. */
   readonly page: (query: EntryPageQuery) => Effect.Effect<EntryPage, RepoError>
+  /**
+   * The `limit` entries after `after` (a cursor from `page` / `pageAfter`, or `encodeEntryCursor` of
+   * an entry), oldest first; `hasMoreAfter` when more follow. Mirrors `page` (`conversations.around`).
+   */
+  readonly pageAfter: (query: EntryPageAfterQuery) => Effect.Effect<EntryPageAfter, RepoError>
   /** Bot-to-bot messages between two Bots, next to a position (`conversations.exchange`). */
   readonly listExchange: (query: ExchangeQuery) => Effect.Effect<ExchangeSlice, RepoError>
   /**
@@ -219,6 +243,92 @@ export class EntryRepo extends Context.Service<EntryRepo, {
   /** All entries of a turn, oldest first (finalize streaming items on turn end). */
   readonly listByTurn: (turnId: TurnId) => Effect.Effect<ReadonlyArray<TranscriptEntry>, RepoError>
 }>()("openbot/core/EntryRepo") {}
+
+// ============================================================================ message search
+
+/** Whose search: the owner sees every chat; a bot only what it may read (enforced by the repository). */
+export type SearchScope = { readonly kind: "owner" } | { readonly kind: "bot"; readonly botId: BotId }
+
+/**
+ * What a search looks at. In a bot's scope (Lekë's decisions for v1):
+ * - entries of the chats it is a member of NOW (its DM, its groups with their whole history, its
+ *   routine-run chats); a group it left is closed to it;
+ * - the bot-to-bot messages it sent or was sent, which live in the other bot's DM (`message` entries
+ *   only; nothing else of the owner's chats with other bots);
+ * - tool steps only its own; tasks only its own.
+ * In every scope: voice calls' work and tasks started in a chat that no longer exists are left out.
+ */
+export interface SearchFilter {
+  readonly scope: SearchScope
+  readonly kinds: ReadonlyArray<SearchKind>
+  readonly conversationIds?: ReadonlyArray<ConversationId> | undefined
+  /** Chats the bot is in, or written by it. */
+  readonly botIds?: ReadonlyArray<BotId> | undefined
+  readonly senders?: ReadonlyArray<SearchSender> | undefined
+  /** Inclusive bounds on `createdAt`. */
+  readonly from?: number | undefined
+  readonly to?: number | undefined
+}
+
+export interface SearchRepoQuery extends SearchFilter {
+  readonly match: SearchMatch
+  readonly sort: SearchSort
+  /** Keyset position after which the page starts (from a previous page's `next`). */
+  readonly after?: SearchCursor | undefined
+  readonly limit: number
+}
+
+export interface SearchRepoHit {
+  readonly doc: SearchDoc
+  /** Snippet with `SNIPPET_OPEN` / `SNIPPET_CLOSE` around matched words. */
+  readonly snippet: string
+  /** Relevance order key (lower = better); 0 for the time sorts. */
+  readonly rank: number
+  /** Task hits: the bot's first message in the task's chat at or after the doc's time (its report). */
+  readonly jumpEntryId?: EntryId | undefined
+}
+
+export interface SearchRepoPage {
+  readonly hits: ReadonlyArray<SearchRepoHit>
+  /** Where the next page starts; undefined on the last page. */
+  readonly next: SearchCursor | undefined
+  /** Matches in total, counted up to `SEARCH_TOTAL_CAP`. */
+  readonly total: number
+}
+
+export interface SearchPositionsQuery extends SearchFilter {
+  readonly conversationId: ConversationId
+  /** Words to match; or `substring`: a plain case-insensitive substring (queries without words). */
+  readonly match?: SearchMatch | undefined
+  readonly substring?: string | undefined
+  readonly limit: number
+}
+
+export interface SearchIndexReport {
+  /** The index was rebuilt from scratch (first boot after the upgrade, or a new `SEARCH_TEXT_VERSION`). */
+  readonly rebuilt: boolean
+  /** Entries and tasks looked at (each gets its doc, or none when nothing of it is searchable). */
+  readonly indexed: number
+  readonly ms: number
+}
+
+export class SearchRepo extends Context.Service<SearchRepo, {
+  /** One page of matches, ordered by `sort` (relevance: rank, then newest first). */
+  readonly query: (query: SearchRepoQuery) => Effect.Effect<SearchRepoPage, RepoError>
+  /** The newest `limit` matching entries of one chat, oldest first; `more` when older ones were left out. */
+  readonly positions: (query: SearchPositionsQuery) => Effect.Effect<{
+    readonly hits: ReadonlyArray<{ readonly entryId: EntryId; readonly createdAt: Millis }>
+    readonly more: boolean
+  }, RepoError>
+  /**
+   * Builds the index from what is stored (boot, in the background): a full rebuild when the stored
+   * text version differs from `SEARCH_TEXT_VERSION`, otherwise only entries and tasks it lacks
+   * (written by an older release). Writes keep it up to date on their own.
+   */
+  readonly ensure: Effect.Effect<SearchIndexReport, RepoError>
+  /** A rebuild is pending or running: results may be incomplete. */
+  readonly indexing: Effect.Effect<boolean>
+}>()("openbot/core/SearchRepo") {}
 
 // ============================================================================ runtime requests
 

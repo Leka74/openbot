@@ -28,6 +28,7 @@ import {
   NodeDirectory,
   Orchestrator,
   RoutineScheduler,
+  SearchService,
   SettingsService,
   SkillService,
   SlackConnector,
@@ -146,6 +147,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
   const nodeAdmin = yield* NodeAdmin
   const computer = yield* ComputerPort
   const tasks = yield* BackgroundTasks
+  const search = yield* SearchService
   const slack = yield* SlackConnector
   const slackDrafts = yield* SlackService
   const speech = yield* SpeechToText
@@ -195,6 +197,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
       edgeStream("conversations.subscribe", hub.subscribeConversation({ conversationId, after, tailLimit })),
     "conversations.history": (input) => edge("conversations.history", conversations.history(input)),
     "conversations.exchange": (input) => edge("conversations.exchange", conversations.exchange(input)),
+    "conversations.around": (input) => edge("conversations.around", conversations.around(input)),
     "conversations.createGroup": (input) => edge("conversations.createGroup", conversations.createGroup(input)),
     "conversations.setMembers": (input) => edge("conversations.setMembers", conversations.setMembers(input)),
     "conversations.rename": ({ conversationId, title }) =>
@@ -296,6 +299,10 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(Effect.gen(function*() {
     "tasks.get": ({ taskId }) => edge("tasks.get", tasks.get(taskId)),
     // the owner's Stop: only that task; the bot is told
     "tasks.cancel": ({ taskId }) => edge("tasks.cancel", tasks.cancel(taskId, "owner")),
+
+    // ---------------------------------------------------------------- message search
+    "search.query": (input) => edge("search.query", search.query(input)),
+    "search.inConversation": (input) => edge("search.inConversation", search.inConversation(input)),
 
     // ---------------------------------------------------------------- Slack (D3.4)
     "slack.status": () => edge("slack.status", slack.status),

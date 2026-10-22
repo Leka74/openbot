@@ -7,11 +7,13 @@ import { SqliteMigrator } from "@effect/sql-sqlite-bun"
 import Initial from "./0001_initial.ts"
 import OneMindPerBot from "./0002_one_mind_per_bot.ts"
 import BackgroundTasks from "./0003_background_tasks.ts"
+import MessageSearch from "./0004_message_search.ts"
 
 export const migrations = {
   "0001_initial": Initial,
   "0002_one_mind_per_bot": OneMindPerBot,
   "0003_background_tasks": BackgroundTasks,
+  "0004_message_search": MessageSearch,
 } as const
 
 export const migrationLoader = SqliteMigrator.fromRecord(migrations)

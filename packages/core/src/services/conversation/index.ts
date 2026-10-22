@@ -35,7 +35,7 @@
  * this barrel.
  */
 export { LiveHubLive } from "./LiveHub.ts"
-export { ConversationServiceLive, groupTitleFor, MAX_HISTORY_LIMIT } from "./ConversationService.ts"
+export { ConversationServiceLive, groupTitleFor, MAX_AROUND_LIMIT, MAX_HISTORY_LIMIT } from "./ConversationService.ts"
 export { NotifierLive } from "./Notifier.ts"
 export { AttachmentServiceLive, MAX_ATTACHMENT_BYTES, storeAttachmentStream, toAttachment } from "./AttachmentService.ts"
 export { detectMime, extensionOf, formatBytes, imageDimensions, sniffMime } from "./files.ts"

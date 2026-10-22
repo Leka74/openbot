@@ -4,6 +4,7 @@ import { RequestRepo, TurnRepo } from "@openbot/core"
 import { Effect, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { jsonCodec, repoOp } from "../codec.ts"
+import { hideVoiceTurn } from "./search.ts"
 
 interface PayloadRow {
   readonly id: string
@@ -86,6 +87,7 @@ export const makeSqlTurnRepo = Effect.gen(function*() {
           VALUES (${turn.id}, ${turn.conversationId}, ${turn.botId}, ${turn.status}, ${turn.startedAt}, ${payload})
           ON CONFLICT (id) DO UPDATE SET conversation_id = excluded.conversation_id, bot_id = excluded.bot_id,
             status = excluded.status, started_at = excluded.started_at, payload_json = excluded.payload_json`
+        if (turn.voice === true) yield* hideVoiceTurn(sql, turn.id)
       }).pipe(repoOp("TurnRepo.upsert")),
     listByConversation: (conversationId, limit) =>
       Effect.gen(function*() {

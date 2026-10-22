@@ -33,8 +33,9 @@ import type {
   Usage,
 } from "@openbot/contracts"
 import { ROUTINE_RUNS_KEPT } from "@openbot/contracts"
-import { Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { RepoError } from "../ports/errors.ts"
+import { indexMemoryEntry, indexMemoryTask, makeMemorySearchIndex, makeMemorySearchRepo, type MemorySearchIndex } from "./memorySearch.ts"
 import { McpTokenRepo, type McpTokenRecord } from "../ports/Mcp.ts"
 import { ProcessLedger, type ProcessRecord } from "../ports/ProcessLedger.ts"
 import {
@@ -42,6 +43,7 @@ import {
   BotRepo,
   ConversationRepo,
   type EntryPage,
+  type EntryPageAfter,
   EntryRepo,
   type ExchangeSlice,
   type BotSessionRecord,
@@ -54,6 +56,7 @@ import {
   type ReplicaRecord,
   RequestRepo,
   RoutineRepo,
+  SearchRepo,
   SectionRepo,
   SettingsRepo,
   TaskRepo,
@@ -155,7 +158,8 @@ export const decodeEntryCursor = (cursor: string): { createdAt: number; id: stri
   return Number.isFinite(createdAt) && id.length > 0 ? { createdAt, id } : undefined
 }
 
-export const makeMemoryEntryRepo = () =>
+/** `index`: keep the search docs of a shared in-memory search index up to date (`MemoryPersistence`). */
+export const makeMemoryEntryRepo = (index?: MemorySearchIndex) =>
   Effect.sync(() => {
     const entries = new Map<EntryId, TranscriptEntry>()
     const inConversation = (conversationId: ConversationId) =>
@@ -172,9 +176,14 @@ export const makeMemoryEntryRepo = () =>
             ? { ...entry, createdAt: current.createdAt }
             : entry
           entries.set(entry.id, value)
+          if (index !== undefined) indexMemoryEntry(index, value)
           return { applied: true, value }
         }),
-      remove: (id) => Effect.sync(() => entries.delete(id)),
+      remove: (id) =>
+        Effect.sync(() => {
+          index?.docs.delete(id)
+          return entries.delete(id)
+        }),
       page: ({ conversationId, before, limit }) =>
         Effect.gen(function*() {
           const all = inConversation(conversationId)
@@ -196,6 +205,23 @@ export const makeMemoryEntryRepo = () =>
             hasMoreBefore: start > 0,
             beforeCursor: start > 0 && first !== undefined ? encodeEntryCursor(first) : null,
             precedingTimestamp: preceding?.createdAt,
+          }
+          return result
+        }),
+      pageAfter: ({ conversationId, after, limit }) =>
+        Effect.gen(function*() {
+          const cursor = decodeEntryCursor(after)
+          if (cursor === undefined) {
+            return yield* new RepoError({ op: "EntryRepo.pageAfter", message: `Invalid cursor: ${after}` })
+          }
+          const rest = inConversation(conversationId).filter((e) => compareEntries(e, cursor) > 0)
+          const page = rest.slice(0, Math.max(0, Math.floor(limit)))
+          const last = page[page.length - 1]
+          const hasMoreAfter = rest.length > page.length
+          const result: EntryPageAfter = {
+            entries: page,
+            hasMoreAfter,
+            afterCursor: hasMoreAfter && last !== undefined ? encodeEntryCursor(last) : null,
           }
           return result
         }),
@@ -295,14 +321,18 @@ export const makeMemoryTurnRepo = () =>
 
 // ============================================================================ background tasks
 
-export const makeMemoryTaskRepo = () =>
+export const makeMemoryTaskRepo = (index?: MemorySearchIndex) =>
   Effect.sync(() => {
     const tasks = new Map<TaskId, Task>()
     const steps = new Map<TaskId, Map<EntryId, TranscriptEntry>>()
     const newestFirst = (a: Task, b: Task) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
     return TaskRepo.of({
       get: (id) => Effect.sync(() => option(tasks.get(id))),
-      upsert: (task) => Effect.sync(() => void tasks.set(task.id, task)),
+      upsert: (task) =>
+        Effect.sync(() => {
+          tasks.set(task.id, task)
+          if (index !== undefined) indexMemoryTask(index, task)
+        }),
       list: (filter) =>
         Effect.sync(() => {
           const all = [...tasks.values()]
@@ -315,6 +345,7 @@ export const makeMemoryTaskRepo = () =>
       delete: (id) =>
         Effect.sync(() => {
           steps.delete(id)
+          index?.docs.delete(id)
           return tasks.delete(id)
         }),
       putStep: (taskId, step) =>
@@ -557,6 +588,20 @@ export const MemoryEntryRepo = Layer.effect(EntryRepo, makeMemoryEntryRepo())
 export const MemoryRequestRepo = Layer.effect(RequestRepo, makeMemoryRequestRepo())
 export const MemoryTurnRepo = Layer.effect(TurnRepo, makeMemoryTurnRepo())
 export const MemoryTaskRepo = Layer.effect(TaskRepo, makeMemoryTaskRepo())
+/**
+ * `EntryRepo`, `TaskRepo` and `SearchRepo` over one search index (what `MemoryPersistence` uses):
+ * writes to entries and tasks are searchable at once. Needs `ConversationRepo` and `TurnRepo`.
+ */
+export const MemorySearchableTranscript: Layer.Layer<EntryRepo | TaskRepo | SearchRepo, never, ConversationRepo | TurnRepo> = Layer
+  .effectContext(
+    Effect.gen(function*() {
+      const index = makeMemorySearchIndex()
+      return Context.make(EntryRepo, yield* makeMemoryEntryRepo(index)).pipe(
+        Context.add(TaskRepo, yield* makeMemoryTaskRepo(index)),
+        Context.add(SearchRepo, yield* makeMemorySearchRepo(index)),
+      )
+    }),
+  )
 export const MemoryRoutineRepo = Layer.effect(RoutineRepo, makeMemoryRoutineRepo())
 export const MemoryNodeRepo = Layer.effect(NodeRepo, makeMemoryNodeRepo())
 export const MemoryApprovalRuleRepo = Layer.effect(ApprovalRuleRepo, makeMemoryApprovalRuleRepo())

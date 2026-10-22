@@ -4,6 +4,7 @@ import { TaskRepo } from "@openbot/core"
 import { Effect, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { jsonCodec, repoOp } from "../codec.ts"
+import { indexTask } from "./search.ts"
 
 interface PayloadRow {
   readonly id: string
@@ -33,7 +34,8 @@ export const makeSqlTaskRepo = Effect.gen(function*() {
           VALUES (${task.id}, ${task.botId}, ${task.conversationId}, ${task.status}, ${task.createdAt}, ${payload})
           ON CONFLICT (id) DO UPDATE SET bot_id = excluded.bot_id, conversation_id = excluded.conversation_id,
             status = excluded.status, created_at = excluded.created_at, payload_json = excluded.payload_json`
-      }).pipe(repoOp("TaskRepo.upsert")),
+        yield* indexTask(sql, task)
+      }).pipe(sql.withTransaction, repoOp("TaskRepo.upsert")),
     list: (filter) =>
       Effect.gen(function*() {
         if (filter?.statuses !== undefined && filter.statuses.length === 0) return []

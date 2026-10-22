@@ -15,7 +15,6 @@
 import type {
   BotActivity,
   BotId,
-  Card,
   ConversationId,
   KnownConversationChange,
   KnownConversationStreamItem,
@@ -49,7 +48,7 @@ import {
 import { LiveHub } from "../../ports/services.ts"
 import { rosterTasks } from "./BackgroundTasks.ts"
 import { summarize, visiblePage } from "./internal/summary.ts"
-import { orDie, required } from "./internal/util.ts"
+import { cardRequestId, orDie, required } from "./internal/util.ts"
 
 type ResetReason = "new-session" | "rollback" | "rebuild"
 
@@ -62,12 +61,6 @@ type HubItem =
 const SNAPSHOT_TURNS = 20
 /** Upper bound for a client-requested `tailLimit`. */
 const MAX_TAIL_LIMIT = 500
-
-const cardRequestId = (card: Card): RequestId | undefined =>
-  card.type === "approval" || card.type === "form" || card.type === "secret-request" || card.type === "handoff" ||
-    card.type === "question"
-    ? card.requestId
-    : undefined
 
 const sameActivity = (a: BotActivity | undefined, b: BotActivity): boolean =>
   a !== undefined && a.state === b.state && a.label === b.label && a.toolKind === b.toolKind &&

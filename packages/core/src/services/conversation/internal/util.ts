@@ -6,15 +6,24 @@ import type {
   Attachment,
   Bot,
   BotId,
+  Card,
   Conversation,
   KnownConversationEvent,
   KnownTranscriptEntry,
+  RequestId,
   TranscriptEntry,
 } from "@openbot/contracts"
 import { NotFound } from "@openbot/contracts"
 import { Effect, Option } from "effect"
 import type { RepoError } from "../../../ports/errors.ts"
 import { formatBytes } from "../files.ts"
+
+/** The request a card answers, if any (its pending / answered state lives on the request). */
+export const cardRequestId = (card: Card): RequestId | undefined =>
+  card.type === "approval" || card.type === "form" || card.type === "secret-request" || card.type === "handoff" ||
+    card.type === "question"
+    ? card.requestId
+    : undefined
 
 /** Repository failures are defect-like (services.ts header): turn them into defects. */
 export const orDie = <A, R>(effect: Effect.Effect<A, RepoError, R>): Effect.Effect<A, never, R> => Effect.orDie(effect)

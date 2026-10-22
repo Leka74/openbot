@@ -1,0 +1,223 @@
+/**
+ * Message search on SQLite: migration 0004 over a database written by an older release and the
+ * boot backfill (`SearchRepo.ensure`), the FTS index staying in step with `search_docs`, rebuilds
+ * when the text version changes, and any query text never reaching SQLite as FTS syntax.
+ */
+import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
+import { KnownTranscriptEntry, Task } from "@openbot/contracts"
+import { ConversationRepo, EntryRepo, parseSearchQuery, SearchRepo, SEARCH_TEXT_VERSION, TaskRepo } from "@openbot/core"
+import {
+  botId,
+  conversationId,
+  entryId,
+  makeDirectConversation,
+  makeEventEntry,
+  makeMessageEntry,
+  makeTask,
+  makeToolCallEntry,
+  taskId,
+} from "@openbot/core/testing"
+import { afterAll, describe, expect, test } from "bun:test"
+import { Effect, Schema } from "effect"
+import { SqlClient } from "effect/sql"
+import { join } from "node:path"
+import Initial from "../src/migrations/0001_initial.ts"
+import OneMind from "../src/migrations/0002_one_mind_per_bot.ts"
+import BackgroundTasks from "../src/migrations/0003_background_tasks.ts"
+import { SEARCH_VERSION_KEY } from "../src/index.ts"
+import { cleanupTempDirs, run, tempDataDir, testPersistence } from "./helpers.ts"
+
+afterAll(cleanupTempDirs)
+
+const encodeEntry = Schema.encodeSync(Schema.fromJsonString(KnownTranscriptEntry))
+const encodeTask = Schema.encodeSync(Schema.fromJsonString(Task))
+const A = botId("bot_a")
+const dm = conversationId("cnv_a")
+
+const integrity = Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`INSERT INTO search_fts (search_fts, rank) VALUES ('integrity-check', 1)`
+  yield* sql`INSERT INTO search_steps_fts (search_steps_fts, rank) VALUES ('integrity-check', 1)`
+})
+
+/** Rows of both FTS indexes matching `fts`. */
+const ftsCount = (fts: string) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const a = yield* sql<{ n: number }>`SELECT count(*) AS n FROM search_fts WHERE search_fts MATCH ${fts}`
+    const b = yield* sql<{ n: number }>`SELECT count(*) AS n FROM search_steps_fts WHERE search_steps_fts MATCH ${fts}`
+    return a[0]!.n + b[0]!.n
+  })
+
+const count = (table: string) =>
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql<{ n: number }>`SELECT count(*) AS n FROM ${sql(table)}`
+    return rows[0]!.n
+  })
+
+describe("0004_message_search", () => {
+  test("a 0003 database gains the index; the boot backfill indexes what is stored, once", async () => {
+    const dir = await tempDataDir()
+    const entries = [
+      makeMessageEntry({ id: entryId("ent_1"), conversationId: dm, createdAt: 1, text: "the migration waits for Lekë" }),
+      makeMessageEntry({ id: entryId("ent_2"), conversationId: dm, createdAt: 2, role: "bot", author: { kind: "bot", botId: A }, text: "half", streaming: true }),
+      makeToolCallEntry({ id: entryId("ent_3"), conversationId: dm, createdAt: 3, author: { kind: "bot", botId: A }, inputSummary: "git log migration", status: "completed" }),
+      makeEventEntry({ id: entryId("ent_4"), conversationId: dm, createdAt: 4, event: { type: "auto-decided", decision: "allowed", summary: "ls" } }),
+    ]
+    // a database as an older release left it
+    await Effect.runPromise(
+      Effect.gen(function*() {
+        yield* SqliteMigrator.run({
+          loader: SqliteMigrator.fromRecord({ "0001_initial": Initial, "0002_one_mind_per_bot": OneMind, "0003_background_tasks": BackgroundTasks }),
+        })
+        const sql = yield* SqlClient.SqlClient
+        for (const entry of entries) {
+          yield* sql`INSERT INTO entries (id, conversation_id, revision, created_at, kind, payload_json)
+            VALUES (${entry.id}, ${entry.conversationId}, 0, ${entry.createdAt}, ${entry.kind}, ${encodeEntry(entry)})`
+        }
+        const task = makeTask({ id: taskId("tsk_1"), botId: A, conversationId: dm, title: "Migration check", result: "fine", endedAt: 9 })
+        yield* sql`INSERT INTO tasks (id, bot_id, conversation_id, status, created_at, payload_json)
+          VALUES (${task.id}, ${task.botId}, ${task.conversationId}, 'succeeded', 0, ${encodeTask(task)})`
+      }).pipe(Effect.provide(SqliteClient.layer({ filename: join(dir, "openbot.sqlite") }))),
+    )
+
+    const out = await run(
+      Effect.gen(function*() {
+        const search = yield* SearchRepo
+        yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
+        const before = { indexing: yield* search.indexing, docs: yield* count("search_docs") }
+        const first = yield* search.ensure
+        const after = { indexing: yield* search.indexing, docs: yield* count("search_docs") }
+        yield* integrity
+        const sql = yield* SqlClient.SqlClient
+        const chatIndex = yield* sql<{ n: number }>`SELECT count(*) AS n FROM search_fts WHERE search_fts MATCH 'migration'`
+        const stepsIndex = yield* sql<{ n: number }>`SELECT count(*) AS n FROM search_steps_fts WHERE search_steps_fts MATCH 'migration'`
+        const page = yield* search.query({
+          scope: { kind: "owner" },
+          match: parseSearchQuery("migration ")!,
+          kinds: ["message", "tool-call", "task"],
+          sort: "oldest",
+          limit: 10,
+        })
+        const second = yield* search.ensure
+        const version = yield* sql<{ value_json: string }>`SELECT value_json FROM settings WHERE key = ${SEARCH_VERSION_KEY}`
+        return {
+          before,
+          first,
+          after,
+          split: [chatIndex[0]!.n, stepsIndex[0]!.n],
+          refs: page.hits.map((h) => h.doc.refId),
+          second,
+          version: version[0]?.value_json,
+        }
+      }),
+      testPersistence(dir),
+    )
+    expect(out.before).toEqual({ indexing: true, docs: 0 })
+    expect(out.first).toMatchObject({ rebuilt: true, indexed: 5 })
+    // the streaming message and the audit line have no doc
+    expect(out.after).toEqual({ indexing: false, docs: 3 })
+    expect(out.refs).toEqual(["ent_1", "ent_3", "tsk_1"])
+    // chat items and tool steps are indexed apart
+    expect(out.split).toEqual([2, 1])
+    expect(out.version).toBe(String(SEARCH_TEXT_VERSION))
+    // next boot: only what has no doc is looked at again (the two without one)
+    expect(out.second).toMatchObject({ rebuilt: false, indexed: 2 })
+  })
+
+  test("a new text version rebuilds the index; entries written meanwhile stay indexed", async () => {
+    const dir = await tempDataDir()
+    const out = await run(
+      Effect.gen(function*() {
+        const sql = yield* SqlClient.SqlClient
+        const search = yield* SearchRepo
+        const repo = yield* EntryRepo
+        yield* search.ensure
+        for (let i = 0; i < 1_200; i++) {
+          yield* repo.upsert(makeMessageEntry({ id: entryId(`ent_${String(i).padStart(5, "0")}`), conversationId: dm, createdAt: i, text: `heron number ${i}` }))
+        }
+        yield* sql`UPDATE settings SET value_json = '0' WHERE key = ${SEARCH_VERSION_KEY}`
+        yield* sql`UPDATE search_docs SET text = 'stale words' WHERE ref_id = 'ent_00007'`
+        const report = yield* search.ensure
+        yield* integrity
+        const stale = yield* sql<{ n: number }>`SELECT count(*) AS n FROM search_docs WHERE text = 'stale words'`
+        return { report, docs: yield* count("search_docs"), stale: stale[0]!.n }
+      }),
+      testPersistence(dir),
+    )
+    expect(out.report).toMatchObject({ rebuilt: true, indexed: 1_200 })
+    expect(out.docs).toBe(1_200)
+    expect(out.stale).toBe(0)
+  })
+
+  test("the FTS index follows inserts, edits, deletes and repeated revisions", async () => {
+    const dir = await tempDataDir()
+    const out = await run(
+      Effect.gen(function*() {
+        const repo = yield* EntryRepo
+        const tasks = yield* TaskRepo
+        const sql = yield* SqlClient.SqlClient
+        for (let revision = 0; revision < 30; revision++) {
+          yield* repo.upsert(makeMessageEntry({ id: entryId("ent_s"), conversationId: dm, revision, createdAt: 1, text: "stream ".repeat(revision + 1), streaming: revision < 29 }))
+        }
+        const afterStream = yield* sql<{ text: string }>`SELECT text FROM search_docs WHERE ref_id = 'ent_s'`
+        // a reaction-only revision leaves the doc row untouched
+        const changesBefore = yield* sql<{ n: number }>`SELECT total_changes() AS n`
+        yield* repo.upsert(makeMessageEntry({
+          id: entryId("ent_s"), conversationId: dm, revision: 30, createdAt: 1, text: "stream ".repeat(30),
+          reactions: [{ emoji: "👍", by: { kind: "system" } }],
+        }))
+        const changesAfter = yield* sql<{ n: number }>`SELECT total_changes() AS n`
+        yield* tasks.upsert(makeTask({ id: taskId("tsk_x"), botId: A, conversationId: dm, title: "egret" }))
+        yield* tasks.upsert(makeTask({ id: taskId("tsk_x"), botId: A, conversationId: dm, title: "egret", progress: "Running a command" }))
+        yield* tasks.delete(taskId("tsk_x"))
+        yield* repo.remove(entryId("ent_s"))
+        yield* integrity
+        return {
+          streamed: afterStream[0]?.text.split(" ").length,
+          // the entry row itself changes; the doc does not
+          reactionChanges: changesAfter[0]!.n - changesBefore[0]!.n,
+          docs: yield* count("search_docs"),
+          fts: yield* ftsCount("stream OR egret"),
+        }
+      }),
+      testPersistence(dir),
+    )
+    expect(out.streamed).toBe(30)
+    expect(out.reactionChanges).toBe(1)
+    expect(out.docs).toBe(0)
+    expect(out.fts).toBe(0)
+  })
+
+  test("no input reaches SQLite as FTS syntax (nothing fails)", async () => {
+    const dir = await tempDataDir()
+    const inputs = [
+      "\"", "\"\"\"", "a\"b\"c", "NEAR(a b)", "a OR b", "a AND", "NOT a", "-", "--a", "col:val", "text:x", "^a", "a*b*", "*a",
+      "(", ")", "{a b}", "a + b", "'; DROP TABLE search_docs; --", "\u0000", "\u0002x\u0003", "🙂 emoji 🙂", "ẞtraße", "日本語のテキスト",
+      "x".repeat(3_000), Array.from({ length: 60 }, (_, i) => `w${i}`).join(" "),
+    ]
+    const results = await run(
+      Effect.gen(function*() {
+        const repo = yield* EntryRepo
+        const search = yield* SearchRepo
+        yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
+        yield* repo.upsert(makeMessageEntry({ id: entryId("ent_1"), conversationId: dm, createdAt: 1, text: "a b c NEAR text val 日本語のテキスト emoji" }))
+        const out: Array<number> = []
+        for (const input of inputs) {
+          const match = parseSearchQuery(input)
+          if (match === undefined) continue
+          for (const sort of ["relevance", "newest"] as const) {
+            const page = yield* search.query({ scope: { kind: "bot", botId: A }, match, kinds: ["message"], sort, limit: 5 })
+            out.push(page.hits.length)
+          }
+          yield* search.positions({ scope: { kind: "owner" }, conversationId: dm, match, kinds: ["message"], limit: 5 })
+          yield* search.positions({ scope: { kind: "owner" }, conversationId: dm, substring: input, kinds: ["message"], limit: 5 })
+        }
+        return out
+      }),
+      testPersistence(dir),
+    )
+    expect(results.length).toBeGreaterThan(20)
+  })
+})

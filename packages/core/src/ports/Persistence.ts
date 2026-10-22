@@ -25,6 +25,7 @@ import {
   type ReplicaLog,
   RequestRepo,
   RoutineRepo,
+  type SearchRepo,
   type SectionRepo,
   type SettingsRepo,
   TaskRepo,
@@ -39,6 +40,7 @@ export type RepositoryPorts =
   | SectionRepo
   | ConversationRepo
   | EntryRepo
+  | SearchRepo
   | RequestRepo
   | TurnRepo
   | TaskRepo

@@ -21,7 +21,8 @@
  * 13. RPC handlers; the internal routes (`/mcp`, `/relay`) and the public routes are mounted
  * 14. ready: print the login URL
  * 15. resume what the previous run handed off or a crash cut off (`ResumeLive`); SIGUSR2 drains the
- *     brain for a deploy (`DrainOnSignalLive`, drain.ts)
+ *     brain for a deploy (`DrainOnSignalLive`, drain.ts); the message search index catches up in the
+ *     background (`SearchIndexLive`)
  *
  * Shutdown runs the same graph backwards; the ready layer first hands off what runs or waits to the
  * next boot (`Orchestrator.handOff`: saved, then every runner and its harness session stops) and closes node control sockets (`NodeRegistry.closeAll`) before the public routes are
@@ -63,6 +64,8 @@ import {
   Orchestrator,
   OrchestratorLive,
   RoutineSchedulerLive,
+  SearchRepo,
+  SearchServiceLive,
   SendFileLimits,
   SettingsServiceLive,
   type SkillDirectory,
@@ -209,6 +212,23 @@ export const ResumeLive: Layer.Layer<never, never, BootReport | Orchestrator | B
     const report = yield* BootReport
     yield* (yield* Orchestrator).resume(report)
     yield* (yield* BackgroundTasks).recover(report)
+  }),
+)
+
+/**
+ * Step 15 too: the message search index catches up with what is stored, in the background (the
+ * first boot after the upgrade indexes everything; later boots only what an older release wrote).
+ * Searches meanwhile report `indexing`.
+ */
+export const SearchIndexLive: Layer.Layer<never, never, SearchRepo> = Layer.effectDiscard(
+  Effect.gen(function*() {
+    const search = yield* SearchRepo
+    yield* Effect.forkScoped(
+      search.ensure.pipe(
+        Effect.tap((report) => report.rebuilt || report.indexed > 0 ? Effect.logInfo("Message search index ready", report) : Effect.void),
+        Effect.catchCause((cause) => Effect.logError("Message search index failed", cause)),
+      ),
+    )
   }),
 )
 
@@ -368,7 +388,14 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     // voice calls (experiment): who is on a call (background work started on one reports back on it)
     CallPresence.layer,
   )
-  const level2 = Layer.mergeAll(SettingsServiceLive, UsageServiceLive, NotifierLive, ConversationServiceLive, AttachmentServiceLive)
+  const level2 = Layer.mergeAll(
+    SettingsServiceLive,
+    UsageServiceLive,
+    NotifierLive,
+    ConversationServiceLive,
+    AttachmentServiceLive,
+    SearchServiceLive,
+  )
 
   const publicServed = HttpRouter.serve(PublicRoutes, { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provide(PublicHttpServer),
@@ -412,7 +439,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
   // steps 11-14: gateways, both listeners' routes, ready. The two `HttpRouter.serve` layers are
   // SIBLINGS: a serve layer's output context carries its router (and memo map), so stacking one on
   // the other would mount every route on both listeners.
-  return Layer.mergeAll(ResumeLive, DrainOnSignalLive).pipe( // 15
+  return Layer.mergeAll(ResumeLive, DrainOnSignalLive, SearchIndexLive).pipe( // 15
     Layer.provideMerge(ReadyLive({ quiet: options?.quiet })), // 14
     Layer.provideMerge(Layer.mergeAll(internalServed, publicServed)), // 13
     Layer.provideMerge(RpcHandlersLive),
