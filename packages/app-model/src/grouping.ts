@@ -82,6 +82,8 @@ export interface LayoutInput {
   /** Entries created after this (and not by the user) are "new". Undefined = no divider. */
   readonly unreadBoundaryAt?: number | undefined
   readonly showSteps: boolean
+  /** Turns whose steps show even when `showSteps` is off (a search hit on one of their tool steps). */
+  readonly revealSteps?: ReadonlySet<TurnId> | undefined
   /** Show "Compacted context" lines (Settings `showCompactions`; default hidden). */
   readonly showCompactions?: boolean
   /** Gap that inserts a timestamp row (default 15 minutes). */
@@ -282,12 +284,13 @@ export const layoutTranscript = (input: LayoutInput): ReadonlyArray<Row> => {
     else rows.push({ type: "group", key: `p:${p.clientNonce}`, side: "user", items: [{ kind: "pending", pending: p }] })
   }
 
-  if (!input.showSteps || (steps.size === 0 && decisions.size === 0)) return rows
+  const reveal = input.revealSteps
+  if ((!input.showSteps && (reveal === undefined || reveal.size === 0)) || (steps.size === 0 && decisions.size === 0)) return rows
 
   // Insert the disclosures from the back so earlier indices stay valid.
   const turnIds = new Set<TurnId>([...steps.keys(), ...decisions.keys()])
   const inserts = [...turnIds]
-    .filter((turnId) => isTerminal(turns.get(turnId)))
+    .filter((turnId) => (input.showSteps && isTerminal(turns.get(turnId))) || reveal?.has(turnId) === true)
     .map((turnId) => ({ at: anchor.get(turnId) ?? rows.length - 1, turnId, list: steps.get(turnId) ?? [], decided: decisions.get(turnId) ?? [] }))
     .sort((a, b) => b.at - a.at)
   for (const ins of inserts) {
