@@ -255,7 +255,7 @@ export type SearchScope = { readonly kind: "owner" } | { readonly kind: "bot"; r
  *   routine-run chats); a group it left is closed to it;
  * - the bot-to-bot messages it sent or was sent, which live in the other bot's DM (`message` entries
  *   only; nothing else of the owner's chats with other bots);
- * - tool steps only its own; tasks only its own.
+ * - tool steps only its own; tasks only its own, started in a chat it is a member of now.
  * In every scope: voice calls' work and tasks started in a chat that no longer exists are left out.
  */
 export interface SearchFilter {

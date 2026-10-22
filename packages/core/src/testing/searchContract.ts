@@ -168,7 +168,7 @@ export const searchContractCases: ReadonlyArray<RepoContractCase> = [
     yield* sameSet(yield* refsOf("okapi", asBot(B)), ["ent_g1", "ent_g2", "ent_g3", "ent_g4"], "member: earlier history too")
   })),
 
-  contractCase("SearchRepo: a bot that leaves a group reads nothing of it, its own messages and steps included", Effect.gen(function*() {
+  contractCase("SearchRepo: a bot that leaves a group reads nothing of it, its own messages, steps and tasks included", Effect.gen(function*() {
     yield* seedTeam
     const conversations = yield* ConversationRepo
     const entries = yield* EntryRepo
@@ -177,10 +177,12 @@ export const searchContractCases: ReadonlyArray<RepoContractCase> = [
     yield* say("ent_g2", group, 11, B, "ibex: Beta's update")
     yield* entries.upsert(makeToolCallEntry({ id: entryId("ent_g3"), conversationId: group, createdAt: 12, author: bot(B), name: "ibex_tool", status: "completed" }))
     yield* say("ent_g4", group, 13, B, "ibex: to Alpha in the group", A)
-    yield* sameSet(yield* refsOf("ibex", asBot(B)), ["ent_g1", "ent_g2", "ent_g3", "ent_g4"], "while a member")
+    yield* (yield* TaskRepo).upsert(makeTask({ id: taskId("tsk_g"), botId: B, conversationId: group, title: "ibex research", createdAt: 14 }))
+    yield* (yield* TaskRepo).upsert(makeTask({ id: taskId("tsk_dm"), botId: B, conversationId: dmB, title: "ibex in its DM", createdAt: 15 }))
+    yield* sameSet(yield* refsOf("ibex", asBot(B)), ["ent_g1", "ent_g2", "ent_g3", "ent_g4", "tsk_g", "tsk_dm"], "while a member")
     yield* conversations.upsert(makeGroupConversation({ id: group, memberBotIds: [A, C], title: "Launch" }))
-    yield* sameSet(yield* refsOf("ibex", asBot(B)), [], "after leaving")
-    yield* equal((yield* find("ibex", asBot(B))).total, 0, "nothing counted")
+    yield* sameSet(yield* refsOf("ibex", asBot(B)), ["tsk_dm"], "after leaving: nothing of the group, its own task there included")
+    yield* equal((yield* find("ibex", asBot(B))).total, 1, "nothing of the group counted")
     yield* sameSet(yield* refsOf("ibex", asBot(B), { conversationIds: [group] }), [], "asking for the group directly")
     yield* sameSet(yield* refsOf("ibex", asBot(C)), ["ent_g1", "ent_g2", "ent_g4"], "the new member reads it (but not Beta's steps)")
   })),

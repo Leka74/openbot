@@ -138,10 +138,11 @@ export const makeSqlSearchRepo = Effect.gen(function*() {
     ]
     if (filter.scope.kind === "bot") {
       const bot = filter.scope.botId
+      const member = sql`d.conversation_id IN (SELECT conversation_id FROM conversation_members WHERE bot_id = ${bot})`
       clauses.push(sql`(
-        (d.source = 'task' AND d.author_bot_id = ${bot})
+        (d.source = 'task' AND d.author_bot_id = ${bot} AND ${member})
         OR (d.source = 'entry' AND (d.kind <> 'tool-call' OR d.author_bot_id = ${bot}) AND (
-          d.conversation_id IN (SELECT conversation_id FROM conversation_members WHERE bot_id = ${bot})
+          ${member}
           OR (d.kind = 'message' AND (d.author_bot_id = ${bot} OR d.to_bot_id = ${bot})
             AND d.conversation_id IN (SELECT id FROM conversations WHERE kind = 'direct'))
         ))

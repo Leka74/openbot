@@ -82,7 +82,7 @@ export const makeMemorySearchRepo = (index: MemorySearchIndex) =>
           if (doc.source === "task" && !existing.has(doc.conversationId)) return false
           if (filter.scope.kind === "owner") return true
           const bot = filter.scope.botId
-          if (doc.source === "task") return doc.authorBotId === bot
+          if (doc.source === "task") return doc.authorBotId === bot && membersOf(doc.conversationId).includes(bot)
           if (doc.kind === "tool-call" && doc.authorBotId !== bot) return false
           if (membersOf(doc.conversationId).includes(bot)) return true
           return doc.kind === "message" && (doc.authorBotId === bot || doc.toBotId === bot) &&
