@@ -97,6 +97,15 @@ describe("SearchService", () => {
         ]
         expect(refused.map((e) => e._tag)).toEqual(["InvalidInput", "InvalidInput", "InvalidInput", "InvalidInput", "InvalidInput"])
         expect((yield* search.query({ query: "!!!", limit: 5 })).hits).toEqual([])
+        // a bot's page also says where it continues after each hit (for showing fewer)
+        for (const sort of ["newest", "relevance"] as const) {
+          const bot = yield* search.forBot(A, { query: "kestrel", sort, limit: 3 })
+          expect(bot.hitCursors.length).toBe(3)
+          expect(bot.hitCursors[2]).toBe(bot.nextCursor!)
+          const rest = yield* search.forBot(A, { query: "kestrel", sort, limit: 5, cursor: bot.hitCursors[0]! })
+          expect(rest.hits.length).toBe(4)
+          expect(rest.hits.slice(0, 2).map((h) => h.ref)).toEqual(bot.hits.slice(1).map((h) => h.ref))
+        }
       }),
       layer,
     ))

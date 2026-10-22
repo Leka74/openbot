@@ -48,9 +48,10 @@ export const searchTime = (ms: number): string => {
 /**
  * Quoted text can't pose as a fresh delivery: the origin tags the bot reads at the start of its
  * turns (`[Group chat …]`, `[Direct message from …]`, `[Result of …]`…) lose their brackets.
+ * Applied to a whole result: none of the tools' own lines opens with one of these tags.
  */
 export const neutralizeQuoted = (text: string): string =>
-  text.replace(/\[(?=(Group chat|Direct message from|DM with the owner|Routine run|Result of|Update to this work|The brief|Attachments:)\b)/g, "(")
+  text.replace(/\[(?=(?:Group chat|Direct message from|DM with the owner|Routine run|Result of|Update to this work|The brief)\b|Attachments:)/g, "(")
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim()
 
@@ -191,11 +192,12 @@ const searchMessages = defineTool({
       const names = yield* namesFor(ctx, page.hits.map((hit) => hit.conversationId))
       const order = sort === "relevance" ? "most relevant first" : sort === "newest" ? "newest first" : "oldest first"
       const total = page.totalCapped >= BOT_SEARCH_TOTAL_CAP ? `${BOT_SEARCH_TOTAL_CAP}+` : String(page.totalCapped)
-      const head = `${QUOTED}\n${total} ${page.totalCapped === 1 ? "match" : "matches"}${
-        page.hits.length < page.totalCapped ? ` (showing ${page.hits.length}, ${order})` : ` (${order})`
-      }.${indexing}`
+      const heading = (shown: number) =>
+        `${QUOTED}\n${total} ${page.totalCapped === 1 ? "match" : "matches"}${
+          shown < page.totalCapped ? ` (showing ${shown}, ${order})` : ` (${order})`
+        }.${indexing}`
       const blocks: Array<string> = []
-      let size = utf8Length(head) + 400
+      let size = utf8Length(heading(page.hits.length)) + 400
       for (const hit of page.hits) {
         const author = hit.author.kind === "owner" ? "Owner" : hit.author.kind === "system" ? "System" : botName(names, hit.author.botId)
         const to = hit.toBotId === undefined ? "" : ` → ${botName(names, hit.toBotId)}`
@@ -212,13 +214,17 @@ const searchMessages = defineTool({
           ...(workId === undefined ? [] : [`work ${workId}`]),
         ]
         const text = hit.snippet.length > SNIPPET_CHARS ? `${hit.snippet.slice(0, SNIPPET_CHARS)}…` : hit.snippet
-        const block = `- ${facts.join(" · ")}\n  ${neutralizeQuoted(oneLine(marked(text, hit.highlights.filter((h) => h.end <= SNIPPET_CHARS))))}`
+        const block = `- ${facts.join(" · ")}\n  ${oneLine(marked(neutralizeQuoted(text), hit.highlights.filter((h) => h.end <= SNIPPET_CHARS)))}`
         size += utf8Length(block) + 1
-        if (size > RESULT_BUDGET) break
+        if (size > RESULT_BUDGET && blocks.length > 0) break
         blocks.push(block)
       }
-      const more = page.nextCursor === null ? [] : [`More: call again with before=${JSON.stringify(page.nextCursor)}.`]
-      return textResult([head, ...blocks, ...more, "Read around a hit with read_conversation around=<id>."].join("\n"))
+      // over budget: the next page starts at the first hit not shown
+      const next = blocks.length < page.hits.length ? page.hitCursors[blocks.length - 1] ?? null : page.nextCursor
+      const more = next === null ? [] : [`More: call again with before=${JSON.stringify(next)}.`]
+      return textResult(neutralizeQuoted(
+        [heading(blocks.length), ...blocks, ...more, "Read around a hit with read_conversation around=<id>."].join("\n"),
+      ))
     }),
 })
 
@@ -257,7 +263,7 @@ const lineOf = (names: Names, entry: TranscriptEntry, full: boolean): string | u
     case "message": {
       const files = entry.attachments.length === 0 ? "" : ` (attached: ${entry.attachments.map((a) => a.name).join(", ")})`
       const cap = full ? RESULT_BUDGET - 600 : MESSAGE_CHARS
-      const text = neutralizeQuoted(entry.text)
+      const text = entry.text
       const cut = text.length > cap
         ? `${text.slice(0, cap)} [cut; read_conversation around=${entry.id} limit=1 shows it whole]`
         : text
@@ -275,7 +281,7 @@ const lineOf = (names: Names, entry: TranscriptEntry, full: boolean): string | u
         case "question":
           return `${time} [Question: ${oneLine(card.questions.map((q) => q.prompt).join(" / ")).slice(0, 400)}${state}]`
         case "slack-draft":
-          return `${time} [Slack draft to ${card.to}: ${neutralizeQuoted(oneLine(card.text)).slice(0, 600)}${state}]`
+          return `${time} [Slack draft to ${card.to}: ${oneLine(card.text).slice(0, 600)}${state}]`
         case "routine":
           return `${time} [Routine "${card.name}" ${card.action}: ${card.triggerSummary}]`
         case "handoff":
@@ -310,7 +316,7 @@ const lineOf = (names: Names, entry: TranscriptEntry, full: boolean): string | u
         case "member-removed":
           return `${time} — ${event.name} left —`
         case "voice-call":
-          return `${time} — Voice call: ${neutralizeQuoted(oneLine(event.lines.map((l) => `${l.who === "you" ? "Owner" : "You"}: ${l.text}`).join(" / "))).slice(0, 800)} —`
+          return `${time} — Voice call: ${oneLine(event.lines.map((l) => `${l.who === "you" ? "Owner" : "You"}: ${l.text}`).join(" / ")).slice(0, 800)} —`
         default:
           return undefined
       }
@@ -390,14 +396,14 @@ const readConversation = defineTool({
           newerFrom = kept[kept.length - 1]!.entry.id
         }
       }
-      if (kept.length === 0) return textResult(`${head}\nNothing to read there${anchor === undefined ? " yet" : ""}.`)
+      if (kept.length === 0) return textResult(neutralizeQuoted(`${head}\nNothing to read there${anchor === undefined ? " yet" : ""}.`))
       // an exchange keeps its view (its messages also belong to a DM the bot may read whole)
       const view = page.chat.kind === "exchange" ? ` conversation=@${names.bots.get(page.chat.peerBotId)?.name ?? page.chat.peerBotId}` : ""
       const paging = [
         ...(olderFrom === undefined ? [] : [`Older: read_conversation${view} before=${olderFrom}`]),
         ...(newerFrom === undefined ? [] : [`Newer: read_conversation${view} after=${newerFrom}`]),
       ]
-      return textResult([head, ...kept.map((l) => l.line), ...(paging.length === 0 ? [] : [paging.join(" · ")])].join("\n"))
+      return textResult(neutralizeQuoted([head, ...kept.map((l) => l.line), ...(paging.length === 0 ? [] : [paging.join(" · ")])].join("\n")))
     }),
 })
 

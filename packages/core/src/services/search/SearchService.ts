@@ -108,7 +108,10 @@ export const SearchServiceLive: Layer.Layer<
       const indexing = yield* repo.indexing
       const match = parseSearchQuery(input.query)
       if (match === undefined) {
-        return compact<SearchPage>({ hits: [], nextCursor: null, totalCapped: 0, terms: [], indexing: indexing || undefined })
+        return {
+          page: compact<SearchPage>({ hits: [], nextCursor: null, totalCapped: 0, terms: [], indexing: indexing || undefined }),
+          hitCursors: [],
+        }
       }
       const page = yield* orDie(repo.query({
         scope,
@@ -125,13 +128,23 @@ export const SearchServiceLive: Layer.Layer<
         limit: input.limit,
         ...(scope.kind === "bot" ? { totalCap: BOT_SEARCH_TOTAL_CAP } : {}),
       }))
-      return compact<SearchPage>({
-        hits: page.hits.map(toHit),
-        nextCursor: page.next === undefined ? null : encodeSearchCursor(page.next),
-        totalCapped: page.total,
-        terms: match.terms,
-        indexing: indexing || undefined,
-      })
+      return {
+        page: compact<SearchPage>({
+          hits: page.hits.map(toHit),
+          nextCursor: page.next === undefined ? null : encodeSearchCursor(page.next),
+          totalCapped: page.total,
+          terms: match.terms,
+          indexing: indexing || undefined,
+        }),
+        // where a page that stops after this hit continues
+        hitCursors: page.hits.map(({ doc, rank }) =>
+          encodeSearchCursor(
+            sort === "relevance"
+              ? { sort, rank, createdAt: doc.createdAt, refId: doc.refId }
+              : { sort, createdAt: doc.createdAt, refId: doc.refId },
+          )
+        ),
+      }
     })
 
     // ------------------------------------------------------------------ bots reading back
@@ -358,8 +371,8 @@ export const SearchServiceLive: Layer.Layer<
     })
 
     return SearchService.of({
-      query: (input) => search({ kind: "owner" }, input),
-      forBot: (botId, input) => search({ kind: "bot", botId }, input),
+      query: (input) => Effect.map(search({ kind: "owner" }, input), ({ page }) => page),
+      forBot: (botId, input) => Effect.map(search({ kind: "bot", botId }, input), ({ page, hitCursors }) => ({ ...page, hitCursors })),
 
       inConversation: Effect.fn("SearchService.inConversation")(function*(input) {
         yield* checkQuery(input.query)

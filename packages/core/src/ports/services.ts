@@ -1083,6 +1083,11 @@ export interface BotReadPage {
   readonly newerFrom?: EntryId | undefined
 }
 
+/** A bot's search page; `hitCursors[i]` continues after `hits[i]`, for a caller that shows fewer hits. */
+export interface BotSearchPage extends SearchPage {
+  readonly hitCursors: ReadonlyArray<string>
+}
+
 /** The model-readable refusal for anything a bot may not read (it never says whether it exists). */
 export const CANT_READ_MESSAGE = "You can't read that conversation."
 
@@ -1101,7 +1106,7 @@ export class SearchService extends Context.Service<SearchService, {
     readonly limit: number
   }) => Effect.Effect<SearchPositions, NotFound | InvalidInput>
   /** A bot's search (`search_messages`): only what it may read (`SearchFilter`), counted up to `BOT_SEARCH_TOTAL_CAP`. */
-  readonly forBot: (botId: BotId, input: SearchInput) => Effect.Effect<SearchPage, InvalidInput>
+  readonly forBot: (botId: BotId, input: SearchInput) => Effect.Effect<BotSearchPage, InvalidInput>
   /** The bot may read this whole chat now: it is a member (its DM, a group it is in, its routine runs). */
   readonly canRead: (botId: BotId, conversationId: ConversationId) => Effect.Effect<boolean>
   /**
