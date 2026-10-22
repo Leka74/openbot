@@ -189,7 +189,9 @@ describe.skipIf(!hasChromium)("e2e: message search", () => {
     const { page } = app
     const hit = page.getByTestId("search-hit").first()
     await hit.waitFor()
+    // once, without Scout's chat named before it
     expect(await hit.textContent()).toContain("Nova to Scout")
+    expect(await hit.textContent()).not.toMatch(/Scout\s*·/)
     await hit.click()
     await page.getByTestId("exchange-title").waitFor()
     await eventually(() => page.locator("[data-exchange-item][data-target]").count(), (n) => n === 1)

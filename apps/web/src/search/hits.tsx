@@ -48,20 +48,35 @@ export function Snippet({ hit, className }: { readonly hit: SearchHit; readonly 
   )
 }
 
-/** "Chief of Staff · You · 2:41 PM" (+ the kind when it isn't a message). */
+/**
+ * "Chief of Staff · You · 2:41 PM" (+ the kind when it isn't a message). A bot-to-bot message reads
+ * "Chief of Staff to Scout" on one line that shortens once (the chat's name only when it is neither).
+ */
 export function HitMeta({ roster, hit, className }: { readonly roster: RosterView; readonly hit: SearchHit; readonly className?: string }): ReactNode {
   const kind = KIND_LABEL[hit.kind]
   const to = hit.toBotId !== undefined ? roster.botById(hit.toBotId)?.name : undefined
   const chat = chatLabel(roster, hit)
   const author = authorLabel(roster, hit)
-  const who = to ? `${author} to ${to}` : author === chat ? undefined : author
   return (
     <span className={cn("flex min-w-0 items-center gap-1.5 text-xs text-fg-tertiary", className)}>
-      <span className="truncate font-medium text-fg-secondary">{chat}</span>
-      {who !== undefined && (
+      {to !== undefined ? (
+        <span className="truncate">
+          {chat !== author && chat !== to && (
+            <>
+              <span className="font-medium text-fg-secondary">{chat}</span> ·{" "}
+            </>
+          )}
+          <span className="font-medium text-fg-secondary">{author}</span> to <span className="font-medium text-fg-secondary">{to}</span>
+        </span>
+      ) : (
         <>
-          <span aria-hidden>·</span>
-          <span className="truncate">{who}</span>
+          <span className="truncate font-medium text-fg-secondary">{chat}</span>
+          {author !== chat && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="truncate">{author}</span>
+            </>
+          )}
         </>
       )}
       {kind && <span className="shrink-0 rounded-full bg-secondary px-1.5 text-2xs leading-4 text-fg-secondary">{kind}</span>}
