@@ -28,7 +28,8 @@ describe("message search over /rpc", () => {
     await server.run(
       Effect.gen(function*() {
         const client = yield* connect()
-        const bot = yield* client["bots.create"]({ name: "Finder", harness: { kind: "fake" }, clientNonce: "search-bot" })
+        // no introduction: a message sent while it runs is steered into that turn, so no user turn would come
+        const bot = yield* client["bots.create"]({ name: "Finder", harness: { kind: "fake" }, clientNonce: "search-bot", introduce: false })
         const convo = yield* watchConversation(client, bot.directConversationId)
         for (let i = 1; i <= 3; i++) {
           yield* client["messages.send"]({ conversationId: bot.directConversationId, text: `echo: albatross number ${i}`, clientNonce: `s-${i}` })
@@ -81,8 +82,8 @@ describe("search_messages for a bot", () => {
     await server.run(
       Effect.gen(function*() {
         const client = yield* connect()
-        const seeker = yield* client["bots.create"]({ name: "Seeker", harness: { kind: "fake" }, clientNonce: "search-seeker" })
-        const keeper = yield* client["bots.create"]({ name: "Keeper", harness: { kind: "fake" }, clientNonce: "search-keeper" })
+        const seeker = yield* client["bots.create"]({ name: "Seeker", harness: { kind: "fake" }, clientNonce: "search-seeker", introduce: false })
+        const keeper = yield* client["bots.create"]({ name: "Keeper", harness: { kind: "fake" }, clientNonce: "search-keeper", introduce: false })
         const group = yield* client["conversations.createGroup"]({ title: "Kiwi crew", memberBotIds: [seeker.id, keeper.id] })
         let nonce = 0
         /** The owner writes; the first finished bot reply in the chat that `done` accepts. */
