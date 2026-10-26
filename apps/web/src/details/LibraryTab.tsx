@@ -9,8 +9,8 @@ import { Download, Plus, Sparkles, X } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import { useSettingsDialog } from "../contracts.ts"
 import { EmptyNote, ErrorLine, LoadingLine, Section, SectionSheet, useCommand, useQuery } from "./kit.tsx"
-import { SkillEditorDialog, SkillImportDialog, SkillsShChip } from "./SkillDialogs.tsx"
-import { skillsOfBot } from "./skills.ts"
+import { SkillEditorDialog, SkillImportDialog, SkillNeedsChip, SkillsShChip } from "./SkillDialogs.tsx"
+import { missingSkillDependencies, skillsOfBot } from "./skills.ts"
 
 export function LibraryTab({ bot }: { readonly bot: Bot }): ReactNode {
   const skills = useQuery(skillsAtom)
@@ -87,6 +87,9 @@ export function LibraryTab({ bot }: { readonly bot: Bot }): ReactNode {
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-sm text-fg">{s.name}</span>
                     {s.source && <SkillsShChip id={s.source.id} />}
+                    {missingSkillDependencies({ name: s.name, body: s.body ?? "" }, library).length > 0 && (
+                      <SkillNeedsChip names={missingSkillDependencies({ name: s.name, body: s.body ?? "" }, library)} />
+                    )}
                   </span>
                   <span className="truncate text-sm text-fg-secondary" title={s.description}>
                     {s.description || "…"}

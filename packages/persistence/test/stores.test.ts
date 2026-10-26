@@ -124,6 +124,49 @@ describe("SkillStore files (Claude plugin layout)", () => {
   })
 })
 
+describe("SkillStore invocation settings", () => {
+  test("reads disable-model-invocation and argument-hint; saving sets, clears or keeps the flag", async () => {
+    const dir = await tempDataDir()
+    const file = join(dir, "skills-lib", "skills", "grill-me", "SKILL.md")
+    await mkdir(join(dir, "skills-lib", "skills", "grill-me"), { recursive: true })
+    // as skills.sh writes it: the flag quoted, a hint, an unrelated key
+    await writeFile(
+      file,
+      '---\nname: grill-me\ndescription: An interview.\ndisable-model-invocation: "true"\nargument-hint: <topic>\nallowed-tools: Read\n---\n\nBody.\n',
+    )
+    const name = "grill-me" as SkillName
+    const save = (flag: boolean | undefined) =>
+      Effect.gen(function* () {
+        const store = yield* SkillStore
+        yield* store.put({
+          name,
+          description: "An interview.",
+          body: "Body.",
+          updatedAt: 1 as Millis,
+          ...(flag === undefined ? {} : { disableModelInvocation: flag }),
+        })
+        return Option.getOrThrow(yield* store.get(name))
+      })
+    const states = await run(
+      Effect.gen(function* () {
+        const read = Option.getOrThrow(yield* Effect.flatMap(SkillStore, (store) => store.get(name)))
+        const kept = yield* save(undefined)
+        const cleared = yield* save(false)
+        const setAgain = yield* save(true)
+        return { read, kept, cleared, setAgain }
+      }),
+      testPersistence(dir),
+    )
+    expect(states.read).toMatchObject({ disableModelInvocation: true, argumentHint: "<topic>" })
+    expect(states.kept).toMatchObject({ disableModelInvocation: true, argumentHint: "<topic>" })
+    expect(states.cleared.disableModelInvocation).toBeUndefined()
+    expect(states.cleared.argumentHint).toBe("<topic>")
+    expect(states.setAgain.disableModelInvocation).toBe(true)
+    // the file keeps the keys this app doesn't manage
+    expect(await readFile(file, "utf8")).toContain("allowed-tools: Read")
+  })
+})
+
 describe("SkillStore imports (skills.sh)", () => {
   test("a description continued on indented lines (plain multi-line YAML) is read as one line", async () => {
     const dir = await tempDataDir()

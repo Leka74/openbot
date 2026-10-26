@@ -28,10 +28,20 @@ export const Skill = Schema.Struct({
   source: Schema.optionalKey(SkillSource),
   /** Other files in the skill's folder (scripts, references), relative paths. */
   files: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Frontmatter `disable-model-invocation`: the Bot starts the skill only when the owner types `/name`. */
+  disableModelInvocation: Schema.optionalKey(Schema.Boolean),
+  /** Frontmatter `argument-hint` (`<topic>`): what to type after `/name`. */
+  argumentHint: Schema.optionalKey(Schema.String),
 })
 export type Skill = typeof Skill.Type
 
-export const SkillInput = Schema.Struct({ name: SkillName, description: Schema.String, body: Schema.String })
+export const SkillInput = Schema.Struct({
+  name: SkillName,
+  description: Schema.String,
+  body: Schema.String,
+  /** Absent: left as it is. */
+  disableModelInvocation: Schema.optionalKey(Schema.Boolean),
+})
 export type SkillInput = typeof SkillInput.Type
 
 /** A skills.sh search hit (`/api/search`). */

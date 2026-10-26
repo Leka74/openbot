@@ -123,7 +123,15 @@ export const makeSkillService = Effect.gen(function* () {
       }
       // the store keeps an imported skill's source (frontmatter metadata) and its other files
       yield* store
-        .put({ name: input.name, description, body: input.body, updatedAt: yield* Clock.currentTimeMillis })
+        .put({
+          name: input.name,
+          description,
+          body: input.body,
+          updatedAt: yield* Clock.currentTimeMillis,
+          ...(input.disableModelInvocation === undefined
+            ? {}
+            : { disableModelInvocation: input.disableModelInvocation }),
+        })
         .pipe(Effect.orDie)
       if (author !== undefined && actor.kind === "bot") {
         if (!author.skills.includes(input.name))

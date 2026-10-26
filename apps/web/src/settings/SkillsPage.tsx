@@ -7,8 +7,14 @@ import { Icon, PillButton } from "@openbot/ui"
 import { ChevronRight, Download, Plus, Sparkles } from "lucide-react"
 import { Fragment, type ReactNode, useState } from "react"
 import { ErrorLine, LoadingLine, useQuery, useRosterValue } from "../details/kit.tsx"
-import { SkillBots, SkillEditorDialog, SkillImportDialog, SkillsShChip } from "../details/SkillDialogs.tsx"
-import { botsWithSkill } from "../details/skills.ts"
+import {
+  SkillBots,
+  SkillEditorDialog,
+  SkillImportDialog,
+  SkillNeedsChip,
+  SkillsShChip,
+} from "../details/SkillDialogs.tsx"
+import { botsWithSkill, missingSkillDependencies } from "../details/skills.ts"
 import { GroupLabel, PageHeader, RowDivider, SettingsCard } from "./layout.tsx"
 
 export function SkillsPage(): ReactNode {
@@ -85,6 +91,9 @@ export function SkillsPage(): ReactNode {
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-base text-fg">{s.name}</span>
                     {s.source && <SkillsShChip id={s.source.id} />}
+                    {missingSkillDependencies(s, list).length > 0 && (
+                      <SkillNeedsChip names={missingSkillDependencies(s, list)} />
+                    )}
                   </span>
                   <span className="truncate text-sm text-fg-secondary">{s.description}</span>
                 </span>

@@ -105,6 +105,21 @@ describe("SkillService (D5.5)", () => {
     expect(failsWith(out.gone, "NotFound")).toBe(true)
   })
 
+  test("owner-only skills: the owner turns the Bot's own use on or off; saving without the setting keeps it", async () => {
+    const out = await runTest(
+      Effect.gen(function* () {
+        const skills = yield* SkillService
+        const base = { name: name("grill-me"), description: "An interview.", body: "Ask." }
+        const created = yield* skills.upsert(userActor, { ...base, disableModelInvocation: true })
+        const edited = yield* skills.upsert(userActor, { ...base, body: "Ask more." })
+        const cleared = yield* skills.upsert(userActor, { ...base, disableModelInvocation: false })
+        return [created, edited, cleared].map((s) => s.disableModelInvocation)
+      }),
+      layer(),
+    )
+    expect(out).toEqual([true, true, undefined])
+  })
+
   test("save_skill: the Bot gets its new skill and a skill-saved event; it may update its own, never someone else's", async () => {
     const out = await runTest(
       Effect.gen(function* () {

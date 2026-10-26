@@ -9,7 +9,9 @@ import {
   formatInstalls,
   isSkillName,
   loseText,
+  missingSkillDependencies,
   sameBots,
+  siblingSkillId,
   skillNameError,
   skillsOfBot,
   skillsShErrorText,
@@ -103,6 +105,31 @@ describe("skills.sh formatting", () => {
     )
     expect(skillsShErrorText({ _tag: "InvalidInput", message: "nope" })).toBeUndefined()
     expect(skillsShErrorText("boom")).toBeUndefined()
+  })
+})
+
+describe("skills that need another skill", () => {
+  const library = [{ name: "grill-me" as SkillName }, { name: "release-notes" as SkillName }]
+  test("missingSkillDependencies: the skills its instructions send the Bot to that the library lacks", () => {
+    const grillMe = { name: "grill-me" as SkillName, body: 'Call the Skill tool with "grilling".' }
+    expect(missingSkillDependencies(grillMe, library)).toEqual(["grilling"])
+    expect(missingSkillDependencies(grillMe, [...library, { name: "grilling" as SkillName }])).toEqual([])
+    // curly quotes, other wording, the same skill twice, a skill naming itself
+    expect(
+      missingSkillDependencies(
+        { name: "a" as SkillName, body: "Use the Skill tool for “Grilling”, then the skill tool on 'grilling' again." },
+        library,
+      ),
+    ).toEqual(["grilling"])
+    expect(missingSkillDependencies({ name: "a" as SkillName, body: 'Skill tool with "a"' }, library)).toEqual([])
+    expect(
+      missingSkillDependencies({ name: "a" as SkillName, body: "Plain steps. Use /grilling later." }, library),
+    ).toEqual([])
+  })
+
+  test("siblingSkillId: the same repository on skills.sh", () => {
+    expect(siblingSkillId("mattpocock/skills/grill-me", "grilling")).toBe("mattpocock/skills/grilling")
+    expect(siblingSkillId("broken", "grilling")).toBeUndefined()
   })
 })
 

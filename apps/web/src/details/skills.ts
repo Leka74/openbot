@@ -29,6 +29,27 @@ export const skillNameError = (input: string, library: ReadonlyArray<Pick<Skill,
   return undefined
 }
 
+/** `Call the Skill tool with "grilling"`: how a skill sends the Bot to another one. */
+const SKILL_TOOL_REFERENCE = /\bskill tool (?:with|for|on)\s+(?:the\s+)?["'`“‘]([a-z0-9][a-z0-9_-]{0,63})["'`”’]/gi
+
+/** The skills this skill's instructions send the Bot to that the library doesn't have. */
+export const missingSkillDependencies = (
+  skill: Pick<Skill, "name" | "body">,
+  library: ReadonlyArray<Pick<Skill, "name">>,
+): ReadonlyArray<string> => {
+  const wanted = new Set<string>()
+  for (const match of skill.body.matchAll(SKILL_TOOL_REFERENCE)) wanted.add(match[1]!.toLowerCase())
+  return [...wanted].filter((name) => name !== skill.name && !library.some((s) => s.name === name))
+}
+
+/** The skills.sh id of the skill `name` in the repository `sourceId` (`owner/repo/skill`) came from. */
+export const siblingSkillId = (sourceId: string, name: string): string | undefined => {
+  const [owner, repo] = sourceId.split("/")
+  return owner !== undefined && owner !== "" && repo !== undefined && repo !== ""
+    ? `${owner}/${repo}/${name}`
+    : undefined
+}
+
 /** "48.2K installs", "1 install". */
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 })
 export const formatInstalls = (n: number): string =>

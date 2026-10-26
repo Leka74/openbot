@@ -15,6 +15,7 @@ import {
   IconButton,
   LabelChip,
   PillButton,
+  Switch,
   TextArea,
   TextField,
   cn,
@@ -54,8 +55,10 @@ import {
   formatBytes,
   formatInstalls,
   loseText,
+  missingSkillDependencies,
   sameBots,
   skillNameError,
+  siblingSkillId,
   skillsShErrorText,
   skillsShUrl,
   toSkillName,
@@ -164,6 +167,55 @@ export function SkillsShChip({ id }: { readonly id: string }): ReactNode {
   )
 }
 
+/** "needs grilling" chip of a skill whose instructions send the Bot to skills the library doesn't have. */
+export function SkillNeedsChip({ names }: { readonly names: ReadonlyArray<string> }): ReactNode {
+  return (
+    <span title={`Needs ${names.join(", ")}, not in the library`} className="inline-flex shrink-0">
+      <LabelChip className="border-warn-line-faint bg-warn-soft font-medium text-warn-fg">
+        needs {names.join(", ")}
+      </LabelChip>
+    </span>
+  )
+}
+
+/** A skill the one being edited sends the Bot to, missing from the library: install it from the same repo. */
+function MissingDependency({
+  name,
+  source,
+  botIds,
+}: {
+  readonly name: string
+  readonly source: Skill["source"]
+  readonly botIds: ReadonlyArray<BotId>
+}): ReactNode {
+  const install = useCommand("skills.install", name, skillsShErrorText)
+  const id = source === undefined ? undefined : siblingSkillId(source.id, name)
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-warn-line-faint bg-warn-soft px-3 py-2.5 text-sm text-warn-fg"
+      data-testid="skill-missing"
+    >
+      <Icon icon={TriangleAlert} size="md" className="shrink-0 text-warn-bright" />
+      <span className="min-w-0 flex-1">
+        <strong className="font-semibold">Missing skill: {name}.</strong> These instructions send the Bot to it, but it
+        isn't in your library, so the skill can't run properly.
+      </span>
+      {id !== undefined && (
+        <PillButton
+          variant="primary"
+          size="md"
+          loading={install.pending}
+          data-testid="skill-install-missing"
+          onClick={() => void install.run({ id, botIds: [...botIds] })}
+        >
+          Install {name}
+        </PillButton>
+      )}
+      {install.error && <p className="w-full text-sm text-danger-fg">{install.error}</p>}
+    </div>
+  )
+}
+
 function ExternalLink({
   href,
   children,
@@ -241,6 +293,8 @@ export function SkillEditorDialog({
   const [name, setName] = useState("")
   const [description, setDescription] = useState(skill?.description ?? "")
   const [body, setBody] = useState(skill?.body ?? "")
+  // off: the Bot starts the skill only when the owner types /name (frontmatter `disable-model-invocation`)
+  const [ownerOnly, setOwnerOnly] = useState(skill?.disableModelInvocation === true)
   const [picked, setPicked] = useState<ReadonlyArray<BotId>>(() =>
     skill ? botsWithSkill(bots, skill.name).map((b) => b.id) : [...(botIds ?? [])],
   )
@@ -253,11 +307,21 @@ export function SkillEditorDialog({
   const holders = skill ? botsWithSkill(bots, skill.name) : []
   const canSave = finalName !== "" && nameError === undefined && description.trim() !== "" && body.trim() !== ""
   const files = skill?.files ?? []
+  const missing = missingSkillDependencies({ name: finalName, body }, library)
 
   const save = async () => {
-    const textChanged = !skill || description.trim() !== skill.description || body !== skill.body
+    const textChanged =
+      !skill ||
+      description.trim() !== skill.description ||
+      body !== skill.body ||
+      ownerOnly !== (skill.disableModelInvocation === true)
     if (textChanged) {
-      const r = await upsert.run({ name: finalName, description: description.trim(), body })
+      const r = await upsert.run({
+        name: finalName,
+        description: description.trim(),
+        body,
+        disableModelInvocation: ownerOnly,
+      })
       if (!r.ok) return
       if (!skill) setCreated(finalName)
     }
@@ -284,6 +348,9 @@ export function SkillEditorDialog({
         onClose={onClose}
       />
       <DialogBody className="flex flex-col gap-4">
+        {missing.map((dep) => (
+          <MissingDependency key={dep} name={dep} source={skill?.source} botIds={picked} />
+        ))}
         {skill?.source && (
           <div
             className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-xl bg-secondary px-3 py-2 text-sm"
@@ -355,6 +422,19 @@ export function SkillEditorDialog({
             </p>
           </div>
         )}
+        <div className="flex items-center gap-3" data-testid="skill-auto">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-sm text-fg">Bot may start it on its own</span>
+            <span className="text-xs text-fg-tertiary">
+              Off: the Bot uses it only when you type /{finalName || "name"} in the chat.
+            </span>
+          </div>
+          <Switch
+            checked={!ownerOnly}
+            onCheckedChange={(on) => setOwnerOnly(!on)}
+            label="Bot may start it on its own"
+          />
+        </div>
         <BotPicker bots={bots} value={picked} onChange={setPicked} />
         {error && <ErrorLine className="px-0">{error}</ErrorLine>}
       </DialogBody>

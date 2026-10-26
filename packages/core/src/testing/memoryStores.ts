@@ -74,8 +74,12 @@ export const makeMemorySkillStore = (root = "/openbot-test/skills-lib") =>
       put: (skill) =>
         Effect.sync(() => {
           const existing = skills.get(skill.name)
+          // `disableModelInvocation` absent keeps the file's own setting; false removes it
+          const ownerOnly = skill.disableModelInvocation ?? existing?.disableModelInvocation
+          const { disableModelInvocation: _given, ...rest } = skill
           skills.set(skill.name, {
-            ...skill,
+            ...rest,
+            ...(ownerOnly === true ? { disableModelInvocation: true } : {}),
             ...(existing?.source === undefined ? {} : { source: existing.source }),
             ...(existing?.files === undefined ? {} : { files: existing.files }),
           })

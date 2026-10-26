@@ -94,6 +94,7 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
         const updatedAt = parseTimestamp(metadataValue(frontmatter, "modified")) ?? (yield* modifiedAt(op, path)) ?? 0
         const source = sourceOf(frontmatter)
         const files = yield* otherFiles(op, joinPath(skillsDir, name))
+        const argumentHint = scalar(frontmatter, "argument-hint")?.trim()
         return Option.some<Skill>({
           name,
           description: scalar(frontmatter, "description") ?? "",
@@ -101,6 +102,8 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
           updatedAt: updatedAt as Millis,
           ...(source === undefined ? {} : { source }),
           ...(files.length === 0 ? {} : { files }),
+          ...(scalar(frontmatter, "disable-model-invocation") === "true" ? { disableModelInvocation: true } : {}),
+          ...(argumentHint === undefined || argumentHint === "" ? {} : { argumentHint }),
         })
       })
 
@@ -131,6 +134,10 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
             scalars: [
               ["name", skill.name],
               ["description", skill.description],
+              // absent: the file's own setting stays
+              ...(skill.disableModelInvocation === undefined
+                ? []
+                : [["disable-model-invocation", skill.disableModelInvocation ? "true" : undefined] as const]),
             ],
             metadata: metadataOf(skill),
             body: skill.body,
