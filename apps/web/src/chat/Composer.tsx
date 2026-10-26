@@ -3,7 +3,7 @@
 // for a newline, Stop while the bot works (turns.interrupt) and the context ring. On a phone it is
 // Grok iOS's composer: a separate round + beside the pill field, 16 px text (no iOS focus zoom),
 // Return inserts a newline and the send button sends; no autofocus (it would pop the keyboard).
-import { ArrowUp, AudioLines, Paperclip, Plus, Square, X } from "lucide-react"
+import { ArrowUp, AudioLines, Paperclip, Plus, Sparkles, Square, X } from "lucide-react"
 import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useAtomSet } from "@effect/atom-react"
 import { Exit } from "effect"
@@ -16,6 +16,7 @@ import { isTouchNow, useIsPhone } from "../app/layout.ts"
 import { describeFailure } from "../cards/useRespond.ts"
 import { ContextRing, type ContextRingProps } from "./ContextRing.tsx"
 import { DictationButton } from "./DictationButton.tsx"
+import { skillCommandLength } from "./skillCommand.ts"
 import type { MessageEntry } from "./grouping.ts"
 import { useDictation } from "./useDictation.ts"
 
@@ -48,6 +49,10 @@ export interface ComposerProps {
   readonly autoFocus?: boolean
   /** Starts a voice call with this chat's Bot (experiment): shown instead of Send while the box is empty. */
   readonly onCall?: (() => void) | undefined
+  /** The skills the chat's Bot has: typing `/` at the start offers them (D5.5). */
+  readonly skills?:
+    | ReadonlyArray<{ readonly name: string; readonly description: string; readonly argumentHint?: string | undefined }>
+    | undefined
   readonly className?: string
 }
 
@@ -77,6 +82,12 @@ const mentionQuery = (text: string, caret: number): { start: number; query: stri
   return { start: before.length - m[2]!.length - 1, query: m[2]! }
 }
 
+/** `/gri` at the start of the message (before the caret): the skill name typed so far. */
+const slashQuery = (text: string, caret: number): string | undefined =>
+  /^\/([a-z0-9_-]*)$/.exec(text.slice(0, caret))?.[1]
+
+const clipText = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1)}…`)
+
 let measureCanvas: HTMLCanvasElement | undefined
 const textWidth = (text: string, font: string): number => {
   measureCanvas ??= document.createElement("canvas")
@@ -92,6 +103,10 @@ export function Composer(props: ComposerProps): ReactNode {
   const [uploads, setUploads] = useState<ReadonlyArray<Upload>>([])
   const [uploading, setUploading] = useState(false)
   const [mention, setMention] = useState<{ start: number; query: string; left: number } | undefined>()
+  const [slash, setSlash] = useState<string | undefined>()
+  // the message needs the textarea's scrollbar: its text no longer lines up with the highlight under it
+  const [tall, setTall] = useState(false)
+  const mirrorRef = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(0)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const shellRef = useRef<HTMLDivElement>(null)
@@ -108,6 +123,7 @@ export function Composer(props: ComposerProps): ReactNode {
     setText(drafts.get(draftKey) ?? "")
     setUploads([])
     setMention(undefined)
+    setSlash(undefined)
   }
   useEffect(() => {
     if (props.autoFocus && !isTouchNow()) taRef.current?.focus()
@@ -124,7 +140,9 @@ export function Composer(props: ComposerProps): ReactNode {
     const h = Math.min(ta.scrollHeight, MAX_LINES * LINE + 8)
     ta.style.height = `${Math.max(h, LINE + 8)}px`
     ta.style.overflowY = ta.scrollHeight > MAX_LINES * LINE + 8 ? "auto" : "hidden"
+    setTall(ta.scrollHeight > MAX_LINES * LINE + 8)
   }, [text])
+  const commandEnd = tall ? 0 : skillCommandLength(text, props.skills)
 
   const options = useMemo(() => {
     if (!mention) return []
@@ -137,9 +155,20 @@ export function Composer(props: ComposerProps): ReactNode {
     return list.slice(0, 8)
   }, [mention, mentionable, allowEveryone])
 
+  const skillOptions = useMemo(() => {
+    if (slash === undefined) return []
+    return (props.skills ?? [])
+      .filter((skill) => skill.name.includes(slash))
+      .sort((a, b) => Number(!a.name.startsWith(slash)) - Number(!b.name.startsWith(slash)))
+      .slice(0, 8)
+  }, [slash, props.skills])
+
   const update = (value: string, caret: number) => {
     setText(value)
     drafts.set(draftKey, value)
+    const typed = slashQuery(value, caret)
+    if (typed !== slash) setActive(0)
+    setSlash(typed)
     const m = mentionQuery(value, caret)
     if (m && taRef.current && shellRef.current) {
       const ta = taRef.current
@@ -164,6 +193,16 @@ export function Composer(props: ComposerProps): ReactNode {
     drafts.set(draftKey, next)
     setMention(undefined)
     pendingCaret.current = (before + insert).length
+  }
+
+  const pickSkill = (skill: { readonly name: string }) => {
+    const caret = taRef.current?.selectionStart ?? text.length
+    const insert = `/${skill.name} `
+    const next = insert + text.slice(caret).replace(/^\s/, "")
+    setText(next)
+    drafts.set(draftKey, next)
+    setSlash(undefined)
+    pendingCaret.current = insert.length
   }
 
   // Place the caret right after an inserted mention, in the same commit (before the next keystroke).
@@ -282,6 +321,14 @@ export function Composer(props: ComposerProps): ReactNode {
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slash !== undefined && skillOptions.length > 0) {
+      if (e.key === "ArrowDown") return (e.preventDefault(), setActive((a) => (a + 1) % skillOptions.length))
+      if (e.key === "ArrowUp")
+        return (e.preventDefault(), setActive((a) => (a - 1 + skillOptions.length) % skillOptions.length))
+      if (e.key === "Enter" || e.key === "Tab")
+        return (e.preventDefault(), pickSkill(skillOptions[active] ?? skillOptions[0]!))
+      if (e.key === "Escape") return (e.preventDefault(), e.stopPropagation(), setSlash(undefined))
+    }
     if (mention && options.length > 0) {
       if (e.key === "ArrowDown") return (e.preventDefault(), setActive((a) => (a + 1) % options.length))
       if (e.key === "ArrowUp") return (e.preventDefault(), setActive((a) => (a - 1 + options.length) % options.length))
@@ -356,6 +403,31 @@ export function Composer(props: ComposerProps): ReactNode {
 
   return (
     <div className={cn("relative w-full", phone && "flex items-end gap-2", props.className)}>
+      {slash !== undefined && skillOptions.length > 0 && (
+        <div className={cn("absolute bottom-full z-30 mb-2 animate-fade-in", phone ? "inset-x-0" : "w-[360px]")}>
+          <MenuPanel label="Use a skill" className="max-h-[360px] overflow-y-auto scrollbar-thin">
+            {skillOptions.map((skill, i) => (
+              <div key={skill.name} onPointerMove={() => setActive(i)} onMouseDown={(e) => e.preventDefault()}>
+                <MenuItem
+                  active={i === active}
+                  onSelect={() => pickSkill(skill)}
+                  icon={Sparkles}
+                  trailing={
+                    skill.argumentHint !== undefined
+                      ? skill.argumentHint
+                      : skill.description === ""
+                        ? undefined
+                        : clipText(skill.description, 36)
+                  }
+                  className="min-h-[30px] text-base"
+                >
+                  /{skill.name}
+                </MenuItem>
+              </div>
+            ))}
+          </MenuPanel>
+        </div>
+      )}
       {mention && options.length > 0 && (
         <div
           className={cn("absolute bottom-full z-30 mb-2 animate-fade-in", phone ? "inset-x-0" : "w-[360px]")}
@@ -446,34 +518,59 @@ export function Composer(props: ComposerProps): ReactNode {
               void onFiles(files)
             }}
           />
-          <textarea
-            ref={taRef}
-            rows={1}
-            value={text}
-            disabled={props.disabled}
-            readOnly={dictation.phase !== "idle" || draftBusyElsewhere}
-            aria-label={placeholder}
-            placeholder={placeholder}
-            enterKeyHint={phone ? "enter" : "send"}
-            onChange={(e) => update(e.target.value, e.target.selectionStart)}
-            onSelect={(e) => {
-              const t = e.currentTarget
-              if (mention && t.selectionStart !== t.selectionEnd) setMention(undefined)
-            }}
-            onKeyDown={onKeyDown}
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files]
-              if (files.length > 0) {
-                e.preventDefault()
-                void onFiles(files)
-              }
-            }}
-            onBlur={() => setTimeout(() => setMention(undefined), 120)}
-            className={cn(
-              "min-w-0 flex-1 resize-none bg-transparent text-lg leading-5 text-fg outline-none placeholder:text-fg-quaternary focus-visible:outline-none disabled:opacity-60",
-              phone ? "self-center py-2" : "py-1",
+          <div className={cn("relative min-w-0 flex-1", phone && "self-center")}>
+            {commandEnd > 0 && (
+              <div
+                ref={mirrorRef}
+                aria-hidden
+                data-testid="composer-command"
+                className={cn(
+                  "pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-lg leading-5 text-fg",
+                  phone ? "py-2" : "py-1",
+                )}
+              >
+                <span className="rounded-sm bg-accent-soft text-accent">{text.slice(0, commandEnd)}</span>
+                {text.slice(commandEnd)}
+              </div>
             )}
-          />
+            <textarea
+              ref={taRef}
+              rows={1}
+              value={text}
+              disabled={props.disabled}
+              readOnly={dictation.phase !== "idle" || draftBusyElsewhere}
+              aria-label={placeholder}
+              placeholder={placeholder}
+              enterKeyHint={phone ? "enter" : "send"}
+              onChange={(e) => update(e.target.value, e.target.selectionStart)}
+              onSelect={(e) => {
+                const t = e.currentTarget
+                if (mention && t.selectionStart !== t.selectionEnd) setMention(undefined)
+              }}
+              onKeyDown={onKeyDown}
+              onScroll={(e) => {
+                if (mirrorRef.current) mirrorRef.current.scrollTop = e.currentTarget.scrollTop
+              }}
+              onPaste={(e) => {
+                const files = [...e.clipboardData.files]
+                if (files.length > 0) {
+                  e.preventDefault()
+                  void onFiles(files)
+                }
+              }}
+              onBlur={() =>
+                setTimeout(() => {
+                  setMention(undefined)
+                  setSlash(undefined)
+                }, 120)
+              }
+              className={cn(
+                "relative block w-full min-w-0 resize-none bg-transparent text-lg leading-5 outline-none placeholder:text-fg-quaternary focus-visible:outline-none disabled:opacity-60",
+                commandEnd > 0 ? "text-transparent caret-fg" : "text-fg",
+                phone ? "py-2" : "py-1",
+              )}
+            />
+          </div>
           {props.context && <ContextRing {...props.context} />}
           {draftBusyElsewhere ? (
             <Spinner size={14} label="Finishing the transcript" />

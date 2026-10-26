@@ -36,6 +36,7 @@ import {
   retryTurnAtom,
   sendMessageAtom,
   interruptTurnAtom,
+  skillsAtom,
   voiceStatusAtom,
 } from "@openbot/client"
 import {
@@ -92,6 +93,7 @@ import { AddresseeChip, MessageBubble, PendingBubble } from "./Message.tsx"
 import { MessageSheet } from "./MessageSheet.tsx"
 import { StepsDisclosure } from "./Steps.tsx"
 import { useQuery } from "../details/kit.tsx"
+import { skillsOfBot } from "../details/skills.ts"
 import { useVoiceCall } from "../voice/CallBar.tsx"
 import { startCall } from "../voice/voiceCall.ts"
 
@@ -177,6 +179,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
   const members = botIds.map((id) => roster.botById(id)).filter((b): b is Bot => b !== undefined)
   const isGroup = (conversation?.kind ?? summary?.kind) === "group"
   const voiceCalls = useQuery(voiceStatusAtom)
+  const skillLibrary = useQuery(skillsAtom)
   const call = useVoiceCall()
   const primary = members[0]
   const title = isGroup
@@ -964,6 +967,7 @@ export function ChatView({ conversationId }: { readonly conversationId: Conversa
           mentionable={isGroup ? members : roster.bots.filter((b) => !botIds.includes(b.id) && !b.hidden)}
           members={isGroup ? members : []}
           allowEveryone={isGroup}
+          skills={!isGroup && primary !== undefined ? skillsOfBot(primary, skillLibrary.value ?? []) : undefined}
           working={activeTurns.length > 0}
           onStop={async () => {
             const exit = await interrupt({ conversationId })

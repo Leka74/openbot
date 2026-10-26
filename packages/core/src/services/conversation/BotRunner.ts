@@ -81,6 +81,7 @@ import type { AttachmentRecord, AttachmentStore } from "../../ports/stores.ts"
 import { routeBotMessage } from "./GroupRouter.ts"
 import type { ConversationStore } from "./internal/ConversationStore.ts"
 import { attachmentsLine, receiveFiles } from "./internal/inbox.ts"
+import { parseSkillCommand, renderSkillCommand } from "./skillCommand.ts"
 import { capUtf8, compact, messageWithAttachments, orDie, previewOf } from "./internal/util.ts"
 import {
   finalizeTurnEntries,
@@ -718,9 +719,21 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
           const name = yield* botName(delivery.fromBotId)
           return kind === "group" ? `[@${name}]: ${delivery.text}` : `[Direct message from @${name}]: ${delivery.text}`
         }
-        if (delivery.kind === "user-message" && kind === "group") return `[@${yield* ownerName}]: ${delivery.text}`
+        if (delivery.kind === "user-message") {
+          const text = yield* skillCommandText(delivery.text)
+          return kind === "group" ? `[@${yield* ownerName}]: ${text}` : text
+        }
         return delivery.text
       })
+
+    /** The owner's `/skill` command as an instruction (D5.5); any other text as it is. */
+    const skillCommandText = (text: string) =>
+      text.trimStart().startsWith("/")
+        ? Effect.map(orDie(deps.bots.get(botId)), (found) => {
+            const command = Option.isSome(found) ? parseSkillCommand(text, found.value.skills) : undefined
+            return command === undefined ? text : renderSkillCommand(command)
+          })
+        : Effect.succeed(text)
 
     const renderDeliveries = (deliveries: ReadonlyArray<Delivery>, kind: Conversation["kind"]) =>
       Effect.map(

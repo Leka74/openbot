@@ -67,7 +67,7 @@ keyboard, and hand it back.
 - **Search** every chat from ⌘K, jump to any old message, and find within a chat with ⌘F.
 - **Slack:** hand a thread to a bot from Slack, let bots read and search it, and send their drafts
   yourself.
-- **Skills:** a shared library you assign to bots, with imports from [skills.sh](https://skills.sh).
+- **Skills:** a shared library you assign to bots, with imports from [skills.sh](https://skills.sh). Type `/` in a chat to start one of the bot's skills.
 
 <br clear="right">
 
