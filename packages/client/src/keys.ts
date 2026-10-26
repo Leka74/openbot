@@ -27,6 +27,8 @@ export const Keys = {
   updates: "updates",
   /** Hark, iPhone notifications (D3.5). */
   hark: "hark",
+  /** ntfy, notifications on any phone (D3.6). */
+  ntfy: "ntfy",
 } as const
 export type ReactivityKey = (typeof Keys)[keyof typeof Keys]
 

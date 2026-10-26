@@ -41,6 +41,7 @@ import { Cause, Clock, Effect, Option, Stream } from "effect"
 import { userInfo } from "node:os"
 import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
 import { Hark } from "./hark.ts"
+import { Ntfy } from "./ntfy.ts"
 import { HarnessProfiles } from "./profiles.ts"
 import { SpeechToText } from "./stt/service.ts"
 import { VoiceCalls } from "./voice/service.ts"
@@ -164,6 +165,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
     const updates = yield* Updates
     const hark = yield* Hark
     const presence = yield* OwnerPresence
+    const ntfy = yield* Ntfy
     const ownerFallback = defaultOwnerName()
 
     return OpenBotRpcs.of({
@@ -364,6 +366,12 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
       "hark.setSends": ({ sends }) => edge("hark.setSends", hark.setSends(sends)),
       "hark.setQuietAtComputer": ({ quiet }) => edge("hark.setQuietAtComputer", hark.setQuietAtComputer(quiet)),
       "presence.active": () => edge("presence.active", presence.active),
+      // ---------------------------------------------------------------- ntfy (D3.6)
+      "ntfy.status": () => edge("ntfy.status", ntfy.status),
+      "ntfy.connect": (input) => edge("ntfy.connect", ntfy.connect(input)),
+      "ntfy.disconnect": () => edge("ntfy.disconnect", ntfy.disconnect),
+      "ntfy.test": () => edge("ntfy.test", ntfy.test),
+      "ntfy.setSends": ({ sends }) => edge("ntfy.setSends", ntfy.setSends(sends)),
 
       // ---------------------------------------------------------------- usage
       "usage.byBot": ({ sinceMs }) => edge("usage.byBot", usage.byBot({ sinceMs })),

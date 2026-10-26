@@ -65,6 +65,7 @@ import {
   type VoiceCallStatus,
   type UpdateStatus,
   type HarkStatus,
+  type NtfyStatus,
   type ToolKind,
   type Turn,
   type TurnFailure,
@@ -180,6 +181,8 @@ export class MockBrain {
   sttDiscards = 0
   /** Hark (D3.5): any `whk_` webhook connects the mock. */
   hark: HarkStatus = { connected: false, sends: "all" }
+  /** ntfy (D3.6): any valid topic connects the mock. */
+  ntfy: NtfyStatus = { connected: false, sends: "all" }
   readonly attachments = new Map<string, { readonly mime: string; readonly bytes: Uint8Array }>([
     [
       UI_GALLERY_IMAGE,
@@ -2134,6 +2137,35 @@ export class MockBrain {
         sync(() => {
           this.hark = { ...this.hark, sends }
           return this.hark
+        })(),
+      "ntfy.status": () => Effect.succeed(this.ntfy),
+      "ntfy.connect": ({ topic, server }) =>
+        sync(() => {
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(topic.trim()))
+            throw new InvalidInput({ message: "A topic is letters, digits, _ and -, up to 64 characters." })
+          this.ntfy = {
+            connected: true,
+            sends: this.ntfy.sends,
+            server: server ?? "https://ntfy.sh",
+            topic: topic.trim(),
+            lastSentAt: this.now(),
+          }
+          return this.ntfy
+        })(),
+      "ntfy.disconnect": () =>
+        sync(() => {
+          this.ntfy = { connected: false, sends: "all" }
+          return this.ntfy
+        })(),
+      "ntfy.test": () =>
+        sync(() => {
+          this.ntfy = { ...this.ntfy, lastSentAt: this.now() }
+          return this.ntfy
+        })(),
+      "ntfy.setSends": ({ sends }) =>
+        sync(() => {
+          this.ntfy = { ...this.ntfy, sends }
+          return this.ntfy
         })(),
       "slack.status": () => Effect.succeed(this.slack),
       "slack.connect": ({ userToken, appToken }) =>

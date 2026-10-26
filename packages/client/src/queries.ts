@@ -54,6 +54,9 @@ export const updatesStatusAtom = OpenBotClient.query("updates.status", undefined
 /** Hark (D3.5): whether the owner's iPhone gets OpenBot's notifications, and which. */
 export const harkStatusAtom = OpenBotClient.query("hark.status", undefined, { reactivityKeys: [Keys.hark] })
 
+/** ntfy (D3.6): whether the owner's phone gets OpenBot's notifications, and which. */
+export const ntfyStatusAtom = OpenBotClient.query("ntfy.status", undefined, { reactivityKeys: [Keys.ntfy] })
+
 /** Rendered instructions + memory for the details pane. */
 export const botContextAtom = Atom.family((botId: BotId) =>
   OpenBotClient.query("bots.readContext", { botId }, { reactivityKeys: [Keys.botContext] }),

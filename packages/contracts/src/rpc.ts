@@ -50,6 +50,7 @@ import { SttSession, SttStatus, SttTranscription } from "./stt.ts"
 import { UpdateStatus } from "./updates.ts"
 import { VoiceCallStatus, VoicePreview } from "./voice.ts"
 import { HarkSends, HarkStatus } from "./hark.ts"
+import { NtfySends, NtfyStatus } from "./ntfy.ts"
 import { SearchKind, SearchPage, SearchPositions, SearchSender, SearchSort } from "./search.ts"
 import {
   ConversationStreamItem,
@@ -715,6 +716,24 @@ export class OpenBotRpcs extends RpcGroup.make(
    * while they are active there): Hark holds its pushes back meanwhile.
    */
   Rpc.make("presence.active", { error: errors() }),
+
+  // ntfy: notifications on any phone with the ntfy app (D3.6)
+  Rpc.make("ntfy.status", { success: NtfyStatus, error: errors() }),
+  /** Checks the topic by sending a test notification, then keeps it on the brain. */
+  Rpc.make("ntfy.connect", {
+    payload: {
+      topic: Schema.String,
+      /** The ntfy server; absent: ntfy.sh. */
+      server: Schema.optionalKey(Schema.String),
+      /** An access token, for a server that needs a sign-in. */
+      token: Schema.optionalKey(Schema.String),
+    },
+    success: NtfyStatus,
+    error: errors(InvalidInput, Unavailable),
+  }),
+  Rpc.make("ntfy.disconnect", { success: NtfyStatus, error: errors() }),
+  Rpc.make("ntfy.test", { success: NtfyStatus, error: errors(InvalidInput, Unavailable) }),
+  Rpc.make("ntfy.setSends", { payload: { sends: NtfySends }, success: NtfyStatus, error: errors(InvalidInput) }),
 
   // usage
   Rpc.make("usage.byBot", {

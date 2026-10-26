@@ -22,6 +22,7 @@ import {
   useAppStatuses,
 } from "./apps.tsx"
 import { HarkApp } from "./HarkApp.tsx"
+import { NtfyApp } from "./NtfyApp.tsx"
 import { SlackApp } from "./SlackApp.tsx"
 
 export interface ConnectAppsDialogProps {
@@ -344,5 +345,7 @@ function AppPage({ id }: { readonly id: AppId }): ReactNode {
       return <SlackApp />
     case "hark":
       return <HarkApp />
+    case "ntfy":
+      return <NtfyApp />
   }
 }

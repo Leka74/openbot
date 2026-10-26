@@ -282,6 +282,15 @@ your phone. Install Hark on the iPhone, create a service called OpenBot in Hark'
 where a Bot needs you), grouped by Bot. Tapping one opens that chat, through the address you gave
 `--public-origin`.
 
+### ntfy: notifications on Android and iPhone
+
+[ntfy](https://ntfy.sh) brings OpenBot's notifications to any phone, Android or iPhone. Install the ntfy
+app, then under Connect apps › ntfy pick a topic (OpenBot suggests a long random one: on ntfy.sh anyone
+who knows a topic can read it), subscribe to it in the app and press Connect. OpenBot sends a test
+notification, then pushes every notification it makes (or only the ones where a Bot needs you, at high
+priority). Tapping one opens that chat, through the address you gave `--public-origin`. To use your own
+ntfy server, give its address (and an access token if it needs a sign-in) when you connect.
+
 ## Voice
 
 Settings › General has two switches. **Voice input** adds a mic button to the message box: you talk,

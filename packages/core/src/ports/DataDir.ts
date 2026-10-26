@@ -38,6 +38,8 @@ export interface DataDirShape {
   readonly voice: string
   /** `<root>/hark.json` (0600): the owner's Hark webhook (D3.5). */
   readonly hark: string
+  /** `<root>/ntfy.json` (0600): the owner's ntfy topic and access token (D3.6). */
+  readonly ntfy: string
 }
 
 /** Joins path segments with `/`, collapsing duplicate separators and dropping a trailing one. */
@@ -70,6 +72,7 @@ export const makeDataDir = (root: string): DataDirShape => {
     stt: joinPath(base, "stt"),
     voice: joinPath(base, "voice"),
     hark: joinPath(base, "hark.json"),
+    ntfy: joinPath(base, "ntfy.json"),
   }
 }
 

@@ -110,6 +110,7 @@ import { VoiceCallsLive } from "./voice/service.ts"
 import { UpdatesLive, type UpdatesOptions } from "./updates.ts"
 import { OwnerPresence } from "./presence.ts"
 import { HarkLive } from "./hark.ts"
+import { NtfyLive } from "./ntfy.ts"
 
 // ============================================================================ startup errors
 
@@ -471,6 +472,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     Layer.provideMerge(ApprovalServiceLive),
     Layer.provideMerge(SlackServiceLive), // Slack drafts (D3.4)
     Layer.provideMerge(HarkLive({ file: makeDataDir(config.dataDir).hark, baseUrl: config.harkUrl })), // iPhone notifications (D3.5)
+    Layer.provideMerge(NtfyLive({ file: makeDataDir(config.dataDir).ntfy })), // phone notifications (D3.6)
     Layer.provideMerge(MemoryServiceLive),
     Layer.provideMerge(level2),
     Layer.provideMerge(LiveHubLive),

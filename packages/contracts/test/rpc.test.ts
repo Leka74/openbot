@@ -132,6 +132,11 @@ const V1_RPCS = [
   "hark.setSends",
   "hark.setQuietAtComputer",
   "presence.active",
+  "ntfy.status",
+  "ntfy.connect",
+  "ntfy.disconnect",
+  "ntfy.test",
+  "ntfy.setSends",
   "usage.byBot",
 ] as const satisfies ReadonlyArray<OpenBotRpcTag>
 

@@ -1,14 +1,14 @@
 // The apps a Bot can be connected to (Connect apps, D3.4). Only apps that work are listed; each one
 // has a logo, a category, a one-line description and a status read from the brain. Adding an app:
 // its connector on the brain, an entry here, and its page in ConnectAppsDialog's `AppPage`.
-import { harkStatusAtom, slackStatusAtom } from "@openbot/client"
-import type { HarkStatus, SlackStatus } from "@openbot/contracts"
+import { harkStatusAtom, ntfyStatusAtom, slackStatusAtom } from "@openbot/client"
+import type { HarkStatus, NtfyStatus, SlackStatus } from "@openbot/contracts"
 import { cn } from "@openbot/ui"
-import { BellRing } from "lucide-react"
+import { Bell, BellRing } from "lucide-react"
 import { type ComponentType, type ReactNode, useEffect } from "react"
 import { useQuery } from "../details/kit.tsx"
 
-export type AppId = "slack" | "hark"
+export type AppId = "slack" | "hark" | "ntfy"
 
 export const CATEGORIES = ["Communication", "Notifications"] as const
 export type AppCategory = (typeof CATEGORIES)[number]
@@ -52,6 +52,11 @@ export function HarkLogo({ className }: { readonly className?: string }): ReactN
   return <BellRing className={className} color="#1d1d1f" strokeWidth={2.2} aria-hidden="true" />
 }
 
+/** ntfy has no published mark here: a bell. */
+export function NtfyLogo({ className }: { readonly className?: string }): ReactNode {
+  return <Bell className={className} color="#2f8f83" strokeWidth={2.2} aria-hidden="true" />
+}
+
 export const APPS: ReadonlyArray<ConnectApp> = [
   {
     id: "slack",
@@ -68,6 +73,14 @@ export const APPS: ReadonlyArray<ConnectApp> = [
     description: "Your Bots' notifications on your iPhone, through the Hark app.",
     keywords: ["iphone", "push", "notifications", "phone", "alerts"],
     Logo: HarkLogo,
+  },
+  {
+    id: "ntfy",
+    name: "ntfy",
+    category: "Notifications",
+    description: "Your Bots' notifications on any phone, Android or iPhone, through the ntfy app.",
+    keywords: ["android", "iphone", "push", "notifications", "phone", "alerts"],
+    Logo: NtfyLogo,
   },
 ]
 
@@ -151,31 +164,45 @@ const harkStatusOf = (status: HarkStatus | undefined, loading: boolean): AppStat
   }
 }
 
+const ntfyStatusOf = (status: NtfyStatus | undefined, loading: boolean): AppStatus => {
+  if (status === undefined || !status.connected) return { state: "off", loading }
+  return {
+    state: status.problem === undefined ? "connected" : "attention",
+    summary: status.problem ?? (status.sends === "all" ? "Every notification" : "When a Bot needs you"),
+    loading,
+  }
+}
+
 /** Every app's status; `poll` refreshes them every few seconds (while the Connect apps window is open). */
 export const useAppStatuses = (options?: {
   readonly poll?: boolean
 }): ReadonlyMap<AppId, AppStatus> & { readonly refresh: () => void } => {
   const slack = useQuery(slackStatusAtom)
   const hark = useQuery(harkStatusAtom)
+  const ntfy = useQuery(ntfyStatusAtom)
   const refreshSlack = slack.refresh
   const refreshHark = hark.refresh
+  const refreshNtfy = ntfy.refresh
   const poll = options?.poll === true
   useEffect(() => {
     if (!poll) return
     const t = setInterval(() => {
       refreshSlack()
       refreshHark()
+      refreshNtfy()
     }, 5_000)
     return () => clearInterval(t)
-  }, [poll, refreshSlack, refreshHark])
+  }, [poll, refreshSlack, refreshHark, refreshNtfy])
   const map = new Map<AppId, AppStatus>([
     ["slack", slackStatusOf(slack.value, slack.loading)],
     ["hark", harkStatusOf(hark.value, hark.loading)],
+    ["ntfy", ntfyStatusOf(ntfy.value, ntfy.loading)],
   ])
   return Object.assign(map, {
     refresh: () => {
       refreshSlack()
       refreshHark()
+      refreshNtfy()
     },
   })
 }
