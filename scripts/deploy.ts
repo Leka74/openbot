@@ -16,7 +16,8 @@
  *    saved, and the new brain resumes it. `--now` skips the wait (SIGTERM: saved and resumed too).
  *    A brain from before drains existed loses queued work when it stops: it is waited on until no turn
  *    or task has been queued or running for a minute, then stopped.
- * 3. Backs up the database (`<data>/backups/pre-deploy-<release>.sqlite`, the newest 5 are kept).
+ * 3. Backs up the database (`<data>/backups/pre-deploy-<release>.sqlite`, with the time added when that
+ *    release was started before; the newest 5 are kept).
  * 4. Starts the new release with the running brain's arguments (or the ones after `--`, or the last
  *    deploy's) and waits for "OpenBot started". If it does not start, the previous release is started
  *    again.
@@ -178,10 +179,13 @@ const run = (cmd: ReadonlyArray<string>, cwd = repo) => {
   return { ok: proc.exitCode === 0, out: `${proc.stdout.toString()}${proc.stderr.toString()}`.trim() }
 }
 
+/** `20261028-132249` (UTC). */
+const timeStamp = () => new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)
+
 const releaseId = () => {
   const given = option("--release-id")
   if (given !== undefined) return given
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)
+  const stamp = timeStamp()
   const sha = run(["git", "rev-parse", "--short", "HEAD"]).out
   const dirty = run(["git", "status", "--porcelain"]).out !== ""
   return `${stamp}-${sha || "nogit"}${dirty ? "-dirty" : ""}`
@@ -328,13 +332,18 @@ const startBrain = async (cwd: string, args: ReadonlyArray<string>): Promise<boo
   return false
 }
 
-/** `<data>/backups/pre-deploy-<id>.sqlite`, taken while no brain runs; the newest few are kept. */
+/**
+ * `<data>/backups/pre-deploy-<id>.sqlite`, taken while no brain runs (`-<time>` added when a release is
+ * started again: `--use`); the newest few are kept.
+ */
 const backupDatabase = (release: string) => {
   const database = join(dataDir, "openbot.sqlite")
   if (!existsSync(database)) return
   const dir = join(dataDir, "backups")
   mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const target = join(dir, `pre-deploy-${release.split("/").at(-1)}.sqlite`)
+  const name = `pre-deploy-${release.split("/").at(-1)}`
+  const first = join(dir, `${name}.sqlite`)
+  const target = existsSync(first) ? join(dir, `${name}-${timeStamp()}.sqlite`) : first
   const db = new Database(database)
   try {
     db.run(`VACUUM INTO '${target.replaceAll("'", "''")}'`)
@@ -343,8 +352,10 @@ const backupDatabase = (release: string) => {
   }
   const old = readdirSync(dir)
     .filter((name) => name.startsWith("pre-deploy-") && name.endsWith(".sqlite"))
-    .sort()
+    .map((name) => ({ name, at: statSync(join(dir, name)).mtimeMs }))
+    .sort((a, b) => a.at - b.at)
     .slice(0, -KEEP_BACKUPS)
+    .map((b) => b.name)
   for (const name of old) rmSync(join(dir, name), { force: true })
   say(`database backed up to ${target}`)
 }

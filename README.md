@@ -159,7 +159,8 @@ The brain doesn't have to live on the computer you work on. To keep it on an alw
 server, an LXC container, a VPS) and deploy to it from your own:
 
 1. On the server: install Bun and the agents, and sign them in there (`claude auth login`, `codex login
---device-auth`, and `gh auth login` if your bots use GitHub). Install
+--device-auth`, and `gh auth login` if your bots use GitHub). For bot desktops, run `bun run
+setup-desktop` in a copy of the repo there. Install
    [`scripts/openbot.service`](scripts/openbot.service) as a user service (its header has the
    steps). It starts OpenBot at boot and again after a crash.
 2. On your computer, point deploys at the server: `{ "host": "<ssh host>" }` in
@@ -201,7 +202,10 @@ screenshots and drive it with the mouse and keyboard. You watch it in the web ap
 control whenever you want. When a bot needs you, for example to sign in somewhere, it hands the
 screen over to you.
 
-Install the required programs, plus the optional ones for a complete desktop:
+On the machine that runs OpenBot, `bun run setup-desktop` installs what they need (with apt or
+pacman, through sudo). Computers you pair later get them from their installer. To install them by
+hand, the required programs plus the optional ones for a complete desktop (the dock, terminal, files
+and editor):
 
 |          | Arch                                                      | Debian / Ubuntu                                               |
 | -------- | --------------------------------------------------------- | ------------------------------------------------------------- |
@@ -229,8 +233,9 @@ another laptop:
    ```
 
    It downloads the node from your OpenBot (built from the same source, so they always match), puts
-   it in `~/.local/bin`, pairs it with the one-time code, and keeps it running as a user service
-   (systemd on Linux, launchd on macOS).
+   it in `~/.local/bin`, pairs it with the one-time code, installs the programs for bot desktops on
+   Linux (it may ask for your sudo password; `OPENBOT_DESKTOP=0` skips them), and keeps it running as
+   a user service (systemd on Linux, launchd on macOS).
 
 To update the node later, run the same command without the code: it replaces the program and
 restarts it, and the pairing stays.

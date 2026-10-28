@@ -29,8 +29,8 @@ export function DesktopSetupNote({
         {hints.length === 0
           ? "Full desktops need Linux (Xvfb, x11vnc)."
           : local
-            ? "Install these, then restart OpenBot."
-            : "Install these there, then restart its OpenBot node."}
+            ? "Run bun run setup-desktop where OpenBot runs, or install these, then restart OpenBot."
+            : "Run its installer again, or install these there, then restart its OpenBot node."}
       </p>
       {hints.map((h) => (
         <div key={h.label} className="flex min-w-0 flex-col gap-1">

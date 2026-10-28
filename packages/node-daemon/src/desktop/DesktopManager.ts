@@ -272,12 +272,15 @@ export const makeDesktopManager = (config: NodeConfigShape, options?: DesktopMan
     const timeouts: DesktopTimeouts = { ...DEFAULT_DESKTOP_TIMEOUTS, ...options?.timeouts }
     const dc = config.desktop
     const searchPath = [...dc.path, process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"].join(":")
-    const detected =
-      options?.detected ??
-      (dc.enabled
-        ? detectDesktopPrograms((name) => Bun.which(name, { PATH: searchPath }) ?? undefined)
-        : { programs: { windowManagers: [] }, missing: [] })
-    const programs = detected.programs
+    const detect = () => detectDesktopPrograms((name) => Bun.which(name, { PATH: searchPath }) ?? undefined)
+    const detected = options?.detected ?? (dc.enabled ? detect() : { programs: { windowManagers: [] }, missing: [] })
+    let programs = detected.programs
+    // programs installed since the node started (the dock, a terminal…) are used by the next new desktop
+    const refreshPrograms = () => {
+      if (options?.detected !== undefined || !dc.enabled) return
+      const fresh = detect()
+      if (fresh.missing.length === 0) programs = fresh.programs
+    }
     const offered = dc.enabled && detected.missing.length === 0
     const support: DesktopSupport = {
       missing: dc.enabled ? [...detected.missing] : [],
@@ -610,6 +613,7 @@ export const makeDesktopManager = (config: NodeConfigShape, options?: DesktopMan
         marker,
       }
       return Effect.gen(function* () {
+        refreshPrograms()
         const { display, layout, xvfb } = yield* startX(botId, partial, marker)
         const cwd = workspaceFor(config, sys, botId)
         // a private session bus: apps must never reach the owner's (an already-running terminal or

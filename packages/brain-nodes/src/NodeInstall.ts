@@ -6,8 +6,9 @@
  *   GET /node/download/:target      `openbot-node` for linux-x64 | linux-arm64 | darwin-x64 | darwin-arm64
  *
  * The pairing dialog shows `curl -fsSL <origin>/node/install.sh | sh -s -- <code>`: the script picks the
- * binary for the machine, puts it in `~/.local/bin`, pairs with the code, and keeps `openbot-node run`
- * going as a user service (systemd on Linux, launchd on macOS; else in the background).
+ * binary for the machine, puts it in `~/.local/bin`, pairs with the code, installs the programs bot
+ * desktops use on Linux (`desktopSetupSh`), and keeps `openbot-node run` going as a user service
+ * (systemd on Linux, launchd on macOS; else in the background).
  *
  * Binaries are compiled from this brain's own source (`bun build --compile`, cross-compiled per
  * target) on first request after each start, so a node always speaks the brain's protocol. They are
@@ -33,9 +34,53 @@ export const installCommand = (origin: string, code: string): string =>
 const shQuote = (s: string) => `'${s.replaceAll("'", `'"'"'`)}'`
 
 /**
+ * `setup_desktop`, a POSIX sh function: on Linux, installs what bot desktops use (packages/node-daemon
+ * desktop/programs.ts: Xvfb, x11vnc, xdotool, xfwm4, ImageMagick, and the dock, D-Bus, terminal, file
+ * manager, editor and xsetroot) with apt-get or pacman, when any is missing. As root directly, else
+ * through sudo when it can ask (a terminal) or needn't; otherwise, or with another package manager, it
+ * prints the command. Never fatal; `OPENBOT_DESKTOP=0` skips it. Package managers read /dev/null, not
+ * stdin: under `curl … | sh` stdin is the rest of the script.
+ */
+export const desktopSetupSh = `setup_desktop() {
+  [ "$(uname -s)" = Linux ] || return 0
+  [ "\${OPENBOT_DESKTOP:-1}" = 0 ] && return 0
+  missing=""
+  for p in Xvfb x11vnc xdotool xfwm4 import plank dbus-daemon xfce4-terminal thunar mousepad xsetroot; do
+    command -v "$p" >/dev/null 2>&1 || missing="$missing $p"
+  done
+  [ -n "$missing" ] || return 0
+  if command -v apt-get >/dev/null 2>&1; then
+    update="apt-get update -qq"
+    install="apt-get install -y -qq --no-install-recommends xvfb x11vnc xdotool xfwm4 imagemagick plank dbus xfce4-terminal thunar mousepad x11-xserver-utils"
+  elif command -v pacman >/dev/null 2>&1; then
+    update=""
+    install="pacman -S --needed --noconfirm xorg-server-xvfb x11vnc xdotool xfwm4 imagemagick plank dbus xfce4-terminal thunar mousepad xorg-xsetroot"
+  else
+    echo "For bot desktops, install these with your package manager:$missing"
+    return 0
+  fi
+  if [ "$(id -u)" = 0 ]; then
+    as=""
+  elif command -v sudo >/dev/null 2>&1 && { sudo -n true </dev/null 2>/dev/null || (: </dev/tty) 2>/dev/null; }; then
+    as="sudo"
+  else
+    echo "For bot desktops, run: sudo $install"
+    return 0
+  fi
+  echo "Installing the programs bot desktops use (missing:$missing)..."
+  if [ -n "$as" ] && ! sudo -n true </dev/null 2>/dev/null; then echo "sudo asks for your password to install them."; fi
+  if { [ -z "$update" ] || $as $update </dev/null; } && $as $install </dev/null; then
+    echo "Installed the programs for bot desktops."
+  else
+    echo "Could not install them. For bot desktops, run: sudo $install"
+  fi
+}`
+
+/**
  * The installer for `origin`. Arguments: the pairing code (optional: without it the binary is only
  * installed or updated). `OPENBOT_NODE_BIN_DIR` changes where it goes; `OPENBOT_NODE_SERVICE=0` skips
- * the service (pair, then run `openbot-node run` yourself).
+ * the service (pair, then run `openbot-node run` yourself); `OPENBOT_DESKTOP=0` leaves out the desktop
+ * programs.
  */
 export const installScript = (origin: string): string => `#!/bin/sh
 # OpenBot node installer, from your OpenBot at ${origin}
@@ -81,6 +126,10 @@ echo "Installed $BIN"
 if [ -n "$CODE" ]; then
   "$BIN" pair "$ORIGIN" "$CODE" --force
 fi
+
+# the node finds them when it starts, below
+${desktopSetupSh}
+setup_desktop
 
 if [ "\${OPENBOT_NODE_SERVICE:-1}" = 0 ]; then
   echo "Start it with: $BIN run"
