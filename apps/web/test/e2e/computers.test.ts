@@ -190,16 +190,24 @@ describe.skipIf(!hasChromium)("e2e: computers", () => {
     expect(command).toBe(`curl -fsSL ${brain.base}/node/install.sh | sh -s -- ${code}`)
     await app.shot("e2e-44-pairing-code")
 
-    // the one-liner, as the owner would paste it on the other computer (no service: the test runs it)
+    // the one-liner, as the owner would paste it on the other computer (no service: the test runs it;
+    // no desktop programs: with apt and sudo that needs no password, as on CI, it would install them).
+    // Not spawnSync: a blocked event loop misses the RPC socket's pings and it closes on a ping timeout.
     const env = childEnv({
       HOME: nodeHome,
       XDG_DATA_HOME: join(nodeHome, "data"),
       OPENBOT_NODE_BIN_DIR: join(nodeHome, "bin"),
       OPENBOT_NODE_SERVICE: "0",
+      OPENBOT_DESKTOP: "0",
     })
-    const install = Bun.spawnSync(["sh", "-c", command], { env, stdout: "pipe", stderr: "pipe" })
-    expect(install.exitCode, `${install.stdout.toString()}\n${install.stderr.toString()}`).toBe(0)
-    expect(install.stdout.toString()).toContain("Paired")
+    const install = Bun.spawn(["sh", "-c", command], { env, stdout: "pipe", stderr: "pipe" })
+    const [exitCode, stdout, stderr] = await Promise.all([
+      install.exited,
+      new Response(install.stdout).text(),
+      new Response(install.stderr).text(),
+    ])
+    expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+    expect(stdout).toContain("Paired")
     const installed = join(nodeHome, "bin", "openbot-node")
     daemon = Bun.spawn([installed, "run", "--root", nodeRoot, "--no-browser"], { env, stdout: "pipe", stderr: "pipe" })
     void (async () => {
