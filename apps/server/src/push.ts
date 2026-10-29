@@ -2,9 +2,13 @@
  * What the phone-push apps (Hark D3.5, ntfy D3.6) share: the saved file (0600), following the roster's
  * notifications, which ones go out (`sends`, `quietAtComputer`), and the status (problem, lastSentAt).
  * Each app gives only its target (what it publishes to), how a notification reads there and the request.
+ *
+ * Each owner profile connects its own target in its own file. The roster carries only the active
+ * profile's notifications (the others are held for their "While you were away" list), so they go to
+ * the active profile's target.
  */
-import { InvalidInput, type Notification, Unavailable } from "@openbot/contracts"
-import { LiveHub } from "@openbot/core"
+import { InvalidInput, type Notification, type OwnerProfileId, Unavailable } from "@openbot/contracts"
+import { BotRepo, type CurrentProfile, currentProfileId, LiveHub, OwnerProfiles } from "@openbot/core"
 import { Clock, Effect, Option, Result, Schema, Stream } from "effect"
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
@@ -22,20 +26,22 @@ export interface PushStatus {
   readonly lastSentAt?: number
 }
 
+/** The current profile's connection. */
 export interface PushService<Status, Input> {
-  readonly status: Effect.Effect<Status>
+  readonly status: Effect.Effect<Status, never, CurrentProfile>
   /** Sends a test notification and keeps the target when the app takes it. */
-  readonly connect: (input: Input) => Effect.Effect<Status, InvalidInput | Unavailable>
-  readonly disconnect: Effect.Effect<Status, Unavailable>
-  readonly test: Effect.Effect<Status, InvalidInput | Unavailable>
-  readonly setSends: (sends: PushSends) => Effect.Effect<Status, InvalidInput | Unavailable>
-  readonly setQuietAtComputer: (quiet: boolean) => Effect.Effect<Status, Unavailable>
+  readonly connect: (input: Input) => Effect.Effect<Status, InvalidInput | Unavailable, CurrentProfile>
+  readonly disconnect: Effect.Effect<Status, Unavailable, CurrentProfile>
+  readonly test: Effect.Effect<Status, InvalidInput | Unavailable, CurrentProfile>
+  readonly setSends: (sends: PushSends) => Effect.Effect<Status, InvalidInput | Unavailable, CurrentProfile>
+  readonly setQuietAtComputer: (quiet: boolean) => Effect.Effect<Status, Unavailable, CurrentProfile>
 }
 
 export interface PushApp<Target, Status extends PushStatus> {
   /** In messages and logs: "Hark", "ntfy". */
   readonly name: string
-  readonly file: string
+  /** Where a profile's target is kept. */
+  readonly file: (profileId: OwnerProfileId) => string
   /** What the owner connected with, in messages: "webhook", "topic". */
   readonly what: string
   /** The target's fields in the saved file, beside the shared ones. */
@@ -64,6 +70,14 @@ const Shared = Schema.Struct({
 
 type Saved<Target> = typeof Shared.Type & { readonly target: Target }
 
+/** One profile's connection. */
+interface Connection<Target> {
+  readonly file: string
+  saved: Saved<Target> | undefined
+  problem: string | undefined
+  lastSentAt: number | undefined
+}
+
 /** A Bot waiting for the owner, something failing, or a browser asking to sign in. */
 export const needsYou = (n: Notification) => n.kind === "waiting" || n.kind === "error" || n.kind === "sign-in"
 
@@ -85,6 +99,8 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
   Effect.gen(function* () {
     const config = yield* ServerConfig
     const hub = yield* LiveHub
+    const profiles = yield* OwnerProfiles
+    const bots = yield* BotRepo
     const presence = yield* Effect.serviceOption(OwnerPresence)
     const atComputer = () => Option.isSome(presence) && presence.value.atComputer()
     const fetchImpl = app.fetch ?? fetch
@@ -93,18 +109,29 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
     const decodeShared = Schema.decodeUnknownOption(Schema.fromJsonString(Shared))
     const decodeTarget = Schema.decodeUnknownOption(Schema.fromJsonString(app.target))
 
-    const read = yield* Effect.try(() => readFileSync(app.file, "utf8")).pipe(Effect.option)
-    let saved: Saved<Target> | undefined = Option.getOrUndefined(
-      Option.flatMap(read, (text) =>
-        Option.all({ shared: decodeShared(text), target: decodeTarget(text) }).pipe(
-          Option.map(({ shared, target }) => ({ ...shared, target })),
-        ),
-      ),
-    )
-    let problem: string | undefined
-    let lastSentAt: number | undefined
+    const connections = new Map<OwnerProfileId, Connection<Target>>()
 
-    const status = (): Status => {
+    /** The profile's connection, read from its file the first time. */
+    const connectionOf = (profileId: OwnerProfileId): Connection<Target> => {
+      const known = connections.get(profileId)
+      if (known !== undefined) return known
+      const file = app.file(profileId)
+      const read = Result.try(() => readFileSync(file, "utf8"))
+      const saved = Result.isSuccess(read)
+        ? Option.getOrUndefined(
+            Option.all({ shared: decodeShared(read.success), target: decodeTarget(read.success) }).pipe(
+              Option.map(({ shared, target }) => ({ ...shared, target })),
+            ),
+          )
+        : undefined
+      const connection: Connection<Target> = { file, saved, problem: undefined, lastSentAt: undefined }
+      connections.set(profileId, connection)
+      return connection
+    }
+    const current = Effect.map(currentProfileId, connectionOf)
+
+    const status = (connection: Connection<Target>): Status => {
+      const { saved, problem, lastSentAt } = connection
       if (saved === undefined) return app.disconnected
       const quiet = saved.quietAtComputer !== false
       return app.show(
@@ -120,16 +147,16 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
       )
     }
 
-    const save = (next: Saved<Target>, message: string) =>
+    const save = (connection: Connection<Target>, next: Saved<Target>, message: string) =>
       Effect.try({
         try: () => {
           const { target, ...shared } = next
-          mkdirSync(dirname(app.file), { recursive: true })
-          const tmp = `${app.file}.tmp`
+          mkdirSync(dirname(connection.file), { recursive: true })
+          const tmp = `${connection.file}.tmp`
           writeFileSync(tmp, JSON.stringify({ ...shared, ...target }, null, 2), { mode: 0o600 })
           chmodSync(tmp, 0o600)
-          renameSync(tmp, app.file)
-          saved = next
+          renameSync(tmp, connection.file)
+          connection.saved = next
         },
         catch: () => new Unavailable({ message }),
       })
@@ -158,14 +185,14 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
       )
 
     /** Posts for the saved target and keeps the outcome as the status (unless it was disconnected meanwhile). */
-    const send = (current: Saved<Target>, body: Record<string, unknown>, key: string) =>
+    const send = (connection: Connection<Target>, saved: Saved<Target>, body: Record<string, unknown>, key: string) =>
       Effect.gen(function* () {
-        const sent = yield* Effect.result(post(current.target, body, key))
-        if (saved !== current) return sent
+        const sent = yield* Effect.result(post(saved.target, body, key))
+        if (connection.saved !== saved) return sent
         if (Result.isSuccess(sent)) {
-          problem = undefined
-          lastSentAt = yield* Clock.currentTimeMillis
-        } else problem = sent.failure.message
+          connection.problem = undefined
+          connection.lastSentAt = yield* Clock.currentTimeMillis
+        } else connection.problem = sent.failure.message
         return sent
       })
 
@@ -174,13 +201,29 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
       return conversationId === undefined ? `${origin}/` : `${origin}/#/c/${conversationId}`
     }
 
+    /**
+     * A Bot's notification goes to its own profile's phone, even when the owner switched profiles since
+     * it was sent; one without a Bot is the brain's and goes to the active profile's. None → the
+     * Bot is gone.
+     */
+    const profileOf = (n: Notification) =>
+      n.botId === undefined
+        ? Effect.map(profiles.active, Option.some)
+        : Effect.map(
+            Effect.orDie(bots.get(n.botId)),
+            Option.map((bot) => bot.ownerProfileId),
+          )
+
     const forward = (n: Notification) =>
       Effect.gen(function* () {
-        const current = saved
-        if (current === undefined || (current.sends === "needs-you" && !needsYou(n))) return
+        const profileId = yield* profileOf(n)
+        if (Option.isNone(profileId)) return
+        const connection = connectionOf(profileId.value)
+        const saved = connection.saved
+        if (saved === undefined || (saved.sends === "needs-you" && !needsYou(n))) return
         // the owner is at a computer whose desktop app shows it already
-        if (current.quietAtComputer !== false && atComputer()) return
-        const sent = yield* send(current, yield* app.body(n, linkTo(n.conversationId)), n.id)
+        if (saved.quietAtComputer !== false && atComputer()) return
+        const sent = yield* send(connection, saved, yield* app.body(n, linkTo(n.conversationId)), n.id)
         if (Result.isFailure(sent)) {
           yield* Effect.logWarning(`${app.name}: notification not pushed: ${sent.failure.message}`)
         }
@@ -204,48 +247,54 @@ export const makePush = <Target, Status extends PushStatus>(app: PushApp<Target,
     const notConnected = () => new InvalidInput({ message: `${app.name} isn't connected.` })
 
     const service: PushService<Status, Target> = {
-      status: Effect.sync(status),
+      status: Effect.map(current, status),
       connect: (target) =>
         Effect.gen(function* () {
+          const connection = yield* current
           yield* post(target, app.testBody(linkTo(undefined)), yield* testKey)
           yield* save(
-            { version: 1, target, sends: saved?.sends ?? "all" },
+            connection,
+            { version: 1, target, sends: connection.saved?.sends ?? "all" },
             `Couldn't save the ${app.what} on the brain.`,
           )
-          problem = undefined
-          lastSentAt = yield* Clock.currentTimeMillis
-          return status()
+          connection.problem = undefined
+          connection.lastSentAt = yield* Clock.currentTimeMillis
+          return status(connection)
         }),
       disconnect: Effect.gen(function* () {
+        const connection = yield* current
         yield* Effect.try({
-          try: () => rmSync(app.file, { force: true }),
+          try: () => rmSync(connection.file, { force: true }),
           catch: () => new Unavailable({ message: `Couldn't forget the ${app.what} on the brain.` }),
         })
-        saved = undefined
-        problem = undefined
-        lastSentAt = undefined
-        return status()
+        connection.saved = undefined
+        connection.problem = undefined
+        connection.lastSentAt = undefined
+        return status(connection)
       }),
       test: Effect.gen(function* () {
-        const current = saved
-        if (current === undefined) return yield* notConnected()
-        const sent = yield* send(current, app.testBody(linkTo(undefined)), yield* testKey)
+        const connection = yield* current
+        const saved = connection.saved
+        if (saved === undefined) return yield* notConnected()
+        const sent = yield* send(connection, saved, app.testBody(linkTo(undefined)), yield* testKey)
         if (Result.isFailure(sent)) return yield* new Unavailable({ message: sent.failure.message })
-        return status()
+        return status(connection)
       }),
       setSends: (sends) =>
         Effect.gen(function* () {
-          const current = saved
-          if (current === undefined) return yield* notConnected()
-          yield* save({ ...current, sends }, "Couldn't save the setting on the brain.")
-          return status()
+          const connection = yield* current
+          const saved = connection.saved
+          if (saved === undefined) return yield* notConnected()
+          yield* save(connection, { ...saved, sends }, "Couldn't save the setting on the brain.")
+          return status(connection)
         }),
       setQuietAtComputer: (quiet) =>
         Effect.gen(function* () {
-          const current = saved
-          if (current === undefined) return status()
-          yield* save({ ...current, quietAtComputer: quiet }, "Couldn't save the setting on the brain.")
-          return status()
+          const connection = yield* current
+          const saved = connection.saved
+          if (saved === undefined) return status(connection)
+          yield* save(connection, { ...saved, quietAtComputer: quiet }, "Couldn't save the setting on the brain.")
+          return status(connection)
         }),
     }
     return service

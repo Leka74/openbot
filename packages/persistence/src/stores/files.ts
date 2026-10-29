@@ -148,6 +148,18 @@ export const removePath = (op: string, path: string): Effect.Effect<boolean, Rep
     return true
   })
 
+/** Renames `from` to `to`; false when `from` does not exist. */
+export const movePath = (op: string, from: string, to: string): Effect.Effect<boolean, RepoError> =>
+  attempt(op, `Cannot move ${from}`, async () => {
+    try {
+      await rename(from, to)
+    } catch (error) {
+      if (isMissing(error)) return false
+      throw error
+    }
+    return true
+  })
+
 export const ensureDirectory = (op: string, path: string): Effect.Effect<void, RepoError> =>
   attempt(op, `Cannot create ${path}`, async () => {
     await mkdir(path, { recursive: true })

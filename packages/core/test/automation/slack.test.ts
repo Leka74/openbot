@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { EntryId, RoutineSpec, TranscriptEntry } from "@openbot/contracts"
+import { type EntryId, MAIN_PROFILE_ID, type RoutineSpec, type TranscriptEntry } from "@openbot/contracts"
 import { Effect, Exit, Layer } from "effect"
 import { AttachmentStore, EntryRepo, RoutineScheduler, SlackService, userActor } from "../../src/ports/index.ts"
 import {
@@ -24,16 +24,23 @@ import {
 import { BOT_A, baseLayer, DM_A, eventually, seed } from "./helpers.ts"
 
 const dm = {
+  profileId: MAIN_PROFILE_ID,
   conversation: SLACK_ALICE_DM,
   message: slackMessage({ channelId: SLACK_ALICE_DM.id, text: "Can you send me the deck?" }),
   mentionsOwner: false,
 }
 const mention = {
+  profileId: MAIN_PROFILE_ID,
   conversation: SLACK_GENERAL,
   message: slackMessage({ text: "@Owner the deploy failed" }),
   mentionsOwner: true,
 }
-const chatter = { conversation: SLACK_GENERAL, message: slackMessage({ text: "Lunch anyone?" }), mentionsOwner: false }
+const chatter = {
+  profileId: MAIN_PROFILE_ID,
+  conversation: SLACK_GENERAL,
+  message: slackMessage({ text: "Lunch anyone?" }),
+  mentionsOwner: false,
+}
 
 describe("Slack triggers", () => {
   test("match DMs, mentions, phrases and channels", () => {

@@ -1,8 +1,30 @@
 /**
  * `DataDir` port (architecture §3.5): every on-disk location the brain uses, derived from one root.
  * Pure string joins (POSIX separators); core never imports `node:path`.
+ *
+ * What belongs to an owner profile (skills, attachments, Slack, Hark, ntfy) is under `profile(id)`:
+ * the main profile keeps the paths it had before profiles, the others live in `<root>/profiles/<id>`.
+ * Bot dirs stay at `bots/<id>` (a Bot belongs to one profile for good); computers, harness logins and
+ * the brain's own files are shared.
  */
+import { MAIN_PROFILE_ID, type OwnerProfileId } from "@openbot/contracts"
 import { Context, Layer } from "effect"
+
+/** The files of one owner profile. */
+export interface ProfilePaths {
+  /** `<root>` for the main profile, `<root>/profiles/<id>` for the others. */
+  readonly root: string
+  /** `skills-lib` (Claude plugin layout). */
+  readonly skillsLib: string
+  /** `attachments` (files at `attachments/<id>`). */
+  readonly attachments: string
+  /** `slack.json` (0600): the owner's Slack tokens (D3.4). */
+  readonly slack: string
+  /** `hark.json` (0600): the owner's Hark webhook (D3.5). */
+  readonly hark: string
+  /** `ntfy.json` (0600): the owner's ntfy topic and access token (D3.6). */
+  readonly ntfy: string
+}
 
 export interface DataDirShape {
   /** Absolute data root, e.g. `~/.local/share/openbot`. */
@@ -15,14 +37,10 @@ export interface DataDirShape {
   readonly memoryDir: (botId: string) => string
   /** `<root>/bots/<id>/workspace` (cwd for native-local placements). */
   readonly workspaceDir: (botId: string) => string
-  /** `<root>/skills-lib` (Claude plugin layout). */
-  readonly skillsLib: string
   /** `<root>/codex-home` (OpenBot `CODEX_HOME`). */
   readonly codexHome: string
   /** `<root>/opencode-config` (OpenBot `OPENCODE_CONFIG_DIR`). */
   readonly opencodeConfig: string
-  /** `<root>/attachments` (files at `<root>/attachments/<id>`). */
-  readonly attachments: string
   /** `<root>/local-node` (local node data: browser profile, audit log). */
   readonly localNode: string
   /** `<root>/logs` */
@@ -31,15 +49,12 @@ export interface DataDirShape {
   readonly carryover: string
   /** `<root>/brain-identity.json` (0600): the brain's Ed25519 keypair that nodes pin (brain-nodes). */
   readonly brainIdentity: string
-  /** `<root>/slack.json` (0600): the owner's Slack tokens (D3.4). */
-  readonly slack: string
   readonly stt: string
   /** Voice calls (experiment): llama.cpp, the voice model, Kokoro. */
   readonly voice: string
-  /** `<root>/hark.json` (0600): the owner's Hark webhook (D3.5). */
-  readonly hark: string
-  /** `<root>/ntfy.json` (0600): the owner's ntfy topic and access token (D3.6). */
-  readonly ntfy: string
+  /** `<root>/profiles` */
+  readonly profiles: string
+  readonly profile: (id: OwnerProfileId) => ProfilePaths
 }
 
 /** Joins path segments with `/`, collapsing duplicate separators and dropping a trailing one. */
@@ -51,28 +66,40 @@ export const joinPath = (...segments: ReadonlyArray<string>): string => {
   return joined.length > 1 && joined.endsWith("/") ? joined.slice(0, -1) : joined
 }
 
+/** A profile id as one path segment (ids are brain-allocated; anything else cannot leave the folder). */
+const profileSegment = (id: OwnerProfileId): string => id.replace(/[^A-Za-z0-9_-]/g, "_")
+
 export const makeDataDir = (root: string): DataDirShape => {
   const base = joinPath(root)
   const botDir = (botId: string) => joinPath(base, "bots", botId)
+  const profiles = joinPath(base, "profiles")
+  const profile = (id: OwnerProfileId): ProfilePaths => {
+    const dir = id === MAIN_PROFILE_ID ? base : joinPath(profiles, profileSegment(id))
+    return {
+      root: dir,
+      skillsLib: joinPath(dir, "skills-lib"),
+      attachments: joinPath(dir, "attachments"),
+      slack: joinPath(dir, "slack.json"),
+      hark: joinPath(dir, "hark.json"),
+      ntfy: joinPath(dir, "ntfy.json"),
+    }
+  }
   return {
     root: base,
     database: joinPath(base, "openbot.sqlite"),
     botDir,
     memoryDir: (botId) => joinPath(botDir(botId), "memory"),
     workspaceDir: (botId) => joinPath(botDir(botId), "workspace"),
-    skillsLib: joinPath(base, "skills-lib"),
     codexHome: joinPath(base, "codex-home"),
     opencodeConfig: joinPath(base, "opencode-config"),
-    attachments: joinPath(base, "attachments"),
     localNode: joinPath(base, "local-node"),
     logs: joinPath(base, "logs"),
     carryover: joinPath(base, "carryover.json"),
     brainIdentity: joinPath(base, "brain-identity.json"),
-    slack: joinPath(base, "slack.json"),
     stt: joinPath(base, "stt"),
     voice: joinPath(base, "voice"),
-    hark: joinPath(base, "hark.json"),
-    ntfy: joinPath(base, "ntfy.json"),
+    profiles,
+    profile,
   }
 }
 

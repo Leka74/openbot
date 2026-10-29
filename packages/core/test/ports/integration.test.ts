@@ -3,7 +3,7 @@
  * key/value codec and InternalAddress.
  */
 import { describe, expect, test } from "bun:test"
-import { DEFAULT_SETTINGS, LOCAL_NODE_ID } from "@openbot/contracts"
+import { DEFAULT_SETTINGS, LOCAL_NODE_ID, MAIN_PROFILE_ID } from "@openbot/contracts"
 import type { NodeRpcs } from "@openbot/node-protocol"
 import { Effect, Layer } from "effect"
 import type { RpcClient, RpcGroup } from "effect/rpc"
@@ -129,12 +129,12 @@ describe("settings key/value codec", () => {
   test("writeSettings / readSettings round trip through SettingsRepo, removing cleared keys", async () => {
     const out = await Effect.runPromise(
       Effect.gen(function* () {
-        yield* writeSettings({ ...DEFAULT_SETTINGS, theme: "light", defaultHarness: "codex" })
-        const first = yield* readSettings
-        yield* writeSettings({ ...DEFAULT_SETTINGS, theme: "light" })
+        yield* writeSettings(MAIN_PROFILE_ID, { ...DEFAULT_SETTINGS, theme: "light", defaultHarness: "codex" })
+        const first = yield* readSettings(MAIN_PROFILE_ID)
+        yield* writeSettings(MAIN_PROFILE_ID, { ...DEFAULT_SETTINGS, theme: "light" })
         const repo = yield* SettingsRepo
         const keys = [...(yield* repo.getAll).keys()].sort()
-        return { first, second: yield* readSettings, keys }
+        return { first, second: yield* readSettings(MAIN_PROFILE_ID), keys }
       }).pipe(Effect.provide(persistence)),
     )
     expect(out.first).toEqual({ ...DEFAULT_SETTINGS, theme: "light", defaultHarness: "codex" })

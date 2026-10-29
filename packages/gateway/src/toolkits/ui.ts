@@ -5,7 +5,14 @@
  * it with `UiCardInput` and checks the caps.
  */
 import { type AttachmentId, type EntryId, UiCardInput } from "@openbot/contracts"
-import { type DataDir, type IdGen, Messaging, type NodeDirectory, UiCardService } from "@openbot/core"
+import {
+  type CurrentProfile,
+  type DataDir,
+  type IdGen,
+  Messaging,
+  type NodeDirectory,
+  UiCardService,
+} from "@openbot/core"
 import { Effect } from "effect"
 import * as p from "../params.ts"
 import { textResult, ToolRefusal, utf8Length } from "../results.ts"
@@ -13,7 +20,7 @@ import { type AnyTool, defineTool, type ToolCallContext } from "../tool.ts"
 import { decodeOrRefuse } from "./bot.ts"
 import { chooseNode } from "./node.ts"
 
-export type UiToolkitServices = UiCardService | Messaging | NodeDirectory | IdGen | DataDir
+export type UiToolkitServices = UiCardService | Messaging | NodeDirectory | IdGen | DataDir | CurrentProfile
 
 const UI_LIMITS = {
   bytes: 32 * 1024,

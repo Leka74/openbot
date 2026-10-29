@@ -8,8 +8,8 @@
  *   `thread/closed` for a thread no session holds is about an earlier load and is never replayed.
  * - `makeChildProcessLauncher`: spawns the binary detached (own process group, killed as a group on
  *   scope close) with `CODEX_HOME` and the bundled `codex-path` on PATH.
- * - `makeCodexRuntime`: ONE shared app-server per OpenBot `CODEX_HOME`, started lazily, recorded in
- *   the `ProcessLedger`, and restarted on next use after it dies. Probes reuse it when it runs and
+ * - `makeCodexRuntime`: one app-server on OpenBot's `CODEX_HOME` (the driver keeps one per owner
+ *   profile), started lazily, recorded in the `ProcessLedger`, and restarted on next use after it dies. Probes reuse it when it runs and
  *   otherwise use a short-lived process.
  */
 import { delimiter } from "node:path"

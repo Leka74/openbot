@@ -1,6 +1,6 @@
 /** ntfy (D3.6): the owner's notifications on any phone with the ntfy app, pushed through push.ts. */
-import { InvalidInput, NTFY_DISCONNECTED, NTFY_URL, type NtfyStatus } from "@openbot/contracts"
-import { LiveHub } from "@openbot/core"
+import { InvalidInput, NTFY_DISCONNECTED, NTFY_URL, type NtfyStatus, type OwnerProfileId } from "@openbot/contracts"
+import { BotRepo, LiveHub, OwnerProfiles } from "@openbot/core"
 import { Context, Effect, Layer, Schema } from "effect"
 import { ServerConfig } from "./config.ts"
 import { clip, clipBytes, makePush, needsYou, notificationText, type PushService } from "./push.ts"
@@ -15,8 +15,8 @@ export interface NtfyConnect {
 export class Ntfy extends Context.Service<Ntfy, PushService<NtfyStatus, NtfyConnect>>()("openbot/server/Ntfy") {}
 
 export interface NtfyOptions {
-  /** Where the topic is kept (`DataDir.ntfy`). */
-  readonly file: string
+  /** Where a profile's topic is kept (`DataDir.profile(id).ntfy`). */
+  readonly file: (profileId: OwnerProfileId) => string
   readonly fetch?: typeof fetch | undefined
 }
 
@@ -107,5 +107,6 @@ export const makeNtfy = (options: NtfyOptions) =>
     return Ntfy.of({ ...push, connect: (input) => Effect.flatMap(ntfyTarget(input), push.connect) })
   })
 
-export const NtfyLive = (options: NtfyOptions): Layer.Layer<Ntfy, never, ServerConfig | LiveHub> =>
-  Layer.effect(Ntfy, makeNtfy(options))
+export const NtfyLive = (
+  options: NtfyOptions,
+): Layer.Layer<Ntfy, never, ServerConfig | LiveHub | BotRepo | OwnerProfiles> => Layer.effect(Ntfy, makeNtfy(options))

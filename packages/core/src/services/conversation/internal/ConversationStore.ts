@@ -12,6 +12,7 @@
 import type { Conversation, ConversationId, EntryId } from "@openbot/contracts"
 import { Context, Effect, Layer, Option, Semaphore } from "effect"
 import {
+  BotRepo,
   ConversationRepo,
   conversationReplicaKey,
   EntryRepo,
@@ -55,12 +56,13 @@ const stable = (value: unknown): string => JSON.stringify(value)
 export const ConversationStoreLive: Layer.Layer<
   ConversationStore,
   never,
-  LiveHub | ConversationRepo | EntryRepo | RequestRepo | TurnRepo | ReplicaLog
+  LiveHub | ConversationRepo | EntryRepo | RequestRepo | TurnRepo | ReplicaLog | BotRepo
 > = Layer.effect(
   ConversationStore,
   Effect.gen(function* () {
     const hub = yield* LiveHub
     const conversations = yield* ConversationRepo
+    const bots = yield* BotRepo
     const entries = yield* EntryRepo
     const requests = yield* RequestRepo
     const turns = yield* TurnRepo
@@ -109,6 +111,7 @@ export const ConversationStoreLive: Layer.Layer<
         ),
       remove: (id) =>
         Effect.gen(function* () {
+          const [member] = yield* orDie(conversations.members(id))
           // Entries first (paged from the tail), then turns, requests, the replica log and the record.
           for (;;) {
             const page = yield* orDie(entries.page({ conversationId: id, limit: 500 }))
@@ -120,7 +123,12 @@ export const ConversationStoreLive: Layer.Layer<
           yield* orDie(replicas.drop(conversationReplicaKey(id)))
           const removed = yield* orDie(conversations.delete(id))
           published.delete(id)
-          if (removed) yield* hub.publishRoster({ type: "conversation.removed", conversationId: id })
+          if (removed && member !== undefined) {
+            const owner = yield* orDie(bots.get(member))
+            if (Option.isSome(owner)) {
+              yield* hub.publishRoster({ type: "conversation.removed", conversationId: id }, owner.value.ownerProfileId)
+            }
+          }
         }),
       withEntryLock: (effect) => entryLock.withPermits(1)(effect),
     })

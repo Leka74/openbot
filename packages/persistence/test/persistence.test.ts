@@ -1,9 +1,10 @@
-import type { BotId, ConversationId, EntryId, Millis } from "@openbot/contracts"
-import { DEFAULT_SETTINGS } from "@openbot/contracts"
+import type { BotId, ConversationId, EntryId, Millis, NotificationId } from "@openbot/contracts"
+import { DEFAULT_SETTINGS, MAIN_PROFILE_ID } from "@openbot/contracts"
 import {
   BootRecovery,
   BotRepo,
   EntryRepo,
+  HeldNotificationRepo,
   ProcessLedger,
   readSettings,
   RepoError,
@@ -54,13 +55,17 @@ describe("database setup", () => {
   test("migrations are idempotent and data survives reopening", async () => {
     const dir = await tempDataDir()
     const bot = makeBot({ id: botId("bot_keep"), name: "Keeper", createdAt: 1 })
+    const notification = { id: "ntf_kept" as NotificationId, kind: "waiting" as const, title: "K", body: "b", at: 1 }
     await run(
-      Effect.flatMap(BotRepo, (repo) => repo.upsert(bot)),
+      Effect.gen(function* () {
+        yield* (yield* BotRepo).upsert(bot)
+        yield* (yield* HeldNotificationRepo).hold(MAIN_PROFILE_ID, { notification, needsYou: true }, 500)
+      }),
       testPersistence(dir),
     )
     // Reopen the same data dir twice: migrations must not re-run, data must still be there.
     for (let i = 0; i < 2; i++) {
-      const [applied, stored] = await run(
+      const [applied, stored, away] = await run(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
           const rows = yield* sql<{
@@ -68,12 +73,14 @@ describe("database setup", () => {
             name: string
           }>`SELECT migration_id, name FROM effect_sql_migrations`
           const keeper = yield* (yield* BotRepo).get(botId("bot_keep"))
-          return [rows.map((r) => `${r.migration_id}_${r.name}`), keeper] as const
+          const held = yield* (yield* HeldNotificationRepo).summary(MAIN_PROFILE_ID)
+          return [rows.map((r) => `${r.migration_id}_${r.name}`), keeper, held] as const
         }),
         testPersistence(dir),
       )
       expect(applied).toEqual(Object.keys(migrations).map((key) => key.replace(/^0+/, "")))
       expect(Option.getOrUndefined(stored)?.name).toBe("Keeper")
+      expect(away.items).toEqual([{ notification, needsYou: true }])
     }
   })
 
@@ -143,9 +150,14 @@ describe("payload decoding", () => {
     const dir = await tempDataDir()
     const settings = await run(
       Effect.gen(function* () {
-        yield* writeSettings({ ...DEFAULT_SETTINGS, theme: "dark", showSteps: false, ownerName: "Ada" })
+        yield* writeSettings(MAIN_PROFILE_ID, {
+          ...DEFAULT_SETTINGS,
+          theme: "dark",
+          showSteps: false,
+          ownerName: "Ada",
+        })
         yield* (yield* SettingsRepo).set("brain.ownerTokenHash", { hash: "abc" })
-        return yield* readSettings
+        return yield* readSettings(MAIN_PROFILE_ID)
       }),
       testPersistence(dir),
     )

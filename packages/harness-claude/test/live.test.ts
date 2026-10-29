@@ -136,9 +136,10 @@ describe.skipIf(!live)("live Claude (OPENBOT_LIVE_CLAUDE=1)", () => {
   test("the owner's command starts a disable-model-invocation skill (one haiku turn)", async () => {
     const root = liveRoot()
     const dataDir = makeDataDir(root)
-    mkdirSync(join(dataDir.skillsLib, "skills", "say-code"), { recursive: true })
+    const library = join(root, "skills-lib")
+    mkdirSync(join(library, "skills", "say-code"), { recursive: true })
     writeFileSync(
-      join(dataDir.skillsLib, "skills", "say-code", "SKILL.md"),
+      join(library, "skills", "say-code", "SKILL.md"),
       "---\nname: say-code\ndescription: Says a code.\ndisable-model-invocation: true\n---\n\nReply with exactly CODE-$ARGUMENTS and nothing else.\n",
     )
     const events: Array<HarnessEvent> = await Effect.runPromise(

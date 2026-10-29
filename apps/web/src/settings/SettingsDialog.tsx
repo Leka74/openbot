@@ -13,6 +13,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  UsersRound,
   X,
 } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
@@ -23,11 +24,13 @@ import { ComputersPage } from "./ComputersPage.tsx"
 import { GeneralPage } from "./GeneralPage.tsx"
 import { HarnessesPage } from "./HarnessesPage.tsx"
 import { PermissionsPage } from "./PermissionsPage.tsx"
+import { ProfilesPage } from "./ProfilesPage.tsx"
 import { SkillsPage } from "./SkillsPage.tsx"
 import { AboutPage, UsagePage } from "./UsagePage.tsx"
 
 const NAV: ReadonlyArray<{ readonly id: SettingsPage; readonly label: string; readonly icon: LucideIcon }> = [
   { id: "general", label: "General", icon: Settings },
+  { id: "profiles", label: "Profiles", icon: UsersRound },
   { id: "harnesses", label: "Harnesses", icon: Cpu },
   { id: "computers", label: "Computers", icon: Monitor },
   { id: "permissions", label: "Permissions", icon: ShieldCheck },
@@ -45,6 +48,7 @@ function PageBody({ page }: { readonly page: SettingsPage }): ReactNode {
   return (
     <>
       {page === "general" && <GeneralPage />}
+      {page === "profiles" && <ProfilesPage />}
       {page === "harnesses" && <HarnessesPage />}
       {page === "computers" && <ComputersPage />}
       {page === "permissions" && <PermissionsPage />}

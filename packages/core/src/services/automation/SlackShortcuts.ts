@@ -12,6 +12,7 @@ import { ConversationService, Orchestrator, SettingsService } from "../../ports/
 import { SlackConnector, type SlackShortcut } from "../../ports/Slack.ts"
 import { describeSlackPlace } from "./SlackService.ts"
 import { truncate } from "./text.ts"
+import { currentProfileId, inProfile } from "../../ports/Profiles.ts"
 
 /** What the Bot's chat shows (as the owner's message). */
 export const slackShortcutText = (shortcut: Pick<SlackShortcut, "conversation" | "message">): string => {
@@ -56,7 +57,7 @@ export const SlackShortcutsLive: Layer.Layer<
       const { slackSendTo } = yield* settings.get
       if (slackSendTo !== undefined) {
         const chosen = yield* bots.get(slackSendTo).pipe(Effect.orDie)
-        if (Option.isSome(chosen)) return chosen.value
+        if (Option.isSome(chosen) && chosen.value.ownerProfileId === (yield* currentProfileId)) return chosen.value
       }
       const recent = (yield* conversations.summaries)
         .filter((c) => c.kind === "direct" && c.botIds.length > 0)
@@ -89,8 +90,9 @@ export const SlackShortcutsLive: Layer.Layer<
         ),
       )
 
+    // a click works in the profile whose Slack it came in
     yield* slack.shortcuts.pipe(
-      Stream.runForEach(forward),
+      Stream.runForEach((shortcut) => inProfile(shortcut.profileId)(forward(shortcut))),
       Effect.catchCause((cause) => Effect.logWarning("SlackShortcuts: clicks ended", cause)),
       Effect.forkScoped({ startImmediately: true }),
     )

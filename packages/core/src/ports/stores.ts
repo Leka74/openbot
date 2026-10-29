@@ -3,9 +3,10 @@
  * atomic writes under `DataDir`; in-memory doubles live in `@openbot/core/testing`.
  */
 import type { BotId, MemoryFact, MemoryFactId, Skill, SkillName } from "@openbot/contracts"
-import { AttachmentId, Millis } from "@openbot/contracts"
+import { AttachmentId, Millis, OwnerProfileId } from "@openbot/contracts"
 import { Context, Effect, Option, Schema, type Stream } from "effect"
 import type { RepoError } from "./errors.ts"
+import type { CurrentProfile } from "./Profiles.ts"
 import type { Carryover } from "./services.ts"
 
 /**
@@ -30,10 +31,6 @@ export class MemoryStore extends Context.Service<
   }
 >()("openbot/core/MemoryStore") {}
 
-/**
- * The skills library at `<data>/skills-lib` in Claude plugin layout
- * (`.claude-plugin/plugin.json` + `skills/<name>/SKILL.md`). v1 has no per-bot subsets.
- */
 /** One file of a skill's folder, path relative to it (`SKILL.md`, `scripts/run.sh`). */
 export interface SkillFile {
   readonly path: string
@@ -47,40 +44,46 @@ export interface ParsedSkillFile {
   readonly body: string
 }
 
+/**
+ * The current profile's skills library at `DataDir.profile(id).skillsLib` in Claude plugin layout
+ * (`.claude-plugin/plugin.json` + `skills/<name>/SKILL.md`). v1 has no per-bot subsets.
+ */
 export class SkillStore extends Context.Service<
   SkillStore,
   {
     /** Ordered by name. Each skill lists its other files (`files`) and its `source` when imported. */
-    readonly list: Effect.Effect<ReadonlyArray<Skill>, RepoError>
-    readonly get: (name: SkillName) => Effect.Effect<Option.Option<Skill>, RepoError>
+    readonly list: Effect.Effect<ReadonlyArray<Skill>, RepoError, CurrentProfile>
+    readonly get: (name: SkillName) => Effect.Effect<Option.Option<Skill>, RepoError, CurrentProfile>
     /**
      * Insert or replace the SKILL.md of `skill.name` (other files and unknown frontmatter are kept;
      * `skill.source` is recorded when given, `disable-model-invocation` written as given); keeps
      * `plugin.json` present.
      */
-    readonly put: (skill: Skill) => Effect.Effect<void, RepoError>
+    readonly put: (skill: Skill) => Effect.Effect<void, RepoError, CurrentProfile>
     /**
      * Replaces the skill's whole folder with `files` (an imported skill). Its SKILL.md is the given
      * one's frontmatter (unknown keys kept) with `skill`'s name, description, body and source.
      * Paths are already validated (relative, inside the folder).
      */
-    readonly install: (skill: Skill, files: ReadonlyArray<SkillFile>) => Effect.Effect<void, RepoError>
+    readonly install: (skill: Skill, files: ReadonlyArray<SkillFile>) => Effect.Effect<void, RepoError, CurrentProfile>
     /** Reads a SKILL.md (imported skills) the way the library does. */
     readonly parse: (text: string) => ParsedSkillFile
-    readonly delete: (name: SkillName) => Effect.Effect<boolean, RepoError>
-    /** Absolute path of the library root (mounted per harness). */
-    readonly root: string
-    /** Absolute folder of one skill, `<root>/skills/<name>`. */
-    readonly dir: (name: SkillName) => string
+    readonly delete: (name: SkillName) => Effect.Effect<boolean, RepoError, CurrentProfile>
+    /** Absolute folder of one skill, `<library>/skills/<name>`. */
+    readonly dir: (name: SkillName) => Effect.Effect<string, never, CurrentProfile>
+    /** Drops a deleted profile's library; from then on its reads and writes fail. */
+    readonly forget: (profileId: OwnerProfileId) => Effect.Effect<void>
   }
 >()("openbot/core/SkillStore") {}
 
 export const AttachmentRecord = Schema.Struct({
   id: AttachmentId,
+  /** The owner's profile it was stored in. */
+  ownerProfileId: OwnerProfileId,
   name: Schema.String,
   mime: Schema.String,
   byteSize: Schema.Number,
-  /** Absolute path on the brain (`<data>/attachments/<id>`), handed to harnesses as `TurnAttachment.path`. */
+  /** Absolute path on the brain (`<attachments>/<id>`), handed to harnesses as `TurnAttachment.path`. */
   path: Schema.String,
   createdAt: Millis,
   width: Schema.optional(Schema.Number),
@@ -104,17 +107,22 @@ export interface AttachmentStreamInput<E> {
   readonly height?: number | undefined
 }
 
-/** Uploaded files at `<data>/attachments/<id>` plus their metadata. */
+/**
+ * Uploaded files at `<attachments>/<id>` plus their metadata. New files go to the current profile's
+ * folder (`DataDir.profile(id).attachments`); a stored one is found by its id wherever it is.
+ */
 export class AttachmentStore extends Context.Service<
   AttachmentStore,
   {
     /** Allocates an id, writes the bytes and the metadata. */
-    readonly put: (input: AttachmentInput) => Effect.Effect<AttachmentRecord, RepoError>
+    readonly put: (input: AttachmentInput) => Effect.Effect<AttachmentRecord, RepoError, CurrentProfile>
     /**
      * Like `put`, writing the chunks as they arrive (never the whole file in memory). Nothing is
      * stored when the stream fails (its error is passed through) or the effect is interrupted.
      */
-    readonly putStream: <E>(input: AttachmentStreamInput<E>) => Effect.Effect<AttachmentRecord, RepoError | E>
+    readonly putStream: <E>(
+      input: AttachmentStreamInput<E>,
+    ) => Effect.Effect<AttachmentRecord, RepoError | E, CurrentProfile>
     readonly get: (id: AttachmentId) => Effect.Effect<Option.Option<AttachmentRecord>, RepoError>
     readonly read: (id: AttachmentId) => Effect.Effect<Option.Option<Uint8Array>, RepoError>
     /** The bytes as a stream (never the whole file in memory); fails with `RepoError` when missing. */

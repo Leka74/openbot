@@ -138,7 +138,7 @@ export interface LocalNodeDaemonOptions {
  * node-daemon configuration of the local node (D1.1, §4.8): node id `node_local`, state under
  * `DataDir.localNode`, and the roots `<data>/bots/{botId}/workspace` (each bot reaches only its own
  * workspace) plus any configured extra roots, plus per bot its project folders (`extraRoots`, from
- * `projectFolderRoots`: Settings' shared ∪ the bot's own).
+ * `projectFolderRoots`: its profile's shared ∪ the bot's own).
  */
 export const localNodeConfig = (
   dataDir: DataDirShape,

@@ -3,6 +3,7 @@
  * overrides; ids are plain strings cast to their brands.
  */
 import type {
+  OwnerProfileId,
   ApprovalRule,
   Bot,
   BotId,
@@ -24,7 +25,7 @@ import type {
   Turn,
   TurnId,
 } from "@openbot/contracts"
-import { LOCAL_NODE_ID, OWNER_USER_ID } from "@openbot/contracts"
+import { LOCAL_NODE_ID, MAIN_PROFILE_ID, OWNER_USER_ID } from "@openbot/contracts"
 import { sessionKeyOf } from "../ports/Harness.ts"
 import type { McpClaims } from "../ports/Mcp.ts"
 
@@ -41,10 +42,14 @@ export const nodeId = (id: string) => id as NodeId
 export const sectionId = (id: string) => id as SectionId
 export const taskId = (id: string) => id as TaskId
 
+/** A profile next to the main one (isolation tests). */
+export const OTHER_PROFILE = "prf_other" as OwnerProfileId
+
 export const makeBot = (overrides?: Partial<Mutable<Bot>>): Bot => {
   const id = overrides?.id ?? botId("bot_test")
   return {
     id,
+    ownerProfileId: MAIN_PROFILE_ID,
     name: "Scout",
     avatar: { shape: "blob", color: "blue" },
     harness: { kind: "fake" },
@@ -231,6 +236,7 @@ export const makeRoutineRun = (overrides?: Partial<Mutable<RoutineRun>>): Routin
 
 export const makeSection = (overrides?: Partial<Mutable<Section>>): Section => ({
   id: sectionId("sec_test"),
+  ownerProfileId: MAIN_PROFILE_ID,
   name: "Research",
   order: 0,
   ...overrides,
@@ -238,6 +244,7 @@ export const makeSection = (overrides?: Partial<Mutable<Section>>): Section => (
 
 export const makeRule = (overrides?: Partial<Mutable<ApprovalRule>>): ApprovalRule => ({
   id: "rul_test" as ApprovalRule["id"],
+  ownerProfileId: MAIN_PROFILE_ID,
   surface: "shell",
   match: {},
   action: "ask",

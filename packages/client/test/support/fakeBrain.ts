@@ -7,6 +7,7 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Effect, Layer, ManagedRuntime, PubSub, Stream } from "effect"
 import {
+  MAIN_PROFILE_ID,
   applyConversationChange,
   applyRosterChange,
   type Attachment,
@@ -58,6 +59,7 @@ export const conversationFixture = (id: string, botId: string, epoch = "e1"): Co
 
 export const botFixture = (id: string, name: string, conversationId: string): Bot => ({
   id: id as BotId,
+  ownerProfileId: MAIN_PROFILE_ID,
   name,
   avatar: { shape: "blob", color: "blue" },
   harness: { kind: "fake" },

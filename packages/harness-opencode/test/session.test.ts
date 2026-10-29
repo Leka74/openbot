@@ -1,5 +1,5 @@
 import type { HarnessEvent, HarnessRequest, HarnessRequestResolution, SkillName, TurnId } from "@openbot/contracts"
-import { LOCAL_NODE_ID } from "@openbot/contracts"
+import { LOCAL_NODE_ID, MAIN_PROFILE_ID, OwnerProfileId } from "@openbot/contracts"
 import {
   DataDir,
   type HarnessDriver,
@@ -960,7 +960,7 @@ describe("OpenCodeHarnessLive", () => {
         return { kind: driver.kind, caps: driver.capabilities, status }
       }).pipe(
         Effect.provide(
-          OpenCodeHarnessLive({ startTransport: fake.start, host: { silentTimeoutMs: 0 } }).pipe(
+          OpenCodeHarnessLive({ startTransport: () => fake.start, host: { silentTimeoutMs: 0 } }).pipe(
             Layer.provideMerge(HarnessRegistry.layer),
             Layer.provideMerge(DataDir.layer(dataRoot)),
           ),
@@ -988,5 +988,69 @@ describe("OpenCodeHarnessLive", () => {
     )
     expect(missing).toMatchObject({ installed: false, auth: { state: "unknown" } })
     expect(missing.problems[0]).toContain("not found")
+  })
+
+  test("a profile's sessions run on its own server, which lists only that profile's skills", async () => {
+    const fakes = { main: new FakeOpenCode(), demo: new FakeOpenCode() }
+    const dataRoot = join(root, "data-profiles")
+    const dirs = {
+      main: join(dataRoot, "skills-lib", "skills"),
+      demo: join(dataRoot, "profiles", "prf_demo", "skills-lib", "skills"),
+    }
+    const started: Array<ReadonlyArray<string>> = []
+    const demo = sessionInput({ bot: "bot_demo" })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const driver = yield* (yield* HarnessRegistry).get("opencode")
+        yield* driver.openSession(sessionInput({ bot: "bot_main" }))
+        yield* driver.openSession({ ...demo, bot: { ...demo.bot, ownerProfileId: OwnerProfileId.make("prf_demo") } })
+        yield* driver.openSession(sessionInput({ bot: "bot_main_2" }))
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          OpenCodeHarnessLive({
+            startTransport: (server) => {
+              started.push(server.skillsDirs)
+              return server.skillsDirs.includes(dirs.demo) ? fakes.demo.start : fakes.main.start
+            },
+            host: { silentTimeoutMs: 0, readyTimeoutMs: 2_000, modelRetries: 0 },
+            session: { mcpConnectTimeoutMs: 2_000, mcpSettleMs: 0 },
+          }).pipe(Layer.provideMerge(HarnessRegistry.layer), Layer.provideMerge(DataDir.layer(dataRoot))),
+        ),
+      ),
+    )
+    expect(started).toEqual([[dirs.main], [dirs.demo]])
+    expect(fakes.main.callsOf("session.create").length).toBe(2)
+    expect(fakes.demo.callsOf("session.create").length).toBe(1)
+  })
+
+  test("forgetting an owner profile stops its server, never the main one's", async () => {
+    const fakes = { main: new FakeOpenCode(), demo: new FakeOpenCode() }
+    const demoDir = join(root, "data-forget", "profiles", "prf_demo", "skills-lib", "skills")
+    const demo = sessionInput({ bot: "bot_demo" })
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* HarnessRegistry
+        const driver = yield* registry.get("opencode")
+        yield* driver.openSession(sessionInput({ bot: "bot_main" }))
+        yield* driver.openSession({ ...demo, bot: { ...demo.bot, ownerProfileId: OwnerProfileId.make("prf_demo") } })
+        yield* registry.forgetOwnerProfile(OwnerProfileId.make("prf_demo"))
+        yield* registry.forgetOwnerProfile(MAIN_PROFILE_ID)
+        return { main: fakes.main.server.dead, demo: fakes.demo.server.dead }
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          OpenCodeHarnessLive({
+            startTransport: (server) => (server.skillsDirs.includes(demoDir) ? fakes.demo.start : fakes.main.start),
+            host: { silentTimeoutMs: 0, readyTimeoutMs: 2_000, modelRetries: 0 },
+            session: { mcpConnectTimeoutMs: 2_000, mcpSettleMs: 0 },
+          }).pipe(
+            Layer.provideMerge(HarnessRegistry.layer),
+            Layer.provideMerge(DataDir.layer(join(root, "data-forget"))),
+          ),
+        ),
+      ),
+    )
+    expect(out).toEqual({ main: false, demo: true })
   })
 })

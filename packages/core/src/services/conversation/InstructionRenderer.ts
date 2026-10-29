@@ -14,6 +14,7 @@ import type { Bot, BotId, Conversation, SlackStatus } from "@openbot/contracts"
 import { Effect, Layer, Option } from "effect"
 import type { RenderedInstructions } from "../../ports/Harness.ts"
 import type { PlacementSummary } from "../../ports/Placement.ts"
+import { inProfile } from "../../ports/Profiles.ts"
 import { BotRepo, ConversationRepo } from "../../ports/repos.ts"
 import { InstructionRenderer, MemoryService, SettingsService } from "../../ports/services.ts"
 import { SlackConnector } from "../../ports/Slack.ts"
@@ -188,10 +189,10 @@ export const InstructionRendererLive: Layer.Layer<
     const slack = Option.getOrUndefined(yield* Effect.serviceOption(SlackConnector))
     return InstructionRenderer.of({
       render: Effect.fn("InstructionRenderer.render")(function* ({ bot, placement }) {
-        const team = yield* orDie(bots.list)
+        const team = yield* orDie(bots.listIn(bot.ownerProfileId))
         const groups = yield* orDie(conversations.list({ kind: "group", botId: bot.id, includeHidden: false }))
         const memoryIndex = yield* memory.promptIndex(bot.id)
-        const { sharedProjectFolders, botSearch } = yield* settings.get
+        const { sharedProjectFolders, botSearch } = yield* inProfile(bot.ownerProfileId)(settings.get)
         const folders = renderProjectFolders([...sharedProjectFolders, ...bot.projectFolders])
         return assembleInstructions({
           base: renderBase(bot, placement, botSearch),
@@ -200,7 +201,12 @@ export const InstructionRendererLive: Layer.Layer<
           groups: renderGroups(bot, groups, team),
           memoryIndex,
           placement: [placement.promptAppend, folders].filter((part) => part.trim() !== "").join("\n"),
-          slack: slack === undefined ? undefined : renderSlack(yield* slack.status),
+          slack:
+            slack === undefined
+              ? undefined
+              : renderSlack(
+                  yield* Effect.flatMap(slack.connection, (c) => c.status).pipe(inProfile(bot.ownerProfileId)),
+                ),
         })
       }),
     })

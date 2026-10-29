@@ -8,12 +8,16 @@ import Initial from "./0001_initial.ts"
 import OneMindPerBot from "./0002_one_mind_per_bot.ts"
 import BackgroundTasks from "./0003_background_tasks.ts"
 import MessageSearch from "./0004_message_search.ts"
+import OwnerProfiles from "./0005_owner_profiles.ts"
+import HeldNotifications from "./0006_held_notifications.ts"
 
 export const migrations = {
   "0001_initial": Initial,
   "0002_one_mind_per_bot": OneMindPerBot,
   "0003_background_tasks": BackgroundTasks,
   "0004_message_search": MessageSearch,
+  "0005_owner_profiles": OwnerProfiles,
+  "0006_held_notifications": HeldNotifications,
 } as const
 
 export const migrationLoader = SqliteMigrator.fromRecord(migrations)

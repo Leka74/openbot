@@ -46,9 +46,14 @@ export type NotificationId = typeof NotificationId.Type
 /** A piece of work a bot runs in parallel with its conversations (background task, D5.7). */
 export const TaskId = makeId("TaskId")
 export type TaskId = typeof TaskId.Type
+/** A profile of the owner: its own bots, chats, memory, skills, routines and connections. */
+export const OwnerProfileId = makeId("OwnerProfileId")
+export type OwnerProfileId = typeof OwnerProfileId.Type
 
 /** The brain's in-process node (D1.1). Always present unless disabled by config. */
 export const LOCAL_NODE_ID = "node_local" as NodeId
+/** The profile every brain starts with; what existed before profiles belongs to it. */
+export const MAIN_PROFILE_ID = "prf_main" as OwnerProfileId
 /** The single owner (D0.2). */
 export const OWNER_USER_ID = "user_owner" as UserId
 
@@ -67,6 +72,7 @@ export const IdPrefix = {
   rule: "rul",
   notification: "ntf",
   task: "tsk",
+  profile: "prf",
 } as const
 
 // ---------------------------------------------------------------------------- harness

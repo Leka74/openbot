@@ -4,8 +4,9 @@
 // `requests.respond`, interrupts, group routing, bot-to-bot messages, routines, memory, skills,
 // rules, nodes and settings. Not a reference for server semantics; see docs/architecture.md.
 import { readFileSync } from "node:fs"
-import { Effect, Stream } from "effect"
+import { Effect, Stream, SubscriptionRef } from "effect"
 import {
+  MAIN_PROFILE_ID,
   AlreadyAnswered,
   type ApprovalRule,
   type Attachment,
@@ -34,6 +35,8 @@ import {
   type KnownConversationEvent,
   type KnownConversationStreamItem,
   type KnownRosterStreamItem,
+  type OwnerProfile,
+  type OwnerProfilesView,
   type KnownTranscriptEntry,
   MAX_GROUP_BOTS,
   MIN_GROUP_BOTS,
@@ -180,6 +183,13 @@ export class MockBrain {
   sttFinishDelayMs = 0
   sttDiscards = 0
   /** Hark (D3.5): any `whk_` webhook connects the mock. */
+  /** One brain-wide view; switching only moves `activeId` (the mock keeps one set of Bots). */
+  readonly profiles = Effect.runSync(
+    SubscriptionRef.make<OwnerProfilesView>({
+      profiles: [{ id: MAIN_PROFILE_ID, name: "Main", createdAt: Date.now() }],
+      activeId: MAIN_PROFILE_ID,
+    }),
+  )
   hark: HarkStatus = { connected: false, sends: "all" }
   /** ntfy (D3.6): any valid topic connects the mock. */
   ntfy: NtfyStatus = { connected: false, sends: "all" }
@@ -1299,6 +1309,7 @@ export class MockBrain {
     if (response.type === "decision" && response.decision === "allow-always" && q.suggestedRule) {
       const rule: ApprovalRule = {
         id: this.id("rul") as ApprovalRule["id"],
+        ownerProfileId: MAIN_PROFILE_ID,
         botId: q.botId,
         surface: q.suggestedRule.surface,
         match: q.suggestedRule.match,
@@ -1329,6 +1340,7 @@ export class MockBrain {
     const at = this.now()
     const bot: Bot = {
       id,
+      ownerProfileId: MAIN_PROFILE_ID,
       name: input.name,
       ...(input.label ? { label: input.label } : {}),
       avatar: input.avatar ?? defaultBotAvatar(id),
@@ -1552,6 +1564,29 @@ export class MockBrain {
           dataDir: "(in-memory mock)",
           firstRun: this.firstRun && this.roster.state.bots.size === 0,
         }),
+      "profiles.list": () => SubscriptionRef.get(this.profiles),
+      "profiles.subscribe": () => SubscriptionRef.changes(this.profiles),
+      "profiles.create": ({ name }) => {
+        const profile: OwnerProfile = { id: this.id("prf") as OwnerProfile["id"], name, createdAt: this.now() }
+        return SubscriptionRef.update(this.profiles, (view) => ({
+          ...view,
+          profiles: [...view.profiles, profile],
+        })).pipe(Effect.as(profile))
+      },
+      "profiles.rename": ({ profileId, name }) =>
+        SubscriptionRef.modify(this.profiles, (view) => {
+          const profiles = view.profiles.map((p) => (p.id === profileId ? { ...p, name } : p))
+          return [profiles.find((p) => p.id === profileId), { ...view, profiles }]
+        }),
+      "profiles.switch": ({ profileId }) =>
+        SubscriptionRef.update(this.profiles, (view) => ({ ...view, activeId: profileId })),
+      "profiles.delete": ({ profileId }) =>
+        SubscriptionRef.update(this.profiles, (view) => ({
+          ...view,
+          profiles: view.profiles.filter((p) => p.id !== profileId),
+        })),
+      "profiles.away": () => Effect.succeed({ items: [], dropped: 0 }),
+      "profiles.dismissAway": () => Effect.succeed({ items: [], dropped: 0 }),
       "roster.subscribe": ({ after }) =>
         subscribeTo<KnownRosterStreamItem>(this.roster, after, () => this.roster.snapshot()),
       "conversations.subscribe": ({ conversationId, after }) => {
@@ -1658,7 +1693,12 @@ export class MockBrain {
       "sections.list": () => Effect.succeed([...this.roster.state.sections.values()]),
       "sections.create": ({ name }) =>
         sync(() => {
-          const section: Section = { id: this.id("sec") as SectionId, name, order: this.roster.state.sections.size + 1 }
+          const section: Section = {
+            id: this.id("sec") as SectionId,
+            ownerProfileId: MAIN_PROFILE_ID,
+            name,
+            order: this.roster.state.sections.size + 1,
+          }
           this.putSection(section)
           return section
         })(),

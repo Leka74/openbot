@@ -77,6 +77,11 @@ export class FakeAppServer {
     this.handlers = { ...defaultHandlers(), ...handlers }
   }
 
+  /** The launcher's scope closed it (the process was stopped). */
+  get stopped(): boolean {
+    return this.closed
+  }
+
   static make = (handlers: Record<string, Handler> = {}) =>
     Effect.map(Queue.unbounded<Uint8Array, Cause.Done>(), (queue) => new FakeAppServer(queue, handlers))
 

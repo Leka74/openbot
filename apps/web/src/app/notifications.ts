@@ -115,6 +115,11 @@ export const notificationOptions = (n: RosterNotification, icon: string | undefi
   ...(icon === undefined ? {} : { icon }),
 })
 
+const onScreen = new Set<Notification>()
+
+/** Closes the notifications this page put on screen (switching profiles, profiles.ts). */
+export const closeShownNotifications = (): void => onScreen.forEach((shown) => shown.close())
+
 /** Mounted once (App): shows new notifications and keeps the desktop app's badge current. */
 export function useSystemNotifications(): void {
   const roster = useRoster()
@@ -149,6 +154,8 @@ export function useSystemNotifications(): void {
       const bot = n.botId === undefined ? undefined : roster.botById(n.botId)
       void (bot === undefined ? Promise.resolve(undefined) : botIconUrl(bot.avatar)).then((icon) => {
         const shown = new Notification(n.title, notificationOptions(n, icon))
+        onScreen.add(shown)
+        shown.onclose = () => onScreen.delete(shown)
         shown.onclick = () => {
           desktopApp()?.focus()
           window.focus()

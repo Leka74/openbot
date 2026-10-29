@@ -17,8 +17,15 @@
  * - Automatic (Settings `autoUpdate`, off by default): a new release installs once no turn or task has
  *   run for 5 minutes; a release that failed to install is not tried again by itself.
  */
-import { Conflict, type UpdateCommit, type UpdateRelease, type UpdateStatus, Unavailable } from "@openbot/contracts"
-import { Notifier, SettingsService } from "@openbot/core"
+import {
+  Conflict,
+  MAIN_PROFILE_ID,
+  type UpdateCommit,
+  type UpdateRelease,
+  type UpdateStatus,
+  Unavailable,
+} from "@openbot/contracts"
+import { inProfile, Notifier, SettingsService } from "@openbot/core"
 import { Database } from "bun:sqlite"
 import { Context, Effect, Layer } from "effect"
 import {
@@ -174,6 +181,8 @@ export const UpdatesLive = (options: UpdatesOptions): Layer.Layer<Updates, never
     Updates,
     Effect.gen(function* () {
       const settings = yield* SettingsService
+      // updating is the brain's business: the main profile's settings decide
+      const brainSettings = inProfile(MAIN_PROFILE_ID)(settings.get)
       const notifier = yield* Notifier
       const repo = options.repo ?? DEFAULT_UPDATE_REPO
       const api = (options.apiUrl ?? "https://api.github.com").replace(/\/+$/, "")
@@ -348,7 +357,7 @@ export const UpdatesLive = (options: UpdatesOptions): Layer.Layer<Updates, never
 
       const announce = Effect.gen(function* () {
         if (state !== "available" || latest === undefined || memory.notified === latest.version) return
-        if ((yield* settings.get).autoUpdate) return
+        if ((yield* brainSettings).autoUpdate) return
         memory.notified = latest.version
         mkdirSync(dir, { recursive: true })
         writeFileSync(memoryFile, JSON.stringify(memory))
@@ -468,7 +477,7 @@ export const UpdatesLive = (options: UpdatesOptions): Layer.Layer<Updates, never
             quietSince = undefined
             return
           }
-          if (!(yield* settings.get).autoUpdate) return
+          if (!(yield* brainSettings).autoUpdate) return
           if (workInFlight(options.dataDir) > 0) {
             quietSince = undefined
             return

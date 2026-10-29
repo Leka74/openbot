@@ -42,7 +42,7 @@ export const HARNESS = "codex"
 
 /** Everything a session needs besides `OpenSessionInput` (resolved by the driver). */
 export interface CodexSessionDeps {
-  /** The shared app-server of OpenBot's `CODEX_HOME` (started on first use). */
+  /** The app-server of the Bot's owner profile on OpenBot's `CODEX_HOME` (started on first use). */
   readonly acquire: Effect.Effect<AppServerConnection, HarnessError>
   readonly threadConfig: ThreadConfigOptions
   /** Control requests (`turn/start`, `turn/steer`, `turn/interrupt`, …). */
@@ -53,9 +53,10 @@ export interface CodexSessionDeps {
   readonly compactTimeout: Duration.Input
   readonly ensureDirectory: (path: string) => Promise<void>
   /**
-   * OpenBot's skills root (`<data>/skills-lib/skills`) when it exists: mounted as an extra skill
-   * root; every other discovered skill (the user's `~/.agents/skills`, repo skills) is disabled for
-   * the thread (harness-context-isolation.md §4.3). `undefined` → no library, still isolated.
+   * The skills root of the Bot's profile (`<skills-lib>/skills`) when it exists: mounted as an extra
+   * skill root; every other discovered skill (the user's `~/.agents/skills`, repo skills) is
+   * disabled for the thread (harness-context-isolation.md §4.3). `undefined`
+   * → no library, still isolated.
    */
   readonly skillsRoot?: string | undefined
   /** Disable host skills per thread (default true). */
@@ -90,8 +91,11 @@ const turnError = (code: HarnessError["code"], error: CodexPeerError, prefix: st
 const closedError = () =>
   new HarnessError({ harness: HARNESS, code: "closed", message: "The Codex session is closed.", retryable: true })
 
-/** Connections whose process-global skill root is already set (`skills/extraRoots/set`). */
-const skillRootsSet = new WeakMap<AppServerConnection, string>()
+/**
+ * The skills root mounted on each connection (`skills/extraRoots/set` is process-global): an
+ * app-server serves one owner profile, so it is that profile's library.
+ */
+const mountedRoots = new WeakMap<AppServerConnection, string>()
 
 export const openCodexSession = Effect.fn("CodexSession.open")(function* (
   input: OpenSessionInput,
@@ -128,7 +132,7 @@ export const openCodexSession = Effect.fn("CodexSession.open")(function* (
     (deps.isolateSkills ?? true)
       ? yield* Effect.gen(function* () {
           const root = deps.skillsRoot
-          if (root !== undefined && skillRootsSet.get(connection) !== root) {
+          if (root !== undefined && mountedRoots.get(connection) !== root) {
             const mounted = yield* request("skills/extraRoots/set", { extraRoots: [root] }).pipe(
               Effect.as(true),
               Effect.catch((error) =>
@@ -137,7 +141,7 @@ export const openCodexSession = Effect.fn("CodexSession.open")(function* (
                 ),
               ),
             )
-            if (mounted) skillRootsSet.set(connection, root)
+            if (mounted) mountedRoots.set(connection, root)
           }
           const listed = yield* request("skills/list", { cwds: [plan.cwd], forceReload: true }).pipe(
             Effect.catch((error) =>

@@ -7,7 +7,14 @@
 import type { BotId, ConversationId, EntryId, Millis, TranscriptEntry } from "@openbot/contracts"
 import { SEARCH_TOTAL_CAP, type Task } from "@openbot/contracts"
 import { Effect, Option } from "effect"
-import { ConversationRepo, type SearchFilter, SearchRepo, type SearchRepoHit, TurnRepo } from "../ports/repos.ts"
+import {
+  BotRepo,
+  ConversationRepo,
+  type SearchFilter,
+  SearchRepo,
+  type SearchRepoHit,
+  TurnRepo,
+} from "../ports/repos.ts"
 import {
   isStreamingEntry,
   makeSnippet,
@@ -57,11 +64,16 @@ export const makeMemorySearchRepo = (index: MemorySearchIndex) =>
   Effect.gen(function* () {
     const conversations = yield* ConversationRepo
     const turns = yield* TurnRepo
+    const bots = yield* BotRepo
 
     /** The docs a filter lets through (scope, chat, bot, sender, time, kind), before matching words. */
     const candidates = (filter: SearchFilter) =>
       Effect.gen(function* () {
         const all = yield* Effect.orDie(conversations.list())
+        const profileBots =
+          filter.scope.kind === "owner"
+            ? new Set((yield* Effect.orDie(bots.listIn(filter.scope.profileId))).map((b) => b.id as string))
+            : undefined
         const existing = new Map(all.map((c) => [c.id as string, c]))
         const membersOf = (conversationId: ConversationId): ReadonlyArray<BotId> => {
           const c = existing.get(conversationId)
@@ -80,7 +92,8 @@ export const makeMemorySearchRepo = (index: MemorySearchIndex) =>
           })
         const visible = (doc: SearchDoc): boolean => {
           if (doc.source === "task" && !existing.has(doc.conversationId)) return false
-          if (filter.scope.kind === "owner") return true
+          if (filter.scope.kind === "owner")
+            return membersOf(doc.conversationId).some((bot) => profileBots?.has(bot) === true)
           const bot = filter.scope.botId
           if (doc.source === "task") return doc.authorBotId === bot && membersOf(doc.conversationId).includes(bot)
           if (doc.kind === "tool-call" && doc.authorBotId !== bot) return false

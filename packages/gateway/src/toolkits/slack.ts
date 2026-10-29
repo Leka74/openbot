@@ -7,6 +7,7 @@
  * editable draft the owner sends themselves; nothing reaches Slack from a Bot directly).
  */
 import {
+  type CurrentProfile,
   type DataDir,
   type IdGen,
   Messaging,
@@ -26,11 +27,12 @@ const slackConnected = ({ slack }: ToolAvailability): boolean => slack === true
 
 const NOT_CONNECTED = "Slack isn't connected."
 
+/** The Slack of the calling Bot's profile. */
 const connector = Effect.serviceOption(SlackConnector).pipe(
   Effect.flatMap(
     Option.match({
       onNone: () => Effect.fail(new ToolRefusal({ message: NOT_CONNECTED })),
-      onSome: Effect.succeed,
+      onSome: (slack) => slack.connection,
     }),
   ),
 )
@@ -229,7 +231,7 @@ const slackDraft = defineTool({
     }),
 })
 
-export const SlackToolkit: ReadonlyArray<AnyTool<Messaging | NodeDirectory | IdGen | DataDir>> = [
+export const SlackToolkit: ReadonlyArray<AnyTool<Messaging | NodeDirectory | IdGen | DataDir | CurrentProfile>> = [
   slackSearch,
   slackRead,
   slackFind,

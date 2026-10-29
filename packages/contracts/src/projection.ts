@@ -297,6 +297,8 @@ export const applyRosterChange = (state: RosterState, change: RosterChange): Ros
       return { ...state, signIns: withSet(state.signIns, change.request.code, change.request) }
     case "sign-in.ended":
       return { ...state, signIns: withDeleted(state.signIns, change.code) }
+    case "away.changed":
+      return state
     case "unknown":
       return { ...state, skippedUnknown: state.skippedUnknown + 1 }
   }

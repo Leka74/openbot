@@ -20,6 +20,7 @@ import {
 } from "../../src/ports/index.ts"
 import { introductionText } from "../../src/services/conversation/BotService.ts"
 import { AttachmentServiceLive, LiveHubLive, NotifierLive } from "../../src/services/conversation/index.ts"
+import { OwnerProfilesLive } from "../../src/services/profiles/index.ts"
 import { ApprovalServiceFake, botId, makeBot, makeTurn, runTest, TestPorts } from "../../src/testing/index.ts"
 import {
   appLayer,
@@ -738,6 +739,7 @@ describe("NotifierLive and AttachmentServiceLive", () => {
   const layer = () =>
     Layer.mergeAll(NotifierLive, AttachmentServiceLive).pipe(
       Layer.provideMerge(LiveHubLive),
+      Layer.provideMerge(OwnerProfilesLive),
       Layer.provideMerge(TestPorts()),
     )
 

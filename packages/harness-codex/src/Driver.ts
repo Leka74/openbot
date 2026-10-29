@@ -3,18 +3,27 @@
  *
  * `CodexHarnessLive(config?)` registers the driver in `HarnessRegistry` for the layer's lifetime.
  * It needs `DataDir` (`codexHome`, skills library) and uses `ProcessLedger` when it is provided
- * (app-server pids for boot recovery). The layer owns ONE `codex app-server` for OpenBot's
- * `CODEX_HOME`, started on first use and stopped (process group) when the layer closes.
+ * (app-server pids for boot recovery). The layer owns one `codex app-server` per owner profile for
+ * OpenBot's `CODEX_HOME` (the skill roots of a server are process-global, so each profile's Bots see
+ * only its library), started on first use and stopped (process group) when the layer closes.
  */
 import { existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { resolve } from "node:path"
 import { BunServices } from "@effect/platform-bun"
-import type { HarnessCapabilities, HarnessStatus, ModelInfo } from "@openbot/contracts"
+import {
+  type Bot,
+  type HarnessCapabilities,
+  type HarnessStatus,
+  MAIN_PROFILE_ID,
+  type ModelInfo,
+  type OwnerProfileId,
+} from "@openbot/contracts"
 import { DataDir, type DataDirShape, type HarnessDriver, HarnessRegistry, joinPath, ProcessLedger } from "@openbot/core"
-import { Clock, Duration, Effect, Layer, Option, Ref } from "effect"
+import { Clock, Duration, Effect, Layer, Option, RcMap, Ref, type Scope } from "effect"
 import {
   type AppServerLauncher,
+  type CodexRuntime,
   makeChildProcessLauncher,
   makeCodexRuntime,
   type ProcessLedgerLike,
@@ -104,7 +113,7 @@ export const makeCodexDriver = Effect.fnUntraced(function* (config: CodexHarness
     })
   let authLink: CodexAuthLink | undefined
 
-  const runtime = yield* makeCodexRuntime({
+  const makeRuntime = makeCodexRuntime({
     binary: resolveBinary,
     launcher,
     codexHome,
@@ -126,6 +135,14 @@ export const makeCodexDriver = Effect.fnUntraced(function* (config: CodexHarness
       Effect.asVoid,
     ),
   })
+  const runtimes = yield* RcMap.make<OwnerProfileId, CodexRuntime, never, Scope.Scope>({
+    lookup: () => makeRuntime,
+    // a profile's app-server stays until the layer closes
+    idleTimeToLive: Duration.infinity,
+  })
+  const runtimeOf = (profileId: OwnerProfileId) => Effect.scoped(RcMap.get(runtimes, profileId))
+  /** The main profile's: probes and model lists (the login is the same for every profile). */
+  const runtime = yield* runtimeOf(MAIN_PROFILE_ID)
 
   const modelsTtl = Duration.toMillis(Duration.fromInputUnsafe(config.modelsTtl ?? Duration.minutes(10)))
   const models = yield* Ref.make<{ readonly at: number; readonly list: ReadonlyArray<ModelInfo> } | undefined>(
@@ -139,9 +156,9 @@ export const makeCodexDriver = Effect.fnUntraced(function* (config: CodexHarness
     compactTimeout: config.compactTimeout ?? DEFAULT_SESSION_TIMEOUTS.compactTimeout,
   }
 
-  const skillsRoot = () => {
+  const skillsRoot = (bot: Bot) => {
     if (config.skills === false) return undefined
-    const root = joinPath(deps.dataDir.skillsLib, "skills")
+    const root = joinPath(deps.dataDir.profile(bot.ownerProfileId).skillsLib, "skills")
     return existsSync(root) ? root : undefined
   }
 
@@ -186,7 +203,7 @@ export const makeCodexDriver = Effect.fnUntraced(function* (config: CodexHarness
     }),
     openSession: (input) =>
       openCodexSession(input, {
-        acquire: runtime.acquire,
+        acquire: Effect.flatMap(runtimeOf(input.bot.ownerProfileId), (profileRuntime) => profileRuntime.acquire),
         threadConfig: {
           mcpToolTimeoutSec: config.mcpToolTimeoutSec,
           mcpStartupTimeoutSec: config.mcpStartupTimeoutSec,
@@ -194,9 +211,12 @@ export const makeCodexDriver = Effect.fnUntraced(function* (config: CodexHarness
         },
         ...timeouts,
         ensureDirectory,
-        skillsRoot: skillsRoot(),
+        skillsRoot: skillsRoot(input.bot),
         isolateSkills: config.skills !== false,
       }),
+    // the main profile's app-server also serves probes and model lists, and the main profile is never deleted
+    forgetOwnerProfile: (profileId) =>
+      profileId === MAIN_PROFILE_ID ? Effect.void : RcMap.invalidate(runtimes, profileId),
   }
   return driver
 })

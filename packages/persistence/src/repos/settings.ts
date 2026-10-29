@@ -1,9 +1,16 @@
 /** `ApprovalRuleRepo`, `SettingsRepo` and `UsageRepo` over SQLite. */
-import type { BotId, Millis, Usage } from "@openbot/contracts"
-import { ApprovalRule } from "@openbot/contracts"
-import { ApprovalRuleRepo, SettingsRepo, UsageRecord, UsageRepo, type UsageTotals } from "@openbot/core"
+import type { BotId, Millis, OwnerProfileId, Usage } from "@openbot/contracts"
+import { ApprovalRule, MAIN_PROFILE_ID } from "@openbot/contracts"
+import {
+  ApprovalRuleRepo,
+  SettingsRepo,
+  type SettingsStore,
+  UsageRecord,
+  UsageRepo,
+  type UsageTotals,
+} from "@openbot/core"
 import { Effect, Option } from "effect"
-import { SqlClient } from "effect/sql"
+import { SqlClient, type Statement } from "effect/sql"
 import { decodeRawJson, encodeRawJson, jsonCodec, repoOp } from "../codec.ts"
 
 interface PayloadRow {
@@ -14,12 +21,19 @@ interface PayloadRow {
 const RuleJson = jsonCodec(ApprovalRule, "approval rule")
 const UsageJson = jsonCodec(UsageRecord, "usage record")
 
+// The main profile's rules and settings stay in `approval_rules` and `settings`, as an older release
+// reads them; the other profiles' are in `profile_approval_rules` and `profile_settings`
+const ownTable = (profileId: OwnerProfileId, main: string, others: string) =>
+  profileId === MAIN_PROFILE_ID ? { table: main, owner: {} } : { table: others, owner: { owner_profile_id: profileId } }
+
 export const makeSqlApprovalRuleRepo = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const rulesOf = (profileId: OwnerProfileId) => ownTable(profileId, "approval_rules", "profile_approval_rules")
   return ApprovalRuleRepo.of({
     get: (id) =>
       Effect.gen(function* () {
-        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM approval_rules WHERE id = ${id}`
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM approval_rules WHERE id = ${id}
+          UNION ALL SELECT id, payload_json FROM profile_approval_rules WHERE id = ${id}`
         const row = rows[0]
         return row === undefined
           ? Option.none()
@@ -27,54 +41,75 @@ export const makeSqlApprovalRuleRepo = Effect.gen(function* () {
       }).pipe(repoOp("ApprovalRuleRepo.get")),
     list: (filter) =>
       Effect.gen(function* () {
-        const rows =
-          filter?.botId === undefined
-            ? yield* sql<PayloadRow>`SELECT id, payload_json FROM approval_rules ORDER BY created_at, rowid`
-            : yield* sql<PayloadRow>`SELECT id, payload_json FROM approval_rules
-              WHERE bot_id IS NULL OR bot_id = ${filter.botId} ORDER BY created_at, rowid`
+        const { table, owner } = rulesOf(filter.profileId)
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM ${sql(table)} WHERE ${sql.and([
+          ...Object.entries(owner).map(([column, value]) => sql`${sql(column)} = ${value}`),
+          ...(filter.botId === undefined ? [] : [sql`(bot_id IS NULL OR bot_id = ${filter.botId})`]),
+        ])} ORDER BY created_at, rowid`
         return yield* Effect.forEach(rows, (row) => RuleJson.decode("ApprovalRuleRepo.list", row.payload_json, row.id))
       }).pipe(repoOp("ApprovalRuleRepo.list")),
     upsert: (rule) =>
       Effect.gen(function* () {
         const payload = yield* RuleJson.encode("ApprovalRuleRepo.upsert", rule)
-        yield* sql`INSERT INTO approval_rules (id, bot_id, created_at, payload_json)
-          VALUES (${rule.id}, ${rule.botId ?? null}, ${rule.createdAt}, ${payload})
+        const { table, owner } = rulesOf(rule.ownerProfileId)
+        yield* sql`INSERT INTO ${sql(table)} ${sql.insert({
+          id: rule.id,
+          ...owner,
+          bot_id: rule.botId ?? null,
+          created_at: rule.createdAt,
+          payload_json: payload,
+        })}
           ON CONFLICT (id) DO UPDATE SET bot_id = excluded.bot_id, created_at = excluded.created_at,
             payload_json = excluded.payload_json`
       }).pipe(repoOp("ApprovalRuleRepo.upsert")),
     delete: (id) =>
-      sql<{ id: string }>`DELETE FROM approval_rules WHERE id = ${id} RETURNING id`.pipe(
-        Effect.map((rows) => rows.length > 0),
-        repoOp("ApprovalRuleRepo.delete"),
-      ),
+      Effect.gen(function* () {
+        const main = yield* sql<{ id: string }>`DELETE FROM approval_rules WHERE id = ${id} RETURNING id`
+        const others = yield* sql<{ id: string }>`DELETE FROM profile_approval_rules WHERE id = ${id} RETURNING id`
+        return main.length + others.length > 0
+      }).pipe(repoOp("ApprovalRuleRepo.delete")),
   })
 })
 
 export const makeSqlSettingsRepo = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
-  return SettingsRepo.of({
-    get: (key) =>
-      Effect.gen(function* () {
-        const rows = yield* sql<{ value_json: string }>`SELECT value_json FROM settings WHERE key = ${key}`
-        const row = rows[0]
-        return row === undefined
-          ? Option.none()
-          : Option.some(yield* decodeRawJson("SettingsRepo.get", row.value_json, key))
-      }).pipe(repoOp("SettingsRepo.get")),
-    getAll: Effect.gen(function* () {
-      const rows = yield* sql<{ key: string; value_json: string }>`SELECT key, value_json FROM settings ORDER BY key`
-      const values = new Map<string, unknown>()
-      for (const row of rows) values.set(row.key, yield* decodeRawJson("SettingsRepo.getAll", row.value_json, row.key))
-      return values as ReadonlyMap<string, unknown>
-    }).pipe(repoOp("SettingsRepo.getAll")),
-    set: (key, value) =>
-      Effect.gen(function* () {
-        const json = yield* encodeRawJson("SettingsRepo.set", value)
-        yield* sql`INSERT INTO settings (key, value_json) VALUES (${key}, ${json})
-          ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json`
-      }).pipe(repoOp("SettingsRepo.set")),
-    remove: (key) => sql`DELETE FROM settings WHERE key = ${key}`.pipe(Effect.asVoid, repoOp("SettingsRepo.remove")),
-  })
+  const storeOf = (profileId: OwnerProfileId): SettingsStore => {
+    const { table, owner } = ownTable(profileId, "settings", "profile_settings")
+    const where = (...clauses: ReadonlyArray<Statement.Fragment>) =>
+      sql.and([...Object.entries(owner).map(([column, value]) => sql`${sql(column)} = ${value}`), ...clauses])
+    return {
+      get: (key) =>
+        Effect.gen(function* () {
+          const rows = yield* sql<{ value_json: string }>`SELECT value_json FROM ${sql(table)}
+            WHERE ${where(sql`key = ${key}`)}`
+          const row = rows[0]
+          return row === undefined
+            ? Option.none()
+            : Option.some(yield* decodeRawJson("SettingsRepo.get", row.value_json, key))
+        }).pipe(repoOp("SettingsRepo.get")),
+      getAll: Effect.gen(function* () {
+        const rows = yield* sql<{ key: string; value_json: string }>`SELECT key, value_json FROM ${sql(table)}
+          WHERE ${where()} ORDER BY key`
+        const values = new Map<string, unknown>()
+        for (const row of rows)
+          values.set(row.key, yield* decodeRawJson("SettingsRepo.getAll", row.value_json, row.key))
+        return values as ReadonlyMap<string, unknown>
+      }).pipe(repoOp("SettingsRepo.getAll")),
+      set: (key, value) =>
+        Effect.gen(function* () {
+          const json = yield* encodeRawJson("SettingsRepo.set", value)
+          const conflict = sql.literal([...Object.keys(owner), "key"].join(", "))
+          yield* sql`INSERT INTO ${sql(table)} ${sql.insert({ ...owner, key, value_json: json })}
+            ON CONFLICT (${conflict}) DO UPDATE SET value_json = excluded.value_json`
+        }).pipe(repoOp("SettingsRepo.set")),
+      remove: (key) =>
+        sql`DELETE FROM ${sql(table)} WHERE ${where(sql`key = ${key}`)}`.pipe(
+          Effect.asVoid,
+          repoOp("SettingsRepo.remove"),
+        ),
+    }
+  }
+  return SettingsRepo.of({ ...storeOf(MAIN_PROFILE_ID), forProfile: storeOf })
 })
 
 /** Sum of two usages; optional counters stay absent unless either side has them (same as the in-memory double). */

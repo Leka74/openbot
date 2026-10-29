@@ -17,6 +17,8 @@ import {
   NodeId,
   NonEmptyString,
   NonNegativeInt,
+  NotificationId,
+  OwnerProfileId,
   RequestId,
   RoutineId,
   SectionId,
@@ -25,12 +27,15 @@ import {
   Usage,
 } from "./base.ts"
 import {
+  AwaySummary,
   Bot,
   BotAvatar,
   BotHarness,
   BotNotify,
   Conversation,
   NodeSummary,
+  OwnerProfile,
+  OwnerProfilesView,
   PairingCode,
   Routine,
   RoutineOutput,
@@ -276,6 +281,28 @@ export class OpenBotRpcs extends RpcGroup.make(
 
   // roster
   RosterSubscribe,
+
+  // owner profiles: switching changes what every app shows (the roster follows the active profile)
+  Rpc.make("profiles.list", { success: OwnerProfilesView, error: errors() }),
+  /** The view now, then after every switch and every new or renamed profile. */
+  Rpc.make("profiles.subscribe", { success: OwnerProfilesView, error: errors(), stream: true }),
+  Rpc.make("profiles.create", {
+    payload: { name: NonEmptyString },
+    success: OwnerProfile,
+    error: errors(InvalidInput),
+  }),
+  Rpc.make("profiles.rename", {
+    payload: { profileId: OwnerProfileId, name: NonEmptyString },
+    success: OwnerProfile,
+    error: errors(NotFound, InvalidInput),
+  }),
+  Rpc.make("profiles.switch", { payload: { profileId: OwnerProfileId }, error: Missing }),
+  /** Removes a profile with all of its Bots, chats and settings; never the main or the active one. */
+  Rpc.make("profiles.delete", { payload: { profileId: OwnerProfileId }, error: errors(NotFound, Forbidden) }),
+  /** What the active profile missed while another one was active. */
+  Rpc.make("profiles.away", { success: AwaySummary, error: errors() }),
+  /** Clears the held items up to and including `through`, so one held since stays. */
+  Rpc.make("profiles.dismissAway", { payload: { through: NotificationId }, success: AwaySummary, error: errors() }),
 
   // bots
   Rpc.make("bots.create", {

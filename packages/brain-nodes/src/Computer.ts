@@ -67,7 +67,7 @@ import type * as Socket from "effect/socket/Socket"
 import { mkdir } from "node:fs/promises"
 import { BrainNodesConfig } from "./config.ts"
 import { NodeRegistry } from "./NodeRegistry.ts"
-import { closeWriter, type Duplex, type Frame, open, splice } from "./splice.ts"
+import { closedWhen, closeWriter, type Duplex, type Frame, open, splice } from "./splice.ts"
 import { openNodeStream, StreamBroker } from "./StreamBroker.ts"
 
 type Handler = Effect.Effect<HttpServerResponse.HttpServerResponse, never, HttpServerRequest.HttpServerRequest>
@@ -102,12 +102,16 @@ export interface ComputerServiceShape {
     readonly botId: string
     readonly mode: ViewerMode
     readonly passive?: boolean | undefined
+    /** The viewer closes once it completes. */
+    readonly closeWhen?: Effect.Effect<void> | undefined
   }) => Handler
   /** `GET /ws/terminal/:botId?cols=&rows=` — call AFTER the server authorized the request. */
   readonly terminal: (input: {
     readonly botId: string
     readonly cols?: number | undefined
     readonly rows?: number | undefined
+    /** The terminal closes once it completes. */
+    readonly closeWhen?: Effect.Effect<void> | undefined
   }) => Handler
   /** Viewers currently attached to a bot's screen (screencast or desktop relays; tests, diagnostics). */
   readonly viewerCount: (botId: BotId) => Effect.Effect<number>
@@ -786,7 +790,7 @@ export const makeComputerService = Effect.gen(function* () {
       }),
     ).pipe(Effect.catchCause((cause) => Effect.logDebug("desktop viewer ended", { botId, mode, cause })))
 
-  const viewer: ComputerServiceShape["viewer"] = ({ botId, mode, passive }) =>
+  const viewer: ComputerServiceShape["viewer"] = ({ botId, mode, passive, closeWhen }) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
       const s = yield* Effect.result(statusOf(botId as BotId))
@@ -807,22 +811,17 @@ export const makeComputerService = Effect.gen(function* () {
       }
       const upgraded = yield* Effect.result(request.upgrade)
       if (Result.isFailure(upgraded)) return HttpServerResponse.text("expected a WebSocket upgrade", { status: 400 })
+      const socket = closedWhen(upgraded.success, closeWhen)
       if (st.surface === "desktop") {
         // detached: the route fiber is interrupted when the viewer closes (G2); the relay closes the
         // node stream itself
         const fiber = yield* Effect.forkDetach(
-          runDesktopViewer(upgraded.success, botId as BotId, st.nodeId, mode, passive === true),
+          runDesktopViewer(socket, botId as BotId, st.nodeId, mode, passive === true),
         )
         yield* Fiber.await(fiber)
         return HttpServerResponse.empty()
       }
-      yield* runViewer(
-        upgraded.success,
-        botId as BotId,
-        st.nodeId,
-        mode,
-        st.surface === "screen" ? "screen" : "browser",
-      )
+      yield* runViewer(socket, botId as BotId, st.nodeId, mode, st.surface === "screen" ? "screen" : "browser")
       return HttpServerResponse.empty()
     })
 
@@ -870,7 +869,7 @@ export const makeComputerService = Effect.gen(function* () {
       }),
     ).pipe(Effect.catchCause((cause) => Effect.logDebug("terminal ended", { botId, cause })))
 
-  const terminal: ComputerServiceShape["terminal"] = ({ botId, cols, rows }) =>
+  const terminal: ComputerServiceShape["terminal"] = ({ botId, cols, rows, closeWhen }) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
       const bot = yield* Effect.option(getBot(botId as BotId))
@@ -886,7 +885,13 @@ export const makeComputerService = Effect.gen(function* () {
       if (Result.isFailure(upgraded)) return HttpServerResponse.text("expected a WebSocket upgrade", { status: 400 })
       // detached: the route fiber is interrupted when the viewer closes (G2); drain the pty first
       const fiber = yield* Effect.forkDetach(
-        runTerminal(upgraded.success, bot.value.id, node.value, clampSize(cols, 80, 1000), clampSize(rows, 24, 500)),
+        runTerminal(
+          closedWhen(upgraded.success, closeWhen),
+          bot.value.id,
+          node.value,
+          clampSize(cols, 80, 1000),
+          clampSize(rows, 24, 500),
+        ),
       )
       yield* Fiber.await(fiber)
       return HttpServerResponse.empty()

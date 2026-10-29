@@ -4,8 +4,9 @@
 import { WifiOff } from "lucide-react"
 import { lazy, type ReactNode, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { BotId } from "@openbot/contracts"
-import { connectionAtom, reconnectAtom } from "@openbot/client"
+import { AsyncResult } from "effect/reactivity"
+import { type BotId, MAIN_PROFILE_ID } from "@openbot/contracts"
+import { activeProfileIdAtom, connectionAtom, profilesAtom, reconnectAtom } from "@openbot/client"
 import { Dialog, DialogHeader, Icon, PillButton } from "@openbot/ui"
 import { ChatView } from "../chat/ChatView.tsx"
 import { NewChatView } from "../chat/NewChat.tsx"
@@ -13,6 +14,7 @@ import { SearchPalette } from "../palette/SearchPalette.tsx"
 import { SearchView } from "../search/SearchView.tsx"
 import { Sidebar } from "../sidebar/Sidebar.tsx"
 import { AppShell } from "./AppShell.tsx"
+import { AwayDialog } from "./AwayDialog.tsx"
 import { ConnectDeviceDialog } from "./ConnectDevice.tsx"
 import { SignInPrompt } from "./SignInPrompt.tsx"
 import { useRoster, useSessionInfo, valueOr } from "./data.ts"
@@ -21,6 +23,7 @@ import { ComputerView, DetailsPane, NewBotForm, NewGroupForm, Onboarding, Settin
 import { isPhoneNow, useLayoutMode, useVisualViewport } from "./layout.ts"
 import { useBackDismiss } from "./nav.ts"
 import { useDesktopPresence, useSystemNotifications } from "./notifications.ts"
+import { useFollowActiveProfile } from "./profiles.ts"
 import { useReloadOnUpdate } from "./reloadOnUpdate.ts"
 import { parseRoute } from "./route.ts"
 
@@ -98,6 +101,8 @@ export function App(): ReactNode {
   const phone = mode === "phone"
   const roster = useRoster()
   const info = useSessionInfo()
+  const profiles = useAtomValue(profilesAtom)
+  const activeProfileId = useAtomValue(activeProfileIdAtom)
   const { conversationId, select, search, openSearch, closeSearch } = useSelection()
   const [findBar, setFindBar] = useAtom(findBarAtom)
   const nav = usePhoneNav()
@@ -111,6 +116,7 @@ export function App(): ReactNode {
   useSystemNotifications()
   useDesktopPresence()
   useReloadOnUpdate()
+  useFollowActiveProfile()
   const [compact, setCompactState] = useState(() => {
     try {
       return localStorage.getItem(COMPACT_KEY) === "1"
@@ -308,8 +314,11 @@ export function App(): ReactNode {
         ? (summary.botIds[0] as BotId | undefined)
         : undefined
 
-  // Onboarding is sticky: once shown it stays until onDone, even after it creates the first Bot.
-  const firstRun = valueOr(info, undefined)?.firstRun === true
+  // Onboarding is sticky: once shown it stays until onDone, even after it creates the first Bot. A
+  // profile the owner added starts empty instead, with the profile switcher at hand. Until the active
+  // profile is known, a fresh install would show the empty app before its onboarding.
+  if (AsyncResult.isInitial(profiles)) return <PaneLoading />
+  const firstRun = valueOr(info, undefined)?.firstRun === true && activeProfileId === MAIN_PROFILE_ID
   const needsOnboarding = roster.loaded && firstRun && roster.bots.length === 0
   if (needsOnboarding && onboarding === "no") setOnboarding("show")
   if (onboarding === "show") {
@@ -388,6 +397,7 @@ export function App(): ReactNode {
         <ConnectDeviceDialog code={connectCode} onClose={() => setConnectCode(undefined)} />
       )}
       <SignInPrompt />
+      <AwayDialog />
       <SearchPalette
         open={dialog?.kind === "search"}
         onOpenChange={(o) => (o ? dialogs.show({ kind: "search" }) : dialogs.hide())}

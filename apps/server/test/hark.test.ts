@@ -2,6 +2,8 @@
 // webhook is refused); OpenBot's notifications become pushes with the Bot as project and a link to
 // the chat; "when a Bot needs you" drops the rest; a webhook Hark forgets shows as a problem.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
+import { inProfile } from "@openbot/core"
 import { Effect, Fiber } from "effect"
 import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -60,9 +62,9 @@ describe("Hark", () => {
       Effect.gen(function* () {
         const file = join(server.dataDir, "hark-no-sends.json")
         writeFileSync(file, JSON.stringify({ version: 1, token: "whk_good" }))
-        const service = yield* makeHark({ file })
+        const service = yield* makeHark({ file: () => file })
         expect(yield* service.status).toEqual({ connected: true, sends: "all", quietAtComputer: true })
-      }),
+      }).pipe(inProfile(MAIN_PROFILE_ID)),
     ))
 
   for (const pendingAt of ["request", "response body"] as const) {
@@ -86,7 +88,7 @@ describe("Hark", () => {
             },
             { preconnect: fetch.preconnect },
           )
-          const service = yield* makeHark({ file, fetch: fetchImpl })
+          const service = yield* makeHark({ file: () => file, fetch: fetchImpl })
           const call = yield* service.connect("whk_good").pipe(Effect.forkScoped)
           const signal = yield* Effect.promise(() => started.promise)
           expect(signal.aborted).toBe(false)
@@ -94,7 +96,7 @@ describe("Hark", () => {
           expect(signal.aborted).toBe(true)
           expect(existsSync(file)).toBe(false)
           expect(yield* service.status).toEqual({ connected: false, sends: "all" })
-        }),
+        }).pipe(inProfile(MAIN_PROFILE_ID)),
       ))
   }
 

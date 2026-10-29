@@ -24,10 +24,10 @@
  */
 import { NodeInternalRoutes, NodePublicRoutes, ViewerRoutes } from "@openbot/brain-nodes"
 import { DesktopRoutes } from "./desktop.ts"
-import { type AttachmentId, OpenBotRpcs } from "@openbot/contracts"
-import { AttachmentStore, DataDir, LiveHub, Notifier, SignInRequests } from "@openbot/core"
+import { type AttachmentId, type BotId, OpenBotRpcs } from "@openbot/contracts"
+import { AttachmentStore, BotRepo, DataDir, LiveHub, Notifier, OwnerProfiles, SignInRequests } from "@openbot/core"
 import { McpGateway } from "@openbot/gateway"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option, Stream } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { WebAuth, searchParamsOf, sessionTokenOf } from "./auth.ts"
@@ -497,6 +497,7 @@ export const AttachmentRoutes = routes(
   Effect.fnUntraced(function* (router) {
     const auth = yield* WebAuth
     const store = yield* AttachmentStore
+    const profiles = yield* OwnerProfiles
     yield* router.add(
       "GET",
       "/api/attachments/:id",
@@ -507,7 +508,8 @@ export const AttachmentRoutes = routes(
         const id = (yield* HttpRouter.params)["id"] ?? ""
         if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return refusal(404, "not found")
         const record = yield* Effect.orDie(store.get(id as AttachmentId))
-        if (Option.isNone(record)) return refusal(404, "not found")
+        if (Option.isNone(record) || record.value.ownerProfileId !== (yield* profiles.active))
+          return refusal(404, "not found")
         const file = Bun.file(record.value.path)
         if (!(yield* Effect.promise(() => file.exists()))) return refusal(404, "not found")
         const size = file.size
@@ -652,13 +654,33 @@ export const WebRoutes = routes(
 
 // ============================================================================ viewers (brain-nodes)
 
-/** `/ws/computer/:botId` and `/ws/terminal/:botId`: the same credentials as `/rpc`. Single owner: every bot. */
-export const ViewerRoutesLive = ViewerRoutes((input) =>
-  Effect.flatMap(WebAuth, (auth) =>
-    Effect.map(auth.authenticate(input.request, { allowTicket: true }), (result) =>
-      result.ok ? undefined : refusal(result.status, result.reason),
-    ),
-  ),
+/** The owner reaches the Bots of the profile the apps show; another profile's are not found. */
+const inActiveProfile = (botId: string) =>
+  Effect.gen(function* () {
+    const bot = yield* Effect.orDie((yield* BotRepo).get(botId as BotId))
+    return Option.isSome(bot) && bot.value.ownerProfileId === (yield* (yield* OwnerProfiles).active)
+  })
+
+/** Completes once the owner switches away from the Bot's profile: its viewers and calls close then. */
+const leftProfileOf = (botId: string) =>
+  Effect.gen(function* () {
+    const bot = yield* Effect.orDie((yield* BotRepo).get(botId as BotId))
+    if (Option.isNone(bot)) return
+    yield* (yield* OwnerProfiles).changes.pipe(
+      Stream.filter((view) => view.activeId !== bot.value.ownerProfileId),
+      Stream.runHead,
+    )
+  })
+
+/** `/ws/computer/:botId` and `/ws/terminal/:botId`: the same credentials as `/rpc`, for a Bot of the active profile. */
+export const ViewerRoutesLive = ViewerRoutes(
+  (input) =>
+    Effect.gen(function* () {
+      const result = yield* (yield* WebAuth).authenticate(input.request, { allowTicket: true })
+      if (!result.ok) return refusal(result.status, result.reason)
+      return (yield* inActiveProfile(input.botId)) ? undefined : refusal(404, "not found")
+    }),
+  leftProfileOf,
 )
 
 // ============================================================================ composition
@@ -668,6 +690,7 @@ const VoiceRoute = routes(
   Effect.fnUntraced(function* (router) {
     const voice = yield* VoiceCalls
     const auth = yield* WebAuth
+    const context = yield* Effect.context<BotRepo | OwnerProfiles>()
     yield* router.add(
       "GET",
       "/ws/voice/:botId",
@@ -675,8 +698,9 @@ const VoiceRoute = routes(
         const request = yield* HttpServerRequest.HttpServerRequest
         const result = yield* auth.authenticate(request, { allowTicket: true })
         if (!result.ok) return refusal(result.status, result.reason)
-        const params = yield* HttpRouter.params
-        return yield* voice.call(params["botId"] ?? "")
+        const botId = (yield* HttpRouter.params)["botId"] ?? ""
+        if (!(yield* inActiveProfile(botId))) return refusal(404, "not found")
+        return yield* voice.call(botId, Effect.provide(leftProfileOf(botId), context))
       }),
     )
   }),

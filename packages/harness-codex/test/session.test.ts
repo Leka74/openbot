@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import type { HarnessRequest, HarnessRequestResolution, NodeId, SkillName } from "@openbot/contracts"
+import {
+  type HarnessRequest,
+  type HarnessRequestResolution,
+  MAIN_PROFILE_ID,
+  type NodeId,
+  OwnerProfileId,
+  type SkillName,
+} from "@openbot/contracts"
 import { HarnessError, makeDataDir } from "@openbot/core"
 import { Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import { type CodexHarnessConfig, makeCodexDriver } from "../src/Driver.ts"
@@ -392,6 +399,72 @@ describe("Codex session: thread setup", () => {
     const notesOff = [host[0], { path: `${result.library}/notes/SKILL.md`, enabled: false }, host[1]]
     expect((starts[1]!.config as Record<string, unknown>)["skills.config"]).toEqual(notesOff)
     expect((starts[2]!.config as Record<string, unknown>)["skills.config"]).toEqual(notesOff)
+  })
+
+  test("skills: each profile has its own app-server with only its library, also a profile made after the first started", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        // like Codex: a server lists the skills of the roots it was given
+        const ctx = yield* setup({
+          "skills/list": (_params, server) => ({
+            data: [
+              {
+                cwd: "/w",
+                skills: server
+                  .requests("skills/extraRoots/set")
+                  .flatMap((params) => (params as { extraRoots: ReadonlyArray<string> }).extraRoots)
+                  .map((root) => ({ name: "deploy", path: `${root}/deploy/SKILL.md` })),
+              },
+            ],
+          }),
+        })
+        const roots = {
+          main: join(ctx.root, "skills-lib", "skills"),
+          demo: join(ctx.root, "profiles", "prf_demo", "skills-lib", "skills"),
+        }
+        mkdirSync(roots.main, { recursive: true })
+        const input = makeSessionInput(ctx.workspace, allow())
+        const skills = ["deploy" as SkillName]
+        yield* ctx.driver.openSession({ ...input, bot: { ...input.bot, skills } })
+        mkdirSync(roots.demo, { recursive: true })
+        const demo = { ...input.bot, skills, ownerProfileId: OwnerProfileId.make("prf_demo") }
+        yield* ctx.driver.openSession({ ...input, bot: demo })
+        yield* ctx.driver.openSession({ ...input, bot: { ...input.bot, skills } })
+        return { servers: ctx.launches.map((launch) => launch.server), roots }
+      }),
+    )
+    const [main, demo] = result.servers
+    expect(result.servers.length).toBe(2)
+    expect(main!.requests("skills/extraRoots/set")).toEqual([{ extraRoots: [result.roots.main] }])
+    expect(demo!.requests("skills/extraRoots/set")).toEqual([{ extraRoots: [result.roots.demo] }])
+    expect(main!.requests("thread/start").length).toBe(2)
+    expect(demo!.requests("thread/start").length).toBe(1)
+    // neither server lists the other profile's "deploy": no skill to disable, nothing to mix up
+    for (const start of [...main!.requests("thread/start"), ...demo!.requests("thread/start")]) {
+      expect((start.config as Record<string, unknown>)["skills.config"]).toBeUndefined()
+    }
+  })
+})
+
+describe("Codex: forgetting an owner profile", () => {
+  test("stops the deleted profile's app-server, never the main one's; a later session starts a fresh one", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const ctx = yield* setup()
+        const input = makeSessionInput(ctx.workspace, allow())
+        const demo = OwnerProfileId.make("prf_demo")
+        yield* ctx.driver.openSession(input)
+        yield* ctx.driver.openSession({ ...input, bot: { ...input.bot, ownerProfileId: demo } })
+        yield* ctx.driver.forgetOwnerProfile!(demo)
+        yield* ctx.driver.forgetOwnerProfile!(MAIN_PROFILE_ID)
+        const stopped = ctx.launches.map((launch) => launch.server.stopped)
+        yield* ctx.driver.openSession(input)
+        yield* ctx.driver.openSession({ ...input, bot: { ...input.bot, ownerProfileId: demo } })
+        return { stopped, launches: ctx.launches.length }
+      }),
+    )
+    expect(result.stopped).toEqual([false, true])
+    expect(result.launches).toBe(3)
   })
 })
 

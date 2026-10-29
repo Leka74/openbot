@@ -16,6 +16,8 @@ import { Clock, Context, Effect, Option } from "effect"
 import type { RepoError } from "./errors.ts"
 import { McpTokenRepo } from "./Mcp.ts"
 import { ProcessLedger, type ProcessRecord } from "./ProcessLedger.ts"
+import type { ProfileDirs } from "./ProfileDirs.ts"
+import type { HeldNotificationRepo, OwnerProfileRepo, ProfileStorage } from "./Profiles.ts"
 import {
   type ApprovalRuleRepo,
   type BotRepo,
@@ -46,6 +48,10 @@ export type RepositoryPorts =
   | TaskRepo
   | RoutineRepo
   | NodeRepo
+  | OwnerProfileRepo
+  | ProfileStorage
+  | HeldNotificationRepo
+  | ProfileDirs
   | ApprovalRuleRepo
   | SettingsRepo
   | UsageRepo

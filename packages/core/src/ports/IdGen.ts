@@ -12,6 +12,7 @@ import type {
   EntryId,
   NodeId,
   NotificationId,
+  OwnerProfileId,
   RequestId,
   RoutineId,
   RoutineRunId,
@@ -48,6 +49,7 @@ export interface IdGenShape {
   readonly ruleId: Effect.Effect<ApprovalRuleId>
   readonly notificationId: Effect.Effect<NotificationId>
   readonly taskId: Effect.Effect<TaskId>
+  readonly profileId: Effect.Effect<OwnerProfileId>
 }
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -80,6 +82,7 @@ export const makeIdGenShape = (next: (prefix: string) => Effect.Effect<string>):
     ruleId: typed<ApprovalRuleId>(CoreIdPrefix.rule),
     notificationId: typed<NotificationId>(CoreIdPrefix.notification),
     taskId: typed<TaskId>(CoreIdPrefix.task),
+    profileId: typed<OwnerProfileId>(CoreIdPrefix.profile),
   }
 }
 

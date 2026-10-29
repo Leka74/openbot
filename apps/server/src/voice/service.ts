@@ -23,7 +23,7 @@ import {
   type VoicePreview,
 } from "@openbot/contracts"
 import { BotRepo, CallPresence, ConversationService, LiveHub, Orchestrator } from "@openbot/core"
-import { closeWriter, type Frame, open } from "@openbot/brain-nodes"
+import { closedWhen, closeWriter, type Frame, open } from "@openbot/brain-nodes"
 import { Context, Effect, Fiber, Layer, Option, Queue, Result, Stream } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import type * as Socket from "effect/socket/Socket"
@@ -43,9 +43,10 @@ export class VoiceCalls extends Context.Service<
     readonly remove: Effect.Effect<VoiceCallStatus, Conflict>
     /** `text` in `voice` (24 kHz PCM16), for choosing a Bot's voice. */
     readonly preview: (voice: string, text: string) => Effect.Effect<VoicePreview, InvalidInput | Unavailable>
-    /** `/ws/voice/:botId`, after the route checked the owner's credentials. */
+    /** `/ws/voice/:botId`, after the route checked the owner's credentials. The call ends once `closeWhen` completes. */
     readonly call: (
       botId: string,
+      closeWhen?: Effect.Effect<void>,
     ) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, HttpServerRequest.HttpServerRequest>
   }
 >()("openbot/server/VoiceCalls") {}
@@ -397,7 +398,7 @@ export const VoiceCallsLive = (
           }),
         ).pipe(Effect.catchCause((cause) => Effect.logDebug("voice call failed", { cause })))
 
-      const call = (botId: string) =>
+      const call = (botId: string, closeWhen?: Effect.Effect<void>) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest
           if (status.state !== "ready")
@@ -415,7 +416,7 @@ export const VoiceCallsLive = (
           // detached: the route's fiber is interrupted when the app closes the socket, and the call still
           // has to finish (the "Voice chat" line)
           const running = yield* Effect.forkDetach(
-            runCall(upgraded.success, bot).pipe(
+            runCall(closedWhen(upgraded.success, closeWhen), bot).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
                   presence.leave(bot.id)

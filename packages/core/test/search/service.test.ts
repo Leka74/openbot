@@ -6,11 +6,12 @@ import type { ConversationId, EntryId, KnownTranscriptEntry } from "@openbot/con
 import { OWNER_USER_ID } from "@openbot/contracts"
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
-import { ConversationRepo, EntryRepo, RequestRepo, TaskRepo, TurnRepo } from "../../src/ports/repos.ts"
+import { BotRepo, ConversationRepo, EntryRepo, RequestRepo, TaskRepo, TurnRepo } from "../../src/ports/repos.ts"
 import { ConversationService, SearchService } from "../../src/ports/services.ts"
 import { ConversationServiceLive, LiveHubLive } from "../../src/services/conversation/index.ts"
 import { SearchServiceLive } from "../../src/services/search/index.ts"
 import {
+  makeBot,
   botId,
   conversationId,
   entryId,
@@ -39,6 +40,8 @@ const dmA = conversationId("cnv_a")
 const dmB = conversationId("cnv_b")
 
 const seed = Effect.gen(function* () {
+  const bots = yield* BotRepo
+  for (const id of [A, B]) yield* bots.upsert(makeBot({ id }))
   const conversations = yield* ConversationRepo
   yield* conversations.upsert(makeDirectConversation({ id: dmA, botId: A }))
   yield* conversations.upsert(makeDirectConversation({ id: dmB, botId: B }))

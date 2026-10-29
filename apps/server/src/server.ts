@@ -46,6 +46,7 @@ import {
   SignInRequests,
   ApprovalServiceLive,
   AttachmentServiceLive,
+  AwayLive,
   BackgroundTasks,
   BackgroundTasksLive,
   BootRecovery,
@@ -64,6 +65,9 @@ import {
   NotifierLive,
   Orchestrator,
   OrchestratorLive,
+  OwnerProfilesLive,
+  ProfileGuardLive,
+  ProfileRemovalLive,
   RoutineSchedulerLive,
   SearchRepo,
   SearchServiceLive,
@@ -392,6 +396,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     config.maxFileBytes === undefined
       ? Layer.empty
       : Layer.succeed(SendFileLimits, { maxFileBytes: config.maxFileBytes, maxFiles: MAX_SENT_FILES })
+  const dataDir = makeDataDir(config.dataDir)
   const base = Layer.mergeAll(ServerConfig.layer(config), DataDir.layer(config.dataDir), IdGen.layer, limits)
   const listeners = Layer.mergeAll(PublicListenerLive, InternalListenerLive)
   // HostPathsLive: the local computer's home and git repo roots (project folders, "Allow in ‹folder›").
@@ -402,8 +407,6 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     BrainIdentityLive,
     WebAuthLive,
     HostPathsLive,
-    // the owner's Slack (D3.4): tokens in <data>/slack.json
-    SlackConnectorLive({ file: makeDataDir(config.dataDir).slack, apiUrl: config.slackApiUrl }),
     options?.speechToText ?? SpeechToTextLive({ dir: makeDataDir(config.dataDir).stt }),
     // voice calls (experiment): who is on a call (background work started on one reports back on it)
     CallPresence.layer,
@@ -416,6 +419,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     SettingsServiceLive,
     UsageServiceLive,
     NotifierLive,
+    AwayLive,
     ConversationServiceLive,
     AttachmentServiceLive,
     SearchServiceLive,
@@ -438,46 +442,51 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     Layer.provideMerge(base),
   )
   // steps 6-10: core services, recovery, drivers, local node
-  const services = SkillServiceLive.pipe(
-    Layer.provide(
-      options?.skillDirectory ??
-        SkillsShLive(config.skillsShUrl === undefined ? undefined : { baseUrl: config.skillsShUrl }),
-    ), // skills.sh import (D5.5)
-    Layer.provideMerge(BotServiceLive),
-  ).pipe(
-    Layer.provideMerge(Layer.mergeAll(MessagingLive, RoutineSchedulerLive, SlackShortcutsLive, UiCardServiceLive)), // 10 (+ Slack's "Send to OpenBot", ui cards)
-    // voice calls (experiment): <data>/voice, and voice input's Parakeet + sherpa-onnx
-    Layer.provideMerge(
-      VoiceCallsLive(
-        options?.voiceCalls ?? { dir: makeDataDir(config.dataDir).voice, sttDir: makeDataDir(config.dataDir).stt },
+  const services = Layer.merge(SkillServiceLive, ProfileRemovalLive)
+    .pipe(
+      Layer.provide(
+        options?.skillDirectory ??
+          SkillsShLive(config.skillsShUrl === undefined ? undefined : { baseUrl: config.skillsShUrl }),
+      ), // skills.sh import (D5.5)
+      Layer.provideMerge(BotServiceLive),
+    )
+    .pipe(
+      Layer.provideMerge(Layer.mergeAll(MessagingLive, RoutineSchedulerLive, SlackShortcutsLive, UiCardServiceLive)), // 10 (+ Slack's "Send to OpenBot", ui cards)
+      // voice calls (experiment): <data>/voice, and voice input's Parakeet + sherpa-onnx
+      Layer.provideMerge(
+        VoiceCallsLive(
+          options?.voiceCalls ?? { dir: makeDataDir(config.dataDir).voice, sttDir: makeDataDir(config.dataDir).stt },
+        ),
       ),
-    ),
-    // updates: the newest release of OpenBot, installed through scripts/deploy.ts
-    Layer.provideMerge(
-      UpdatesLive({
-        dataDir: config.dataDir,
-        repo: process.env["OPENBOT_UPDATE_REPO"],
-        // OPENBOT_UPDATES=off: no checking on a timer (tests, or a brain updated by other means)
-        schedule: process.env["OPENBOT_UPDATES"] !== "off",
-        ...options?.updates,
-      }),
-    ),
-    Layer.provideMerge(LocalNodeDaemonLive(options?.localNode)), // 9
-    Layer.provideMerge(HarnessProfilesLayer(options?.profiles)), // 8b: added accounts (profiles.ts)
-    Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
-    Layer.provideMerge(RecoveredLive), // 7
-    Layer.provideMerge(OrchestratorLive), // 6
-    Layer.provideMerge(BackgroundTasksLive), // 5b (D5.7)
-    Layer.provideMerge(InstructionRendererLive),
-    Layer.provideMerge(ApprovalServiceLive),
-    Layer.provideMerge(SlackServiceLive), // Slack drafts (D3.4)
-    Layer.provideMerge(HarkLive({ file: makeDataDir(config.dataDir).hark, baseUrl: config.harkUrl })), // iPhone notifications (D3.5)
-    Layer.provideMerge(NtfyLive({ file: makeDataDir(config.dataDir).ntfy })), // phone notifications (D3.6)
-    Layer.provideMerge(MemoryServiceLive),
-    Layer.provideMerge(level2),
-    Layer.provideMerge(LiveHubLive),
-    Layer.provideMerge(foundation),
-  )
+      // updates: the newest release of OpenBot, installed through scripts/deploy.ts
+      Layer.provideMerge(
+        UpdatesLive({
+          dataDir: config.dataDir,
+          repo: process.env["OPENBOT_UPDATE_REPO"],
+          // OPENBOT_UPDATES=off: no checking on a timer (tests, or a brain updated by other means)
+          schedule: process.env["OPENBOT_UPDATES"] !== "off",
+          ...options?.updates,
+        }),
+      ),
+      Layer.provideMerge(LocalNodeDaemonLive(options?.localNode)), // 9
+      Layer.provideMerge(HarnessProfilesLayer(options?.profiles)), // 8b: added accounts (profiles.ts)
+      Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
+      Layer.provideMerge(RecoveredLive), // 7
+      Layer.provideMerge(OrchestratorLive), // 6
+      Layer.provideMerge(BackgroundTasksLive), // 5b (D5.7)
+      Layer.provideMerge(InstructionRendererLive),
+      Layer.provideMerge(ApprovalServiceLive),
+      Layer.provideMerge(SlackServiceLive), // Slack drafts (D3.4)
+      Layer.provideMerge(HarkLive({ file: (id) => dataDir.profile(id).hark, baseUrl: config.harkUrl })), // iPhone notifications (D3.5)
+      Layer.provideMerge(NtfyLive({ file: (id) => dataDir.profile(id).ntfy })), // phone notifications (D3.6)
+      Layer.provideMerge(MemoryServiceLive),
+      Layer.provideMerge(level2),
+      Layer.provideMerge(LiveHubLive),
+      // the owner's Slack (D3.4), each profile's tokens in its slack.json
+      Layer.provideMerge(SlackConnectorLive({ file: (id) => dataDir.profile(id).slack, apiUrl: config.slackApiUrl })),
+      Layer.provideMerge(Layer.merge(OwnerProfilesLive, ProfileGuardLive)),
+      Layer.provideMerge(foundation),
+    )
   // steps 11-14: gateways, both listeners' routes, ready. The two `HttpRouter.serve` layers are
   // SIBLINGS: a serve layer's output context carries its router (and memo map), so stacking one on
   // the other would mount every route on both listeners.

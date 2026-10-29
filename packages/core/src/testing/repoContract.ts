@@ -10,11 +10,21 @@
  *
  * Each case expects FRESH (empty) repositories. Failures are `ContractViolation` errors.
  */
-import type { ApprovalRuleId, MemoryFactId, Millis, SkillName, StreamCursor } from "@openbot/contracts"
+import type {
+  ApprovalRuleId,
+  MemoryFactId,
+  Millis,
+  NotificationId,
+  OwnerProfileId,
+  SkillName,
+  StreamCursor,
+} from "@openbot/contracts"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
 import { Data, Effect, Option, Result } from "effect"
 import { McpTokenRepo } from "../ports/Mcp.ts"
 import { BootRecovery } from "../ports/Persistence.ts"
 import { ProcessLedger } from "../ports/ProcessLedger.ts"
+import { HeldNotificationRepo, inProfile } from "../ports/Profiles.ts"
 import {
   ApprovalRuleRepo,
   BotRepo,
@@ -36,6 +46,7 @@ import {
 } from "../ports/repos.ts"
 import { AttachmentStore, MemoryStore, SkillStore } from "../ports/stores.ts"
 import {
+  OTHER_PROFILE,
   botId,
   conversationId,
   entryId,
@@ -130,7 +141,10 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
       yield* repo.upsert(makeBot({ id: botId("bot_b"), createdAt: 2 }))
       yield* repo.upsert(makeBot({ id: botId("bot_a"), createdAt: 1 }))
       yield* repo.upsert(makeBot({ id: botId("bot_b"), createdAt: 2, name: "Renamed" }))
-      yield* equal(ids(yield* repo.list), ["bot_a", "bot_b"], "list order")
+      yield* repo.upsert(makeBot({ id: botId("bot_other"), ownerProfileId: OTHER_PROFILE, createdAt: 3 }))
+      yield* equal(ids(yield* repo.list), ["bot_a", "bot_b", "bot_other"], "list order")
+      yield* equal(ids(yield* repo.listIn(MAIN_PROFILE_ID)), ["bot_a", "bot_b"], "one profile")
+      yield* equal(ids(yield* repo.listIn(OTHER_PROFILE)), ["bot_other"], "another profile")
       yield* equal((yield* some(yield* repo.get(botId("bot_b")), "get")).name, "Renamed", "upsert replaces")
       yield* equal(yield* repo.delete(botId("bot_a")), true, "delete existing")
       yield* equal(yield* repo.delete(botId("bot_a")), false, "delete missing")
@@ -145,7 +159,9 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
       yield* repo.upsert(makeSection({ id: sectionId("sec_c"), order: 1 }))
       yield* repo.upsert(makeSection({ id: sectionId("sec_b"), order: 0 }))
       yield* repo.upsert(makeSection({ id: sectionId("sec_a"), order: 1 }))
-      yield* equal(ids(yield* repo.list), ["sec_b", "sec_a", "sec_c"], "order")
+      yield* repo.upsert(makeSection({ id: sectionId("sec_other"), ownerProfileId: OTHER_PROFILE, order: 0 }))
+      yield* equal(ids(yield* repo.list(MAIN_PROFILE_ID)), ["sec_b", "sec_a", "sec_c"], "order")
+      yield* equal(ids(yield* repo.list(OTHER_PROFILE)), ["sec_other"], "another profile's")
       yield* repo.delete(sectionId("sec_b"))
       yield* none(yield* repo.get(sectionId("sec_b")), "deleted section")
     }),
@@ -526,8 +542,18 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
       yield* repo.upsert(makeRule({ id: "rul_global" as ApprovalRuleId, createdAt: 1 }))
       yield* repo.upsert(makeRule({ id: "rul_a" as ApprovalRuleId, botId: botId("bot_a"), createdAt: 2 }))
       yield* repo.upsert(makeRule({ id: "rul_b" as ApprovalRuleId, botId: botId("bot_b"), createdAt: 3 }))
-      yield* equal(ids(yield* repo.list()), ["rul_global", "rul_a", "rul_b"], "all")
-      yield* equal(ids(yield* repo.list({ botId: botId("bot_a") })), ["rul_global", "rul_a"], "bot + global")
+      yield* repo.upsert(makeRule({ id: "rul_other" as ApprovalRuleId, ownerProfileId: OTHER_PROFILE, createdAt: 4 }))
+      yield* equal(ids(yield* repo.list({ profileId: MAIN_PROFILE_ID })), ["rul_global", "rul_a", "rul_b"], "all")
+      yield* equal(
+        ids(yield* repo.list({ profileId: MAIN_PROFILE_ID, botId: botId("bot_a") })),
+        ["rul_global", "rul_a"],
+        "bot + global",
+      )
+      yield* equal(
+        ids(yield* repo.list({ profileId: OTHER_PROFILE, botId: botId("bot_a") })),
+        ["rul_other"],
+        "per profile",
+      )
       yield* repo.delete("rul_a" as ApprovalRuleId)
       yield* none(yield* repo.get("rul_a" as ApprovalRuleId), "deleted")
     }),
@@ -723,8 +749,8 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
       yield* store.put({ name: "deploy" as SkillName, description: "Deploy v2", body: "# Deploy", updatedAt: 2 })
       yield* equal((yield* some(yield* store.get("deploy" as SkillName), "get")).description, "Deploy v2", "replace")
       yield* equal(yield* store.delete("deploy" as SkillName), true, "delete")
-      yield* ok(store.root.length > 0, "root path")
-    }),
+      yield* ok((yield* store.dir("triage" as SkillName)).endsWith("/skills/triage"), "skill folder")
+    }).pipe(inProfile(MAIN_PROFILE_ID)),
   ),
 
   contractCase(
@@ -786,6 +812,46 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
       yield* equal((yield* some(yield* store.get(record.id), "get")).id, record.id, "get")
       yield* equal(yield* store.delete(record.id), true, "delete")
       yield* none(yield* store.read(record.id), "deleted")
+    }).pipe(inProfile(MAIN_PROFILE_ID)),
+  ),
+
+  contractCase(
+    "HeldNotificationRepo: per profile, oldest first, capped, dismissed through an id",
+    Effect.gen(function* () {
+      const repo = yield* HeldNotificationRepo
+      const a = "prf_a" as OwnerProfileId
+      const b = "prf_b" as OwnerProfileId
+      const held = (id: string, at: number) => ({
+        notification: { id: id as NotificationId, kind: "finished" as const, title: "Ada", body: id, at },
+        needsYou: false,
+      })
+      for (const [i, id] of ["ntf_1", "ntf_2", "ntf_3", "ntf_4"].entries()) yield* repo.hold(a, held(id, i), 3)
+      yield* repo.hold(b, held("ntf_b", 9), 3)
+      const first = yield* repo.summary(a)
+      yield* equal(
+        first.items.map((i) => i.notification.id),
+        ["ntf_2", "ntf_3", "ntf_4"],
+        "oldest dropped past the cap",
+      )
+      yield* equal([first.dropped, first.since], [1, undefined], "dropped counted, never left")
+      yield* equal(
+        (yield* repo.summary(b)).items.map((i) => i.notification.id),
+        ["ntf_b"],
+        "other profile",
+      )
+
+      yield* repo.dismiss(a, "ntf_x" as NotificationId)
+      yield* equal((yield* repo.summary(a)).items.length, 3, "unknown id clears nothing")
+      yield* repo.dismiss(a, "ntf_3" as NotificationId)
+      yield* repo.markLeft(a, 42 as Millis)
+      const after = yield* repo.summary(a)
+      yield* equal(
+        [after.items.map((i) => i.notification.id), after.dropped, after.since],
+        [["ntf_4"], 0, 42],
+        "dismissed through",
+      )
+      yield* repo.dismiss(b, "ntf_4" as NotificationId)
+      yield* equal((yield* repo.summary(a)).items.length, 1, "dismiss stays in its profile")
     }),
   ),
 ]

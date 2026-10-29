@@ -1,11 +1,22 @@
 /**
  * In-memory doubles of the file stores (`MemoryStore`, `SkillStore`, `AttachmentStore`).
  */
-import type { AttachmentId, BotId, MemoryFact, MemoryFactId, Skill, SkillName } from "@openbot/contracts"
+import type {
+  AttachmentId,
+  BotId,
+  MemoryFact,
+  MemoryFactId,
+  OwnerProfileId,
+  Skill,
+  SkillName,
+} from "@openbot/contracts"
+import { InvalidInput, MAIN_PROFILE_ID } from "@openbot/contracts"
 import { Clock, Effect, Layer, Option, Stream } from "effect"
-import { joinPath } from "../ports/DataDir.ts"
+import { joinPath, makeDataDir } from "../ports/DataDir.ts"
 import { RepoError } from "../ports/errors.ts"
 import { IdGen } from "../ports/IdGen.ts"
+import { ProfileDirs } from "../ports/ProfileDirs.ts"
+import { currentProfileId } from "../ports/Profiles.ts"
 import {
   type AttachmentRecord,
   AttachmentStore,
@@ -64,15 +75,23 @@ const parseSkillFile = (text: string): ParsedSkillFile => {
   return { name: field("name"), description: field("description"), body: match[2]! }
 }
 
-export const makeMemorySkillStore = (root = "/openbot-test/skills-lib") =>
+export const makeMemorySkillStore = (dataRoot = "/openbot-test") =>
   Effect.sync(() => {
-    const skills = new Map<SkillName, Skill>()
+    const dirs = makeDataDir(dataRoot)
+    const libraries = new Map<OwnerProfileId, Map<SkillName, Skill>>()
+    const library = Effect.map(currentProfileId, (id) => {
+      const found = libraries.get(id)
+      if (found !== undefined) return found
+      const created = new Map<SkillName, Skill>()
+      libraries.set(id, created)
+      return created
+    })
     return SkillStore.of({
-      list: Effect.sync(() => [...skills.values()].sort(byKey((s) => s.name))),
-      get: (name) => Effect.sync(() => Option.fromNullishOr(skills.get(name))),
+      list: Effect.map(library, (skills) => [...skills.values()].sort(byKey((s) => s.name))),
+      get: (name) => Effect.map(library, (skills) => Option.fromNullishOr(skills.get(name))),
       // like the file store: an existing skill keeps its source and other files
       put: (skill) =>
-        Effect.sync(() => {
+        Effect.map(library, (skills) => {
           const existing = skills.get(skill.name)
           skills.set(skill.name, {
             ...skill,
@@ -81,7 +100,7 @@ export const makeMemorySkillStore = (root = "/openbot-test/skills-lib") =>
           })
         }),
       install: (skill, files) =>
-        Effect.sync(() => {
+        Effect.map(library, (skills) => {
           const others = files
             .map((file) => file.path)
             .filter((path) => path !== "SKILL.md")
@@ -89,15 +108,16 @@ export const makeMemorySkillStore = (root = "/openbot-test/skills-lib") =>
           skills.set(skill.name, { ...skill, ...(others.length === 0 ? {} : { files: others }) })
         }),
       parse: parseSkillFile,
-      delete: (name) => Effect.sync(() => skills.delete(name)),
-      root,
-      dir: (name) => joinPath(root, "skills", name),
+      delete: (name) => Effect.map(library, (skills) => skills.delete(name)),
+      dir: (name) => Effect.map(currentProfileId, (id) => joinPath(dirs.profile(id).skillsLib, "skills", name)),
+      forget: (id) => Effect.sync(() => void libraries.delete(id)),
     })
   })
 
-/** Requires `IdGen` for attachment ids; paths are virtual (`<root>/<id>`). */
-export const makeMemoryAttachmentStore = (root = "/openbot-test/attachments") =>
+/** Requires `IdGen` for attachment ids; paths are virtual (`<profile attachments>/<id>`). */
+export const makeMemoryAttachmentStore = (dataRoot = "/openbot-test") =>
   Effect.gen(function* () {
+    const dirs = makeDataDir(dataRoot)
     const ids = yield* IdGen
     const records = new Map<AttachmentId, AttachmentRecord>()
     const bytes = new Map<AttachmentId, Uint8Array>()
@@ -106,12 +126,14 @@ export const makeMemoryAttachmentStore = (root = "/openbot-test/attachments") =>
         Effect.gen(function* () {
           const id = yield* ids.attachmentId
           const createdAt = yield* Clock.currentTimeMillis
+          const profileId = yield* currentProfileId
           const record: AttachmentRecord = {
             id,
+            ownerProfileId: profileId,
             name: input.name,
             mime: input.mime,
             byteSize: input.bytes.byteLength,
-            path: joinPath(root, id),
+            path: joinPath(dirs.profile(profileId).attachments, id),
             createdAt,
           }
           records.set(id, record)
@@ -130,12 +152,14 @@ export const makeMemoryAttachmentStore = (root = "/openbot-test/attachments") =>
           }
           const id = yield* ids.attachmentId
           const createdAt = yield* Clock.currentTimeMillis
+          const profileId = yield* currentProfileId
           const record: AttachmentRecord = {
             id,
+            ownerProfileId: profileId,
             name: input.name,
             mime: input.mime,
             byteSize: size,
-            path: joinPath(root, id),
+            path: joinPath(dirs.profile(profileId).attachments, id),
             createdAt,
             ...(input.width === undefined ? {} : { width: input.width }),
             ...(input.height === undefined ? {} : { height: input.height }),
@@ -170,9 +194,9 @@ export const makeMemoryAttachmentStore = (root = "/openbot-test/attachments") =>
   })
 
 export const MemoryMemoryStore = Layer.effect(MemoryStore, makeMemoryMemoryStore())
-export const MemorySkillStore = (root?: string) => Layer.effect(SkillStore, makeMemorySkillStore(root))
-export const MemoryAttachmentStore = (root?: string): Layer.Layer<AttachmentStore, never, IdGen> =>
-  Layer.effect(AttachmentStore, makeMemoryAttachmentStore(root))
+export const MemorySkillStore = (dataRoot?: string) => Layer.effect(SkillStore, makeMemorySkillStore(dataRoot))
+export const MemoryAttachmentStore = (dataRoot?: string): Layer.Layer<AttachmentStore, never, IdGen> =>
+  Layer.effect(AttachmentStore, makeMemoryAttachmentStore(dataRoot))
 
 /** `CarryoverStore` in memory. */
 export const MemoryCarryoverStore = Layer.sync(CarryoverStore, () => {
@@ -186,3 +210,21 @@ export const MemoryCarryoverStore = Layer.sync(CarryoverStore, () => {
     }),
   })
 })
+
+/** Records which profiles got their folders and which were moved aside. */
+export const makeMemoryProfileDirs = () => {
+  const ensured = new Set<OwnerProfileId>()
+  const retired = new Set<OwnerProfileId>()
+  return {
+    ensured,
+    retired,
+    dirs: ProfileDirs.of({
+      ensure: (id) => Effect.sync(() => void ensured.add(id)),
+      retire: (id) =>
+        id === MAIN_PROFILE_ID
+          ? Effect.fail(new InvalidInput({ message: "The main profile's files stay where they are." }))
+          : Effect.sync(() => void retired.add(id)),
+    }),
+  }
+}
+export const MemoryProfileDirs = Layer.sync(ProfileDirs, () => makeMemoryProfileDirs().dirs)

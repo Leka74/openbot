@@ -1,5 +1,12 @@
 import { SequentialIdGen } from "@openbot/core/testing"
-import { type BootRecovery, type ProcessRecord, type RepositoryPorts } from "@openbot/core"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
+import {
+  type BootRecovery,
+  type CurrentProfile,
+  inProfile,
+  type ProcessRecord,
+  type RepositoryPorts,
+} from "@openbot/core"
 import { Effect, Layer } from "effect"
 import type { SqlClient } from "effect/sql"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -39,7 +46,9 @@ export const testPersistence = (
     Layer.provide(SequentialIdGen()),
   )
 
+/** Runs `effect` in the main profile. */
 export const run = <A, E>(
-  effect: Effect.Effect<A, E, RepositoryPorts | BootRecovery | SqlClient.SqlClient>,
+  effect: Effect.Effect<A, E, RepositoryPorts | BootRecovery | SqlClient.SqlClient | CurrentProfile>,
   layer: Layer.Layer<RepositoryPorts | BootRecovery | SqlClient.SqlClient, unknown>,
-): Promise<A> => Effect.runPromise(Effect.provide(effect, layer) as Effect.Effect<A, unknown>)
+): Promise<A> =>
+  Effect.runPromise(Effect.provide(effect.pipe(inProfile(MAIN_PROFILE_ID)), layer) as Effect.Effect<A, unknown>)

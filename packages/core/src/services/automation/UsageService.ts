@@ -4,11 +4,13 @@
  */
 import type { BotUsage } from "@openbot/contracts"
 import { Clock, Effect, Layer } from "effect"
-import { UsageRepo } from "../../ports/repos.ts"
+import { currentProfileId } from "../../ports/Profiles.ts"
+import { BotRepo, UsageRepo } from "../../ports/repos.ts"
 import { UsageService } from "../../ports/services.ts"
 
 export const makeUsageService = Effect.gen(function* () {
   const repo = yield* UsageRepo
+  const bots = yield* BotRepo
   return UsageService.of({
     // Usage is bookkeeping: a storage failure is logged, never propagated into a turn.
     record: (input) =>
@@ -25,16 +27,17 @@ export const makeUsageService = Effect.gen(function* () {
         })
       }).pipe(Effect.catch((error) => Effect.logWarning("UsageService.record failed", error))),
     byBot: ({ sinceMs }) =>
-      repo.totalsByBot(sinceMs).pipe(
-        Effect.orDie,
-        Effect.map((totals) =>
-          totals.map((t): BotUsage => ({ botId: t.botId, usage: t.usage, turnCount: t.turnCount, lastAt: t.lastAt })),
-        ),
-      ),
+      Effect.gen(function* () {
+        const profileBots = new Set((yield* Effect.orDie(bots.listIn(yield* currentProfileId))).map((b) => b.id))
+        const totals = yield* Effect.orDie(repo.totalsByBot(sinceMs))
+        return totals
+          .filter((t) => profileBots.has(t.botId))
+          .map((t): BotUsage => ({ botId: t.botId, usage: t.usage, turnCount: t.turnCount, lastAt: t.lastAt }))
+      }),
   })
 })
 
-export const UsageServiceLive: Layer.Layer<UsageService, never, UsageRepo> = Layer.effect(
+export const UsageServiceLive: Layer.Layer<UsageService, never, UsageRepo | BotRepo> = Layer.effect(
   UsageService,
   makeUsageService,
 )

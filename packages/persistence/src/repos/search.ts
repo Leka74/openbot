@@ -144,6 +144,10 @@ export const makeSqlSearchRepo = Effect.gen(function* () {
       sql`(d.source = 'entry' OR EXISTS (SELECT 1 FROM conversations c WHERE c.id = d.conversation_id))`,
     ]
     // EXISTS, not `IN (SELECT …)`: a lookup per row is ~10× faster here than probing a list
+    if (filter.scope.kind === "owner") {
+      clauses.push(sql`EXISTS (SELECT 1 FROM conversation_members m JOIN bots b ON b.id = m.bot_id
+        WHERE m.conversation_id = d.conversation_id AND b.owner_profile_id = ${filter.scope.profileId})`)
+    }
     if (filter.scope.kind === "bot") {
       const bot = filter.scope.botId
       const member = sql`EXISTS (SELECT 1 FROM conversation_members m WHERE m.conversation_id = d.conversation_id AND m.bot_id = ${bot})`

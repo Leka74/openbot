@@ -8,10 +8,11 @@
  * of a group once it has left.
  */
 import type { BotId, ConversationId, SearchKind, SearchSort } from "@openbot/contracts"
-import { DEFAULT_SEARCH_KINDS, OWNER_USER_ID } from "@openbot/contracts"
+import { DEFAULT_SEARCH_KINDS, MAIN_PROFILE_ID, OWNER_USER_ID } from "@openbot/contracts"
 import { Effect } from "effect"
 import type { RepositoryPorts } from "../ports/Persistence.ts"
 import {
+  BotRepo,
   ConversationRepo,
   EntryRepo,
   type SearchFilter,
@@ -22,6 +23,8 @@ import {
 } from "../ports/repos.ts"
 import { parseSearchQuery, type SearchCursor } from "../services/search/text.ts"
 import {
+  OTHER_PROFILE,
+  makeBot,
   botId,
   conversationId,
   entryId,
@@ -51,7 +54,7 @@ const equal = (actual: unknown, expected: unknown, label: string) =>
 const ok = (condition: boolean, label: string) => (condition ? Effect.void : fail(label))
 
 const ALL_KINDS: ReadonlyArray<SearchKind> = ["message", "card", "event", "notice", "tool-call", "task"]
-const OWNER: SearchScope = { kind: "owner" }
+const OWNER: SearchScope = { kind: "owner", profileId: MAIN_PROFILE_ID }
 const asBot = (id: BotId): SearchScope => ({ kind: "bot", botId: id })
 
 /** Every ref id that matches `words` in `scope` (all pages), plus the reported total. */
@@ -132,6 +135,8 @@ const dmC = conversationId("cnv_dm_gamma")
 const group = conversationId("cnv_group_ab")
 
 const seedTeam = Effect.gen(function* () {
+  const bots = yield* BotRepo
+  for (const id of [A, B, C]) yield* bots.upsert(makeBot({ id }))
   const conversations = yield* ConversationRepo
   yield* conversations.upsert(makeDirectConversation({ id: dmA, botId: A, title: "Alpha" }))
   yield* conversations.upsert(makeDirectConversation({ id: dmB, botId: B, title: "Beta" }))
@@ -139,6 +144,31 @@ const seedTeam = Effect.gen(function* () {
 })
 
 export const searchContractCases: ReadonlyArray<RepoContractCase> = [
+  contractCase(
+    "SearchRepo: the owner finds the chats of one profile's Bots only",
+    Effect.gen(function* () {
+      yield* seedTeam
+      const other = botId("bot_other")
+      const dmOther = conversationId("cnv_dm_other")
+      yield* (yield* BotRepo).upsert(makeBot({ id: other, ownerProfileId: OTHER_PROFILE }))
+      yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dmOther, botId: other, title: "Other" }))
+      yield* say("ent_main", dmA, 10, "owner", "walrus in the main profile")
+      yield* say("ent_other", dmOther, 11, "owner", "walrus in the other profile")
+      const main = yield* find("walrus", OWNER)
+      yield* sameSet(main.refs, ["ent_main"], "main profile")
+      yield* equal(main.total, 1, "the count never includes another profile")
+      yield* sameSet(
+        yield* refsOf("walrus", { kind: "owner", profileId: OTHER_PROFILE }),
+        ["ent_other"],
+        "other profile",
+      )
+      yield* sameSet(
+        yield* refsOf("walrus", OWNER, { conversationIds: [dmOther] }),
+        [],
+        "asking for another profile's chat directly",
+      )
+    }),
+  ),
   contractCase(
     "SearchRepo: a bot never reads the owner's chats with other bots, only the messages it sent or got there",
     Effect.gen(function* () {

@@ -1,14 +1,14 @@
 /**
  * Hark (D3.5): the owner's notifications on their iPhone through hark.ryan.ceo, until the OpenBot
  * iPhone app has its own push. The owner creates a Hark "service" and pastes its webhook
- * (`https://hark.ryan.ceo/hooks/whk_…`); it is kept in `<data>/hark.json` (0600).
+ * (`https://hark.ryan.ceo/hooks/whk_…`); it is kept in the profile's `hark.json` (0600).
  *
  * Every notification OpenBot makes becomes a push (push.ts): the title (the Bot's name), the text,
  * the Bot as Hark's project (one group per Bot) and a link that opens the chat in OpenBot. Each push
  * is sent once (`Idempotency-Key`: the notification id).
  */
-import { HARK_DISCONNECTED, HARK_URL, type HarkStatus, InvalidInput } from "@openbot/contracts"
-import { BotRepo, LiveHub } from "@openbot/core"
+import { HARK_DISCONNECTED, HARK_URL, type HarkStatus, InvalidInput, type OwnerProfileId } from "@openbot/contracts"
+import { BotRepo, LiveHub, OwnerProfiles } from "@openbot/core"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { ServerConfig } from "./config.ts"
 import { clip, makePush, notificationText, type PushService } from "./push.ts"
@@ -16,8 +16,8 @@ import { clip, makePush, notificationText, type PushService } from "./push.ts"
 export class Hark extends Context.Service<Hark, PushService<HarkStatus, string>>()("openbot/server/Hark") {}
 
 export interface HarkOptions {
-  /** Where the webhook is kept (`DataDir.hark`). */
-  readonly file: string
+  /** Where a profile's webhook is kept (`DataDir.profile(id).hark`). */
+  readonly file: (profileId: OwnerProfileId) => string
   /** Hark's address (tests: a fake). */
   readonly baseUrl?: string | undefined
   readonly fetch?: typeof fetch | undefined
@@ -103,5 +103,6 @@ export const makeHark = (options: HarkOptions) =>
     })
   })
 
-export const HarkLive = (options: HarkOptions): Layer.Layer<Hark, never, ServerConfig | LiveHub | BotRepo> =>
-  Layer.effect(Hark, makeHark(options))
+export const HarkLive = (
+  options: HarkOptions,
+): Layer.Layer<Hark, never, ServerConfig | LiveHub | BotRepo | OwnerProfiles> => Layer.effect(Hark, makeHark(options))

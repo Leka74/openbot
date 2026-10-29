@@ -3,7 +3,9 @@ import type { MemoryFactId } from "@openbot/contracts"
 import { MEMORY_INDEX_PROMPT_CAP_BYTES } from "@openbot/contracts"
 import { Effect, Exit, Fiber, Layer, Stream } from "effect"
 import {
+  BotRepo,
   botActor,
+  inProfile,
   MemoryService,
   MemoryStore,
   SettingsRepo,
@@ -15,6 +17,8 @@ import { MemoryServiceLive, SettingsServiceLive, UsageServiceLive } from "../../
 import {
   botId,
   ConversationServiceFake,
+  makeBot,
+  OTHER_PROFILE,
   LiveHubFake,
   makeClaims,
   runTest,
@@ -226,6 +230,7 @@ describe("UsageService", () => {
   test("records usage and aggregates per bot (turn count, since filter)", async () => {
     const out = await runTest(
       Effect.gen(function* () {
+        yield* seed
         const usage = yield* UsageService
         const base = { conversationId: DM_A.id, harness: "fake" }
         yield* setTime(100)
@@ -249,13 +254,22 @@ describe("UsageService", () => {
           usage: { inputTokens: 2, outputTokens: 2 },
         })
         yield* usage.record({ ...base, botId: BOT_B.id, usage: { inputTokens: 7, outputTokens: 0 } })
-        return { all: yield* usage.byBot({}), since: yield* usage.byBot({ sinceMs: 150 }) }
+        const other = makeBot({ id: botId("bot_other"), ownerProfileId: OTHER_PROFILE })
+        yield* (yield* BotRepo).upsert(other)
+        yield* usage.record({ ...base, botId: other.id, usage: { inputTokens: 99, outputTokens: 0 } })
+        return {
+          all: yield* usage.byBot({}),
+          since: yield* usage.byBot({ sinceMs: 150 }),
+          other: yield* inProfile(OTHER_PROFILE)(usage.byBot({})),
+        }
       }),
       UsageServiceLive.pipe(Layer.provideMerge(baseLayer())),
     )
     const a = out.all.find((u) => u.botId === BOT_A.id)
     expect(a).toMatchObject({ usage: { inputTokens: 13, outputTokens: 8 }, turnCount: 2, lastAt: 200 })
     expect(out.all.find((u) => u.botId === BOT_B.id)).toMatchObject({ usage: { inputTokens: 7 }, turnCount: 0 })
+    expect(out.all.map((u) => u.botId)).not.toContain(botId("bot_other"))
+    expect(out.other.map((u) => u.botId)).toEqual([botId("bot_other")])
     expect(out.since.find((u) => u.botId === BOT_A.id)).toMatchObject({
       usage: { inputTokens: 3, outputTokens: 3 },
       turnCount: 2,

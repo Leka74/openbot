@@ -34,6 +34,8 @@ import { ConversationService, type EntryDraft, LiveHub } from "../../ports/servi
 import { ConversationStore, ConversationStoreLive } from "./internal/ConversationStore.ts"
 import { summarize, visiblePage, visiblePageAfter } from "./internal/summary.ts"
 import { cardRequestId, compact, isHousekeeping, orDie, required } from "./internal/util.ts"
+import { currentProfileId } from "../../ports/Profiles.ts"
+import { hasMemberIn } from "../profiles/lookup.ts"
 
 /** Upper bound for `conversations.history` and `conversations.exchange` pages. */
 export const MAX_HISTORY_LIMIT = 500
@@ -163,7 +165,15 @@ export const ConversationServiceLive: Layer.Layer<
 
     // ------------------------------------------------------------------ groups
 
-    const loadBots = (botIds: ReadonlyArray<BotId>) => Effect.forEach(botIds, (id) => required(bots.get(id), "bot", id))
+    /** Bots of the current profile: a group never mixes profiles. */
+    const loadBots = (botIds: ReadonlyArray<BotId>) =>
+      Effect.flatMap(currentProfileId, (profileId) =>
+        Effect.forEach(botIds, (id) =>
+          Effect.flatMap(required(bots.get(id), "bot", id), (bot) =>
+            bot.ownerProfileId === profileId ? Effect.succeed(bot) : Effect.fail(new NotFound({ entity: "bot", id })),
+          ),
+        ),
+      )
 
     const validateMembers = (memberBotIds: ReadonlyArray<BotId>) =>
       Effect.gen(function* () {
@@ -215,8 +225,9 @@ export const ConversationServiceLive: Layer.Layer<
       readonly leadBotId?: BotId | undefined
       readonly clientNonce?: string | undefined
     }) {
+      const nonces = settings.forProfile(yield* currentProfileId)
       if (input.clientNonce !== undefined) {
-        const known = yield* orDie(settings.get(groupNonceKey(input.clientNonce)))
+        const known = yield* orDie(nonces.get(groupNonceKey(input.clientNonce)))
         if (Option.isSome(known) && typeof known.value === "string") {
           const existing = yield* orDie(conversations.get(known.value as ConversationId))
           if (Option.isSome(existing)) return existing.value
@@ -243,7 +254,7 @@ export const ConversationServiceLive: Layer.Layer<
         epoch: yield* ids.next("epc"),
       })
       yield* store.create(group)
-      if (input.clientNonce !== undefined) yield* orDie(settings.set(groupNonceKey(input.clientNonce), group.id))
+      if (input.clientNonce !== undefined) yield* orDie(nonces.set(groupNonceKey(input.clientNonce), group.id))
       for (const bot of members) {
         yield* Effect.ignore(
           appendEvent({ conversationId: group.id, event: { type: "joined", botId: bot.id, name: bot.name } }),
@@ -544,7 +555,8 @@ export const ConversationServiceLive: Layer.Layer<
     return ConversationService.of({
       get: (conversationId) => store.get(conversationId),
       summaries: Effect.gen(function* () {
-        const all = yield* orDie(conversations.list())
+        const profileBots = new Set((yield* orDie(bots.listIn(yield* currentProfileId))).map((b) => b.id))
+        const all = (yield* orDie(conversations.list())).filter((c) => hasMemberIn(c, profileBots))
         return yield* Effect.forEach(all, (c) => Effect.provide(summarize(c), repos))
       }),
       summary: (conversationId) =>

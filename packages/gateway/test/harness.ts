@@ -43,7 +43,7 @@ import {
   SettingsServiceFake,
   TestPorts,
 } from "@openbot/core/testing"
-import type { NodeId } from "@openbot/contracts"
+import { MAIN_PROFILE_ID, type NodeId, type Section, type SectionId } from "@openbot/contracts"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect"
@@ -108,7 +108,7 @@ export const startHarness = async (options?: HarnessOptions): Promise<Harness> =
     messagingCalls.push({ method, claims: ctx.claims, callId: ctx.callId, input })
 
   const bots = [botA, botB]
-  const sections: Array<{ id: never; name: string; order: number }> = []
+  const sections: Array<Section> = []
   const findBot = (ref: string) =>
     bots.find((b) => b.id === ref || b.name.toLowerCase() === ref.replace(/^@/, "").toLowerCase())
 
@@ -162,7 +162,12 @@ export const startHarness = async (options?: HarnessOptions): Promise<Harness> =
     listSections: Effect.sync(() => [...sections]),
     createSection: (name) =>
       Effect.sync(() => {
-        const section = { id: `sec_${sections.length + 1}` as never, name, order: sections.length }
+        const section: Section = {
+          id: `sec_${sections.length + 1}` as SectionId,
+          ownerProfileId: MAIN_PROFILE_ID,
+          name,
+          order: sections.length,
+        }
         sections.push(section)
         record("createSection", { claims: undefined as never }, { name })
         return section

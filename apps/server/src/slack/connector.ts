@@ -3,7 +3,9 @@
  *
  * - The owner's own Slack app: a user token (`xoxp-`, what they can see; messages go out as them)
  *   and an optional app-level token (`xapp-`, Socket Mode: messages as they arrive). Both are kept in
- *   `<data>/slack.json` (0600) and never leave the brain.
+ *   the profile's `slack.json` (0600) and never leave the brain.
+ * - One connection per owner profile, made when the profile first uses Slack; at boot every profile
+ *   with saved tokens connects, so an inactive profile keeps listening.
  * - People and the owner's conversations are cached (10 minutes) so text reads with names.
  * - Socket Mode: `apps.connections.open` → WebSocket; every envelope is acknowledged; Slack's
  *   `disconnect` and dropped sockets reconnect (backoff up to a minute). Message events from others
@@ -14,6 +16,8 @@
  */
 import {
   InvalidInput,
+  MAIN_PROFILE_ID,
+  type OwnerProfileId,
   SLACK_DISCONNECTED,
   SLACK_SHORTCUT_CALLBACK_ID,
   SLACK_SHORTCUT_NAME,
@@ -23,6 +27,9 @@ import {
   Unavailable,
 } from "@openbot/contracts"
 import {
+  currentProfileId,
+  OwnerProfiles,
+  type SlackConnection,
   SlackConnector,
   type SlackConversation,
   type SlackEvent,
@@ -30,15 +37,17 @@ import {
   type SlackPerson,
   type SlackShortcut,
 } from "@openbot/core"
-import { Effect, Layer, PubSub, Stream } from "effect"
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { Duration, Effect, Layer, PubSub, RcMap, Stream } from "effect"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { describeSlackError, makeSlackApi, SCOPES, type SlackApi, SlackApiError, type SlackArgs } from "./api.ts"
 import { readableText, slackText } from "./text.ts"
 
 export interface SlackConnectorOptions {
-  /** Where the tokens are kept (`DataDir.slack`). */
+  /** Where the tokens are kept (`DataDir.profile(id).slack`). */
   readonly file: string
+  /** The profile this Slack belongs to (default: the main one); its events carry it. */
+  readonly profileId?: OwnerProfileId | undefined
   /** Slack Web API base (tests: a fake Slack). */
   readonly apiUrl?: string | undefined
   readonly fetch?: typeof fetch | undefined
@@ -133,8 +142,10 @@ const UPLOAD_TIMEOUT_MS = 10 * 60_000
 const isTs = (text: string): boolean => /^\d{10}\.\d{6}$/.test(text.trim())
 const isConversationId = (text: string): boolean => /^[CDG][A-Z0-9_]{6,}$/.test(text.trim())
 
+/** One profile's Slack. */
 export const makeSlackConnector = (options: SlackConnectorOptions) =>
   Effect.gen(function* () {
+    const profileId = options.profileId ?? MAIN_PROFILE_ID
     const closing = new AbortController()
     const api: SlackApi = makeSlackApi({ baseUrl: options.apiUrl, fetch: options.fetch, signal: closing.signal })
     const events = yield* PubSub.unbounded<SlackEvent>()
@@ -451,6 +462,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       const [where, messages] = await Promise.all([conversation(channelId), toMessages([event], channelId)])
       const text = String(event.text ?? "")
       PubSub.publishUnsafe(events, {
+        profileId,
         conversation: where,
         message: messages[0]!,
         mentionsOwner: text.includes(`<@${current.userId}>`) || text.includes(`<@${current.userId}|`),
@@ -470,6 +482,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       const channelId = String(event.channel)
       const [where, messages] = await Promise.all([conversation(channelId), toMessages([event], channelId)])
       PubSub.publishUnsafe(shortcuts, {
+        profileId,
         via: "mention" as const,
         conversation: where,
         message: messages[0]!,
@@ -509,6 +522,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         toMessages([payload.message ?? {}], channelId),
       ])
       PubSub.publishUnsafe(shortcuts, {
+        profileId,
         via: "click" as const,
         conversation: where,
         message: messages[0]!,
@@ -890,7 +904,7 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
         }
       })
 
-    return SlackConnector.of({
+    const connection: SlackConnection = {
       status: Effect.sync(() => status),
       changes: Stream.fromPubSub(statusChanges),
       connect,
@@ -902,8 +916,52 @@ export const makeSlackConnector = (options: SlackConnectorOptions) =>
       send,
       events: Stream.fromPubSub(events),
       shortcuts: Stream.fromPubSub(shortcuts),
+    }
+    return connection
+  })
+
+export interface SlackConnectorsOptions extends Omit<SlackConnectorOptions, "file" | "profileId"> {
+  /** Where a profile's tokens are kept (`DataDir.profile(id).slack`). */
+  readonly file: (profileId: OwnerProfileId) => string
+}
+
+/** Every profile's Slack: the current profile's connection, and what arrives in any of them. */
+export const makeSlackConnectors = (options: SlackConnectorsOptions) =>
+  Effect.gen(function* () {
+    const profiles = yield* OwnerProfiles
+    const events = yield* PubSub.unbounded<SlackEvent>()
+    const shortcuts = yield* PubSub.unbounded<SlackShortcut>()
+    const connections = yield* RcMap.make({
+      lookup: (profileId: OwnerProfileId) =>
+        Effect.gen(function* () {
+          const connection = yield* makeSlackConnector({ ...options, file: options.file(profileId), profileId })
+          yield* connection.events.pipe(
+            Stream.runForEach((event) => PubSub.publish(events, event)),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          yield* connection.shortcuts.pipe(
+            Stream.runForEach((shortcut) => PubSub.publish(shortcuts, shortcut)),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          return connection
+        }),
+      // a profile's Slack stays connected until the brain stops
+      idleTimeToLive: Duration.infinity,
+    })
+    const connectionOf = (profileId: OwnerProfileId) => Effect.scoped(RcMap.get(connections, profileId))
+
+    for (const profile of (yield* profiles.view).profiles) {
+      if (existsSync(options.file(profile.id))) yield* connectionOf(profile.id)
+    }
+
+    return SlackConnector.of({
+      connection: Effect.flatMap(currentProfileId, connectionOf),
+      events: Stream.fromPubSub(events),
+      shortcuts: Stream.fromPubSub(shortcuts),
+      forget: (profileId) => RcMap.invalidate(connections, profileId),
     })
   })
 
-export const SlackConnectorLive = (options: SlackConnectorOptions): Layer.Layer<SlackConnector> =>
-  Layer.effect(SlackConnector, makeSlackConnector(options))
+export const SlackConnectorLive = (
+  options: SlackConnectorsOptions,
+): Layer.Layer<SlackConnector, never, OwnerProfiles> => Layer.effect(SlackConnector, makeSlackConnectors(options))

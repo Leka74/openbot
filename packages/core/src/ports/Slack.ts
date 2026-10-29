@@ -3,6 +3,9 @@
  * they can see; messages go out as them) and, optionally, Socket Mode for messages as they arrive.
  * Implemented in the server over the Slack Web API, faked in tests. Not in the context = no Slack.
  *
+ * Each owner profile connects its own Slack (`connection`, for the current profile). Every connected
+ * profile keeps listening, active or not; its messages and clicks carry the profile they came in.
+ *
  * Text is readable: mentions as `@Name`, channel links as `#name`, links as `label (url)`.
  */
 import type {
@@ -11,11 +14,13 @@ import type {
   EntryId,
   InvalidInput,
   NotFound,
+  OwnerProfileId,
   SlackConnectInput,
   SlackStatus,
   Unavailable,
 } from "@openbot/contracts"
 import { Context, type Effect, type Stream } from "effect"
+import type { CurrentProfile } from "./Profiles.ts"
 import type { ToolContext } from "./services.ts"
 
 export interface SlackConversation {
@@ -50,6 +55,8 @@ export interface SlackPerson {
 
 /** A message the owner can see, as it arrives. The owner's own messages are not events. */
 export interface SlackEvent {
+  /** The profile whose Slack it came in. */
+  readonly profileId: OwnerProfileId
   readonly conversation: SlackConversation
   readonly message: SlackMessage
   /** The owner is @mentioned in it. */
@@ -61,6 +68,8 @@ export interface SlackEvent {
  * anyone else are answered in Slack and never reach here.
  */
 export interface SlackShortcut {
+  /** The profile whose Slack it came in. */
+  readonly profileId: OwnerProfileId
   /** A click on "Send to OpenBot", or the owner's own message that mentions @OpenBot. */
   readonly via: "click" | "mention"
   readonly conversation: SlackConversation
@@ -75,71 +84,83 @@ export interface SlackTarget {
   readonly thread?: SlackMessage | undefined
 }
 
+/** One profile's Slack. */
+export interface SlackConnection {
+  readonly status: Effect.Effect<SlackStatus>
+  /** Every status change (connect, disconnect, live events up or down). */
+  readonly changes: Stream.Stream<SlackStatus>
+  /** Checks the tokens with Slack, saves them and starts listening. */
+  readonly connect: (input: SlackConnectInput) => Effect.Effect<SlackStatus, InvalidInput | Unavailable>
+  /** Forgets the tokens and stops listening. */
+  readonly disconnect: Effect.Effect<void>
+  /** Slack search syntax (`from:@alice in:#general after:2026-10-01 …`); newest first. */
+  readonly search: (input: {
+    readonly query: string
+    readonly limit: number
+  }) => Effect.Effect<
+    { readonly total: number; readonly messages: ReadonlyArray<SlackMessage & { readonly where: string }> },
+    InvalidInput | Unavailable
+  >
+  /**
+   * A conversation's latest messages (oldest first), or a thread's. `conversation`: an id, `#name`,
+   * a person (`@handle` or name: your DM with them) or a message link (its thread).
+   */
+  readonly read: (input: {
+    readonly conversation: string
+    readonly thread?: string | undefined
+    readonly limit: number
+    /** Only messages before this `ts` (paging back). */
+    readonly before?: string | undefined
+  }) => Effect.Effect<
+    {
+      readonly conversation: SlackConversation
+      readonly messages: ReadonlyArray<SlackMessage>
+      readonly more: boolean
+    },
+    InvalidInput | Unavailable
+  >
+  /** Channels the owner is in and people whose name matches. */
+  readonly find: (
+    query: string,
+  ) => Effect.Effect<
+    { readonly conversations: ReadonlyArray<SlackConversation>; readonly people: ReadonlyArray<SlackPerson> },
+    Unavailable
+  >
+  /** Where a message to `to` (same forms as `read`) goes, and the thread for `thread` (a `ts` or a link). */
+  readonly resolve: (input: {
+    readonly to: string
+    readonly thread?: string | undefined
+  }) => Effect.Effect<SlackTarget, InvalidInput | Unavailable>
+  /**
+   * Posts as the owner. `text` may use `@Name` for people; they are turned into Slack mentions.
+   * With `files` (on the brain's disk) they are uploaded and `text` is their comment (it may be
+   * empty); Slack posts that message a moment later, so there is no `ts` and the link is the
+   * conversation's (or the thread's).
+   */
+  readonly send: (input: {
+    readonly channelId: string
+    readonly text: string
+    readonly threadTs?: string | undefined
+    readonly files?:
+      ReadonlyArray<{ readonly name: string; readonly path: string; readonly byteSize: number }> | undefined
+  }) => Effect.Effect<{ readonly ts?: string | undefined; readonly permalink: string }, InvalidInput | Unavailable>
+  /** Messages as they arrive (while live). */
+  readonly events: Stream.Stream<SlackEvent>
+  /** The owner's "Send to OpenBot" clicks, and their messages that mention the app (while live). */
+  readonly shortcuts: Stream.Stream<SlackShortcut>
+}
+
 export class SlackConnector extends Context.Service<
   SlackConnector,
   {
-    readonly status: Effect.Effect<SlackStatus>
-    /** Every status change (connect, disconnect, live events up or down). */
-    readonly changes: Stream.Stream<SlackStatus>
-    /** Checks the tokens with Slack, saves them and starts listening. */
-    readonly connect: (input: SlackConnectInput) => Effect.Effect<SlackStatus, InvalidInput | Unavailable>
-    /** Forgets the tokens and stops listening. */
-    readonly disconnect: Effect.Effect<void>
-    /** Slack search syntax (`from:@alice in:#general after:2026-10-01 …`); newest first. */
-    readonly search: (input: {
-      readonly query: string
-      readonly limit: number
-    }) => Effect.Effect<
-      { readonly total: number; readonly messages: ReadonlyArray<SlackMessage & { readonly where: string }> },
-      InvalidInput | Unavailable
-    >
-    /**
-     * A conversation's latest messages (oldest first), or a thread's. `conversation`: an id, `#name`,
-     * a person (`@handle` or name: your DM with them) or a message link (its thread).
-     */
-    readonly read: (input: {
-      readonly conversation: string
-      readonly thread?: string | undefined
-      readonly limit: number
-      /** Only messages before this `ts` (paging back). */
-      readonly before?: string | undefined
-    }) => Effect.Effect<
-      {
-        readonly conversation: SlackConversation
-        readonly messages: ReadonlyArray<SlackMessage>
-        readonly more: boolean
-      },
-      InvalidInput | Unavailable
-    >
-    /** Channels the owner is in and people whose name matches. */
-    readonly find: (
-      query: string,
-    ) => Effect.Effect<
-      { readonly conversations: ReadonlyArray<SlackConversation>; readonly people: ReadonlyArray<SlackPerson> },
-      Unavailable
-    >
-    /** Where a message to `to` (same forms as `read`) goes, and the thread for `thread` (a `ts` or a link). */
-    readonly resolve: (input: {
-      readonly to: string
-      readonly thread?: string | undefined
-    }) => Effect.Effect<SlackTarget, InvalidInput | Unavailable>
-    /**
-     * Posts as the owner. `text` may use `@Name` for people; they are turned into Slack mentions.
-     * With `files` (on the brain's disk) they are uploaded and `text` is their comment (it may be
-     * empty); Slack posts that message a moment later, so there is no `ts` and the link is the
-     * conversation's (or the thread's).
-     */
-    readonly send: (input: {
-      readonly channelId: string
-      readonly text: string
-      readonly threadTs?: string | undefined
-      readonly files?:
-        ReadonlyArray<{ readonly name: string; readonly path: string; readonly byteSize: number }> | undefined
-    }) => Effect.Effect<{ readonly ts?: string | undefined; readonly permalink: string }, InvalidInput | Unavailable>
-    /** Messages as they arrive (while live). */
+    /** The current profile's Slack. */
+    readonly connection: Effect.Effect<SlackConnection, never, CurrentProfile>
+    /** Messages as they arrive in every profile's Slack. */
     readonly events: Stream.Stream<SlackEvent>
-    /** The owner's "Send to OpenBot" clicks, and their messages that mention the app (while live). */
+    /** "Send to OpenBot" clicks and mentions in every profile's Slack. */
     readonly shortcuts: Stream.Stream<SlackShortcut>
+    /** Closes a deleted profile's Slack and drops its tokens from memory (its file is left as it is). */
+    readonly forget: (profileId: OwnerProfileId) => Effect.Effect<void>
   }
 >()("openbot/core/SlackConnector") {}
 
@@ -162,13 +183,14 @@ export class SlackService extends Context.Service<
       },
     ) => Effect.Effect<
       { readonly entryId: EntryId; readonly to: string; readonly inThread: boolean },
-      InvalidInput | Unavailable
+      InvalidInput | Unavailable,
+      CurrentProfile
     >
-    /** Sends a pending draft as the owner, with their edits (`text`). */
+    /** Sends a pending draft as the owner, with their edits (`text`), through the current profile's Slack. */
     readonly send: (input: {
       readonly entryId: EntryId
       readonly text: string
-    }) => Effect.Effect<void, NotFound | InvalidInput | Conflict | Unavailable>
+    }) => Effect.Effect<void, NotFound | InvalidInput | Conflict | Unavailable, CurrentProfile>
     readonly discard: (entryId: EntryId) => Effect.Effect<void, NotFound | Conflict>
   }
 >()("openbot/core/SlackService") {}

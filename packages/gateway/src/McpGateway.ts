@@ -29,6 +29,9 @@
  */
 import type { BotId, NodeSummary } from "@openbot/contracts"
 import {
+  BotRepo,
+  type CurrentProfile,
+  inProfile,
   type McpClaims,
   type McpTokenRecord,
   McpTokenRepo,
@@ -225,7 +228,11 @@ interface Authenticated {
  */
 export const makeMcpGateway = <R = GatewayToolServices>(
   options?: McpGatewayOptions<R>,
-): Effect.Effect<McpGatewayShape, never, R | McpTokenRepo | NodeDirectory | Orchestrator | Scope.Scope> =>
+): Effect.Effect<
+  McpGatewayShape,
+  never,
+  Exclude<R, CurrentProfile> | McpTokenRepo | NodeDirectory | Orchestrator | BotRepo | Scope.Scope
+> =>
   Effect.gen(function* () {
     const tools = (options?.tools ?? DefaultToolkits) as ReadonlyArray<AnyTool<R>>
     const progressIntervalMs = Math.max(10, options?.progressIntervalMs ?? 4_000)
@@ -237,11 +244,12 @@ export const makeMcpGateway = <R = GatewayToolServices>(
     const serverInfo = { name: options?.serverName ?? "openbot", version: options?.serverVersion ?? "1.0.0" }
     const instructions = options?.instructions ?? DEFAULT_INSTRUCTIONS
 
-    const context = yield* Effect.context<R | McpTokenRepo | NodeDirectory>()
+    const context = yield* Effect.context<Exclude<R, CurrentProfile> | McpTokenRepo | NodeDirectory>()
     const run = Effect.runPromiseWith(context)
     const repo = yield* McpTokenRepo
     const directory = yield* NodeDirectory
     const orchestrator = yield* Orchestrator
+    const bots = yield* BotRepo
 
     /**
      * The claims of one call: the conversation of the bot's running turn, else the token's home. A
@@ -325,13 +333,21 @@ export const makeMcpGateway = <R = GatewayToolServices>(
       }
     }
 
+    const botProfile = (botId: BotId) =>
+      Effect.flatMap(Effect.orDie(bots.get(botId)), (bot) =>
+        Option.isSome(bot) ? Effect.succeed(bot.value.ownerProfileId) : Effect.die(`Bot ${botId} is gone`),
+      )
+
+    // A Bot's tools work in its own profile, whichever profile the owner looks at.
     const runTool = (
       session: GatewaySession,
       tool: AnyTool<R>,
       args: unknown,
       ctx: ToolCallContext,
-    ): Effect.Effect<WireToolResult, never, R> =>
-      tool.handler(args, ctx).pipe(
+    ): Effect.Effect<WireToolResult, never, Exclude<R, CurrentProfile>> =>
+      Effect.flatMap(botProfile(session.claims.botId), (profileId) =>
+        tool.handler(args, ctx).pipe(inProfile(profileId)),
+      ).pipe(
         Effect.catch((error) => {
           const text = renderToolError(error)
           if (text !== INTERNAL_ERROR) return Effect.succeed(errorResult(text))
@@ -356,7 +372,7 @@ export const makeMcpGateway = <R = GatewayToolServices>(
         readonly _meta?: Record<string, unknown> | undefined
       },
       sendProgress: (progressToken: string | number, progress: number, message: string | undefined) => Promise<void>,
-    ): Effect.Effect<WireToolResult, never, R> =>
+    ): Effect.Effect<WireToolResult, never, Exclude<R, CurrentProfile>> =>
       Effect.gen(function* () {
         const tool = session.tools.get(params.name)
         if (tool === undefined) {
@@ -468,7 +484,10 @@ export const makeMcpGateway = <R = GatewayToolServices>(
           Effect.flatMap(
             Option.match({
               onNone: () => Effect.succeed(false),
-              onSome: (connector) => connector.status.pipe(Effect.map((status) => status.connected)),
+              onSome: (connector) =>
+                Effect.flatMap(botProfile(auth.claims.botId), (profileId) =>
+                  Effect.flatMap(connector.connection, (connection) => connection.status).pipe(inProfile(profileId)),
+                ).pipe(Effect.map((status) => status.connected)),
             }),
           ),
         ),
@@ -478,7 +497,10 @@ export const makeMcpGateway = <R = GatewayToolServices>(
           Effect.flatMap(
             Option.match({
               onNone: () => Effect.succeed(true),
-              onSome: (settings) => settings.get.pipe(Effect.map((s) => s.botSearch)),
+              onSome: (settings) =>
+                Effect.flatMap(botProfile(auth.claims.botId), (profileId) =>
+                  inProfile(profileId)(settings.get).pipe(Effect.map((s) => s.botSearch)),
+                ),
             }),
           ),
         ),
@@ -613,9 +635,12 @@ export const makeMcpGateway = <R = GatewayToolServices>(
 /** The gateway with custom options (tools, intervals, limits). */
 export const McpGatewayLayer = <R = GatewayToolServices>(
   options?: McpGatewayOptions<R>,
-): Layer.Layer<McpGateway, never, R | McpTokenRepo | NodeDirectory | Orchestrator> =>
+): Layer.Layer<McpGateway, never, Exclude<R, CurrentProfile> | McpTokenRepo | NodeDirectory | Orchestrator | BotRepo> =>
   Layer.effect(McpGateway, Effect.map(makeMcpGateway(options), McpGateway.of))
 
 /** `McpGateway` with the default toolkits (interfaces §2.1). Mounted by apps/server at `/mcp/:botId`. */
-export const McpGatewayLive: Layer.Layer<McpGateway, never, GatewayToolServices | McpTokenRepo | NodeDirectory> =
-  McpGatewayLayer()
+export const McpGatewayLive: Layer.Layer<
+  McpGateway,
+  never,
+  Exclude<GatewayToolServices, CurrentProfile> | McpTokenRepo | NodeDirectory | BotRepo
+> = McpGatewayLayer()

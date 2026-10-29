@@ -40,6 +40,7 @@ import type {
   Usage,
 } from "@openbot/contracts"
 import {
+  MAIN_PROFILE_ID,
   applySettingsPatch,
   DEFAULT_SETTINGS,
   MEMORY_INDEX_PROMPT_CAP_BYTES,
@@ -70,6 +71,7 @@ import {
   RequestRepo,
   rosterReplicaKey,
 } from "../ports/repos.ts"
+import { currentProfileId } from "../ports/Profiles.ts"
 import {
   type Actor,
   type ApprovalContext,
@@ -152,12 +154,15 @@ export class LiveHubFake extends Context.Service<
           )
           return cursor
         })
-      const publishRoster = (change: KnownRosterChange) => append(rosterReplicaKey, { replica: "roster", change })
+      const publishRoster = (change: KnownRosterChange) =>
+        Effect.asVoid(append(rosterReplicaKey(MAIN_PROFILE_ID), { replica: "roster", change }))
 
       const hub = LiveHub.of({
         publishConversation: (conversationId, change) =>
           append(conversationReplicaKey(conversationId), { replica: "conversation", change }),
         publishRoster,
+        publishSettings: (profileId, settings) =>
+          append(rosterReplicaKey(profileId), { replica: "roster", change: { type: "settings.updated", settings } }),
         subscribeConversation: ({ conversationId }) =>
           Stream.unwrap(
             Effect.gen(function* () {
@@ -181,7 +186,10 @@ export class LiveHubFake extends Context.Service<
               const live = Stream.fromSubscription(subscription).pipe(
                 Stream.filterMap((item) => ("roster" in item ? Result.succeed(item.roster) : Result.failVoid)),
               )
-              const synced: KnownRosterStreamItem = { kind: "synchronized", cursor: headOf(rosterReplicaKey) }
+              const synced: KnownRosterStreamItem = {
+                kind: "synchronized",
+                cursor: headOf(rosterReplicaKey(MAIN_PROFILE_ID)),
+              }
               return Stream.concat(Stream.make(synced), live)
             }),
           ),
@@ -200,6 +208,7 @@ export class LiveHubFake extends Context.Service<
             Effect.andThen(publishRoster({ type: "activity.updated", activity })),
             Effect.asVoid,
           ),
+        dropRoster: () => Effect.void,
       })
       const control = LiveHubFake.of({
         published: Ref.get(log),
@@ -623,6 +632,7 @@ export class SettingsServiceFake extends Context.Service<
               const rule: ApprovalRule = {
                 ...input,
                 id: input.id ?? (yield* ids.ruleId),
+                ownerProfileId: existing?.ownerProfileId ?? (yield* currentProfileId),
                 origin: existing?.origin ?? "user",
                 createdAt: existing?.createdAt ?? (yield* Clock.currentTimeMillis),
               }
@@ -638,6 +648,7 @@ export class SettingsServiceFake extends Context.Service<
                 all.filter((r) => r.id !== ruleId),
               )
             }),
+          forgetProfile: () => Effect.void,
         })
         return Context.make(SettingsService, service).pipe(
           Context.add(

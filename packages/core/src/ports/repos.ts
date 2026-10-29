@@ -23,6 +23,7 @@ import type {
   KnownTranscriptEntry,
   Millis,
   NodeId,
+  OwnerProfileId,
   RequestId,
   Routine,
   RoutineId,
@@ -51,6 +52,7 @@ import {
   EntryId as EntryIdSchema,
   HarnessKindName as HarnessKindNameSchema,
   KnownConversationChange as KnownConversationChangeSchema,
+  MAIN_PROFILE_ID,
   KnownRosterChange as KnownRosterChangeSchema,
   Millis as MillisSchema,
   NodeId as NodeIdSchema,
@@ -135,8 +137,10 @@ export class BotRepo extends Context.Service<
   BotRepo,
   {
     readonly get: (id: BotId) => Effect.Effect<Option.Option<Bot>, RepoError>
-    /** All bots, ordered by `createdAt` ascending. */
+    /** All bots of every profile, ordered by `createdAt` ascending. */
     readonly list: Effect.Effect<ReadonlyArray<Bot>, RepoError>
+    /** The bots of one profile, ordered by `createdAt` ascending. */
+    readonly listIn: (profileId: OwnerProfileId) => Effect.Effect<ReadonlyArray<Bot>, RepoError>
     readonly upsert: (bot: Bot) => Effect.Effect<void, RepoError>
     /** Returns false when the bot did not exist. Also deletes its native session record. */
     readonly delete: (id: BotId) => Effect.Effect<boolean, RepoError>
@@ -153,8 +157,8 @@ export class BotRepo extends Context.Service<
 export class SectionRepo extends Context.Service<
   SectionRepo,
   {
-    /** Ordered by `order` ascending, then id. */
-    readonly list: Effect.Effect<ReadonlyArray<Section>, RepoError>
+    /** A profile's sections, ordered by `order` ascending, then id. */
+    readonly list: (profileId: OwnerProfileId) => Effect.Effect<ReadonlyArray<Section>, RepoError>
     readonly get: (id: SectionId) => Effect.Effect<Option.Option<Section>, RepoError>
     readonly upsert: (section: Section) => Effect.Effect<void, RepoError>
     readonly delete: (id: SectionId) => Effect.Effect<boolean, RepoError>
@@ -256,8 +260,12 @@ export class EntryRepo extends Context.Service<
 
 // ============================================================================ message search
 
-/** Whose search: the owner sees every chat; a bot only what it may read (enforced by the repository). */
-export type SearchScope = { readonly kind: "owner" } | { readonly kind: "bot"; readonly botId: BotId }
+/**
+ * Whose search: the owner sees every chat of a profile (the chats of its Bots); a bot only what it may
+ * read (enforced by the repository).
+ */
+export type SearchScope =
+  { readonly kind: "owner"; readonly profileId: OwnerProfileId } | { readonly kind: "bot"; readonly botId: BotId }
 
 /**
  * What a search looks at. In a bot's scope (Lekë's decisions for v1):
@@ -503,10 +511,11 @@ export class ApprovalRuleRepo extends Context.Service<
   {
     readonly get: (id: ApprovalRuleId) => Effect.Effect<Option.Option<ApprovalRule>, RepoError>
     /**
-     * Ordered by `createdAt` ascending. `botId` given → that bot's rules AND global rules (no botId);
-     * omitted → every rule.
+     * A profile's rules, ordered by `createdAt` ascending. `botId` given → that bot's rules AND the
+     * profile's global rules (no botId); omitted → every rule of the profile.
      */
-    readonly list: (filter?: {
+    readonly list: (filter: {
+      readonly profileId: OwnerProfileId
       readonly botId?: BotId | undefined
     }) => Effect.Effect<ReadonlyArray<ApprovalRule>, RepoError>
     readonly upsert: (rule: ApprovalRule) => Effect.Effect<void, RepoError>
@@ -517,22 +526,25 @@ export class ApprovalRuleRepo extends Context.Service<
 // ============================================================================ settings (typed key/values)
 
 /**
- * Raw JSON key/values; `SettingsService` owns the typed view and defaults.
+ * Raw JSON key/values; `SettingsService` owns the typed view and defaults. The methods read and write
+ * the brain's own keys (shared by every profile); `forProfile` the keys of one profile.
  *
  * Storage convention (shared by SettingsService and LiveHub's roster snapshot): ONE KEY PER
  * `Settings` FIELD (`theme`, `accent`, `showSteps`, …) holding the field's encoded JSON value; an
  * absent key means "default". Use `readSettings` / `settingsFromEntries` / `settingsToEntries`.
  * Keys outside `Settings` are free for other brain-internal values (prefix them, e.g. `brain.*`).
  */
+export interface SettingsStore {
+  readonly get: (key: string) => Effect.Effect<Option.Option<unknown>, RepoError>
+  readonly getAll: Effect.Effect<ReadonlyMap<string, unknown>, RepoError>
+  /** `value` must be JSON-serializable. */
+  readonly set: (key: string, value: unknown) => Effect.Effect<void, RepoError>
+  readonly remove: (key: string) => Effect.Effect<void, RepoError>
+}
+
 export class SettingsRepo extends Context.Service<
   SettingsRepo,
-  {
-    readonly get: (key: string) => Effect.Effect<Option.Option<unknown>, RepoError>
-    readonly getAll: Effect.Effect<ReadonlyMap<string, unknown>, RepoError>
-    /** `value` must be JSON-serializable. */
-    readonly set: (key: string, value: unknown) => Effect.Effect<void, RepoError>
-    readonly remove: (key: string) => Effect.Effect<void, RepoError>
-  }
+  SettingsStore & { readonly forProfile: (profileId: OwnerProfileId) => SettingsStore }
 >()("openbot/core/SettingsRepo") {}
 
 /** The `SettingsRepo` keys that make up `Settings` (one per field). */
@@ -569,20 +581,23 @@ export const settingsToEntries = (
   return SETTINGS_KEYS.map((key) => [key, encoded[key]] as const)
 }
 
-/** Reads the typed `Settings` from `SettingsRepo` (see the storage convention above). */
-export const readSettings: Effect.Effect<Settings, RepoError, SettingsRepo> = Effect.flatMap(SettingsRepo, (repo) =>
-  Effect.map(repo.getAll, settingsFromEntries),
-)
+/** Reads a profile's typed `Settings` from `SettingsRepo` (see the storage convention above). */
+export const readSettings = (profileId: OwnerProfileId): Effect.Effect<Settings, RepoError, SettingsRepo> =>
+  Effect.flatMap(SettingsRepo, (repo) => Effect.map(repo.forProfile(profileId).getAll, settingsFromEntries))
 
-/** Writes every `Settings` field (removing absent optional keys). */
-export const writeSettings = (settings: Settings): Effect.Effect<void, RepoError, SettingsRepo> =>
-  Effect.flatMap(SettingsRepo, (repo) =>
-    Effect.forEach(
+/** Writes every `Settings` field of a profile (removing absent optional keys). */
+export const writeSettings = (
+  profileId: OwnerProfileId,
+  settings: Settings,
+): Effect.Effect<void, RepoError, SettingsRepo> =>
+  Effect.flatMap(SettingsRepo, (repo) => {
+    const store = repo.forProfile(profileId)
+    return Effect.forEach(
       settingsToEntries(settings),
-      ([key, value]) => (value === undefined ? repo.remove(key) : repo.set(key, value)),
+      ([key, value]) => (value === undefined ? store.remove(key) : store.set(key, value)),
       { discard: true },
-    ),
-  )
+    )
+  })
 
 // ============================================================================ usage
 
@@ -623,9 +638,10 @@ export class UsageRepo extends Context.Service<
 
 // ============================================================================ replica log (resume)
 
-/** Replica keys: `conversation:<id>` or `roster`. */
-export type ReplicaKey = `conversation:${string}` | "roster"
-export const rosterReplicaKey: ReplicaKey = "roster"
+/** Replica keys: `conversation:<id>`, or a profile's roster (`roster` is the main profile's). */
+export type ReplicaKey = `conversation:${string}` | "roster" | `roster:${string}`
+export const rosterReplicaKey = (profileId: OwnerProfileId): ReplicaKey =>
+  profileId === MAIN_PROFILE_ID ? "roster" : `roster:${profileId}`
 export const conversationReplicaKey = (id: ConversationId): ReplicaKey => `conversation:${id}`
 
 /** Encodable (server-side) change of either replica; persisted as JSON by `ReplicaLog`. */

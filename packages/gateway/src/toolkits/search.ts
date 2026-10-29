@@ -19,13 +19,20 @@ import type {
   TranscriptEntry,
 } from "@openbot/contracts"
 import { BOT_SEARCH_TOTAL_CAP } from "@openbot/contracts"
-import { type BotChatRef, BotService, type BotReadPage, SearchService, SettingsService } from "@openbot/core"
+import {
+  type BotChatRef,
+  BotService,
+  type BotReadPage,
+  type CurrentProfile,
+  SearchService,
+  SettingsService,
+} from "@openbot/core"
 import { Clock, Effect, Option } from "effect"
 import * as p from "../params.ts"
 import { textResult, ToolRefusal, utf8Length } from "../results.ts"
 import { type AnyTool, defineTool, type ToolAvailability, type ToolCallContext } from "../tool.ts"
 
-export type SearchToolkitServices = SearchService | BotService
+export type SearchToolkitServices = SearchService | BotService | CurrentProfile
 
 const searchOn = ({ botSearch }: ToolAvailability): boolean => botSearch !== false
 

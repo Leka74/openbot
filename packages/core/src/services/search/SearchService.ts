@@ -50,6 +50,7 @@ import {
 import { visiblePage, visiblePageAfter, voiceWork } from "../conversation/internal/summary.ts"
 import { compact, findBotByRef, isHousekeeping, orDie } from "../conversation/internal/util.ts"
 import { decodeSearchCursor, encodeSearchCursor, parseSearchQuery, parseSnippet } from "./text.ts"
+import { currentProfileId } from "../../ports/Profiles.ts"
 
 const invalid = (message: string) => new InvalidInput({ message })
 
@@ -309,7 +310,7 @@ export const SearchServiceLive: Layer.Layer<
         return { kind: "conversation", conversationId: current } as const
       if (key === "owner" || key === "dm" || key === "my dm")
         return { kind: "conversation", conversationId: bot.directConversationId } as const
-      const team = yield* orDie(bots.list)
+      const team = yield* orDie(bots.listIn(bot.ownerProfileId))
       const teammate = findBotByRef(team, raw)
       if (teammate !== undefined) {
         if (teammate.id === botId) return { kind: "conversation", conversationId: bot.directConversationId } as const
@@ -423,7 +424,10 @@ export const SearchServiceLive: Layer.Layer<
     })
 
     return SearchService.of({
-      query: (input) => Effect.map(search({ kind: "owner" }, input), ({ page }) => page),
+      query: (input) =>
+        Effect.flatMap(currentProfileId, (profileId) =>
+          Effect.map(search({ kind: "owner", profileId }, input), ({ page }) => page),
+        ),
       forBot: (botId, input) =>
         Effect.map(search({ kind: "bot", botId }, input), ({ page, hitCursors }) => ({ ...page, hitCursors })),
 
@@ -437,7 +441,7 @@ export const SearchServiceLive: Layer.Layer<
         }
         const indexing = (yield* repo.indexing) || undefined
         const base = {
-          scope: { kind: "owner" } as const,
+          scope: { kind: "owner", profileId: yield* currentProfileId } as const,
           conversationId: input.conversationId,
           kinds: input.kinds ?? DEFAULT_SEARCH_KINDS,
           limit: input.limit,

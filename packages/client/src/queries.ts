@@ -57,6 +57,9 @@ export const harkStatusAtom = OpenBotClient.query("hark.status", undefined, { re
 /** ntfy (D3.6): whether the owner's phone gets OpenBot's notifications, and which. */
 export const ntfyStatusAtom = OpenBotClient.query("ntfy.status", undefined, { reactivityKeys: [Keys.ntfy] })
 
+/** What the active profile held back while another one was active ("While you were away"). */
+export const awayAtom = OpenBotClient.query("profiles.away", undefined, { reactivityKeys: [Keys.away] })
+
 /** Rendered instructions + memory for the details pane. */
 export const botContextAtom = Atom.family((botId: BotId) =>
   OpenBotClient.query("bots.readContext", { botId }, { reactivityKeys: [Keys.botContext] }),

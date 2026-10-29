@@ -55,11 +55,12 @@ export default function Home(): ReactNode {
 
   const ownerName = info?.ownerName ?? roster.state.settings?.ownerName
   const account = () => {
-    const actions = ["Settings", "Computers", "Disconnect this iPhone", "Cancel"] as const
+    const actions = ["Settings", "Profiles", "Computers", "Disconnect this iPhone", "Cancel"] as const
     const run = (i: number) => {
       if (i === 0) openWeb("#/settings/general", "Settings")
-      if (i === 1) openWeb("#/settings/computers", "Computers")
-      if (i === 2) {
+      if (i === 1) openWeb("#/settings/profiles", "Profiles")
+      if (i === 2) openWeb("#/settings/computers", "Computers")
+      if (i === 3) {
         Alert.alert("Disconnect this iPhone?", "You can connect it again with a new code from Settings › iPhone app.", [
           { text: "Cancel", style: "cancel" },
           { text: "Disconnect", style: "destructive", onPress: () => void disconnect() },
@@ -68,14 +69,15 @@ export default function Home(): ReactNode {
     }
     if (Platform.OS === "ios")
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: [...actions], cancelButtonIndex: 3, destructiveButtonIndex: 2 },
+        { options: [...actions], cancelButtonIndex: 4, destructiveButtonIndex: 3 },
         run,
       )
     else
       Alert.alert("OpenBot", undefined, [
         { text: actions[0], onPress: () => run(0) },
         { text: actions[1], onPress: () => run(1) },
-        { text: actions[2], style: "destructive", onPress: () => run(2) },
+        { text: actions[2], onPress: () => run(2) },
+        { text: actions[3], style: "destructive", onPress: () => run(3) },
         { text: "Cancel", style: "cancel" },
       ])
   }

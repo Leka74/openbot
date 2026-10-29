@@ -130,7 +130,8 @@ export const makeSlackService = Effect.gen(function* () {
       if (text.length > SLACK_DRAFT_MAX_CHARS) {
         return yield* new InvalidInput({ message: `Keep the message under ${SLACK_DRAFT_MAX_CHARS} characters.` })
       }
-      const status = yield* connector.status
+      const slack = yield* connector.connection
+      const status = yield* slack.status
       if (!status.connected) return yield* notConnected
       if (files.length > 0 && (status.missingScopes ?? []).includes("files:write")) {
         return yield* new InvalidInput({
@@ -138,7 +139,7 @@ export const makeSlackService = Effect.gen(function* () {
             "The owner's Slack app can't upload files yet: it needs an update (Connect apps › Slack shows how). Draft the text alone, or tell the owner.",
         })
       }
-      const target = yield* connector.resolve({ to: input.to, thread: input.thread })
+      const target = yield* slack.resolve({ to: input.to, thread: input.thread })
       const card: typeof SlackDraftCard.Type = {
         type: "slack-draft",
         team: status.team ?? "Slack",
@@ -217,9 +218,10 @@ export const makeSlackService = Effect.gen(function* () {
           })
         files.push({ name: record.value.name, path: record.value.path, byteSize: record.value.byteSize })
       }
+      const slack = yield* connector.connection
       sending.add(input.entryId)
       yield* Effect.gen(function* () {
-        const sent = yield* connector.send({
+        const sent = yield* slack.send({
           channelId: entry.card.channelId,
           text,
           threadTs: entry.card.threadTs,

@@ -3,9 +3,9 @@
 // turn (NodeFiles.upload; the fake keeps the bytes), listed in the turn text, and images reach
 // harnesses that can see images.
 import { describe, expect, test } from "bun:test"
-import { type ConversationId, LOCAL_NODE_ID } from "@openbot/contracts"
+import { type ConversationId, LOCAL_NODE_ID, MAIN_PROFILE_ID } from "@openbot/contracts"
 import { Effect, Layer, Ref } from "effect"
-import { AttachmentService, ConversationService, Messaging, SendFileLimits } from "../../src/ports/index.ts"
+import { AttachmentService, ConversationService, inProfile, Messaging, SendFileLimits } from "../../src/ports/index.ts"
 import { BOT_DM_HINT } from "../../src/services/conversation/BotRunner.ts"
 import { NodeFilesFake, runTest } from "../../src/testing/index.ts"
 import { appLayer, createBot, eventsOf, messagesOf, send, settled, TestDriver, transcript, turnsOf } from "./helpers.ts"
@@ -51,7 +51,7 @@ describe("bot → bot files", () => {
             yield* Ref.update(results, (all) => [...all, sent])
             yield* turn.say(`${turn.turnId}/m`, "Sent Bob the diagram.")
             yield* turn.complete()
-          }).pipe(Effect.orDie),
+          }).pipe(Effect.orDie, inProfile(MAIN_PROFILE_ID)),
         )
         yield* send(ada.directConversationId, "Send Bob the diagram")
         yield* settled(ada.directConversationId)
@@ -136,7 +136,7 @@ describe("bot → bot files", () => {
             })
             yield* turn.say(`${turn.turnId}/m`, "Shared the CSV with Bob.")
             yield* turn.complete()
-          }).pipe(Effect.orDie),
+          }).pipe(Effect.orDie, inProfile(MAIN_PROFILE_ID)),
         )
         yield* send(group, "@Ada share the revenue CSV with Bob")
         yield* settled(group, 2)

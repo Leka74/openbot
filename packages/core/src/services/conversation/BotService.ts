@@ -48,6 +48,7 @@ import {
   SettingsRepo,
   type TurnRepo,
 } from "../../ports/repos.ts"
+import { currentProfileId, inProfile, OwnerProfiles } from "../../ports/Profiles.ts"
 import {
   ApprovalService,
   BackgroundTasks,
@@ -105,6 +106,7 @@ export const BotServiceLive: Layer.Layer<
   BotService,
   never,
   | Orchestrator
+  | OwnerProfiles
   | RoutineScheduler
   | ApprovalService
   | BackgroundTasks
@@ -152,8 +154,26 @@ export const BotServiceLive: Layer.Layer<
     const memoryStore = yield* MemoryStore
     const skillStore = yield* SkillStore
     const tokens = yield* McpTokenRepo
+    const ownerProfiles = yield* OwnerProfiles
 
-    const getBot = (botId: BotId) => required(bots.get(botId), "bot", botId)
+    /** A Bot of the current profile (another profile's is not found). */
+    const getBot = (botId: BotId) =>
+      Effect.gen(function* () {
+        const bot = yield* required(bots.get(botId), "bot", botId)
+        if (bot.ownerProfileId !== (yield* currentProfileId)) return yield* new NotFound({ entity: "bot", id: botId })
+        return bot
+      })
+
+    const getSection = (sectionId: SectionId) =>
+      Effect.gen(function* () {
+        const section = yield* required(sections.get(sectionId), "section", sectionId)
+        if (section.ownerProfileId !== (yield* currentProfileId))
+          return yield* new NotFound({ entity: "section", id: sectionId })
+        return section
+      })
+
+    const profileBots = Effect.flatMap(currentProfileId, (profileId) => orDie(bots.listIn(profileId)))
+    const profileSections = Effect.flatMap(currentProfileId, (profileId) => orDie(sections.list(profileId)))
 
     const publishBot = (bot: Bot) =>
       Effect.gen(function* () {
@@ -167,7 +187,7 @@ export const BotServiceLive: Layer.Layer<
         const name = yield* validName(raw, "bot", MAX_BOT_NAME_LENGTH)
         const key = nameKey(name.startsWith("@") ? name.slice(1) : name)
         if (RESERVED_NAMES.has(key)) return yield* new InvalidInput({ message: `"${name}" is reserved.` })
-        const all = yield* orDie(bots.list)
+        const all = yield* profileBots
         const taken = all.find((b) => b.id !== except && nameKey(b.name) === key)
         if (taken !== undefined) return yield* new Conflict({ reason: `A bot named "${taken.name}" already exists.` })
         return name
@@ -201,7 +221,9 @@ export const BotServiceLive: Layer.Layer<
       input: BotCreateInput,
       options?: { readonly autonomyCeiling?: BotAutonomy | undefined; readonly introduce?: boolean | undefined },
     ) {
-      const known = yield* orDie(settingsRepo.get(botNonceKey(input.clientNonce)))
+      const profileId = yield* currentProfileId
+      const nonces = settingsRepo.forProfile(profileId)
+      const known = yield* orDie(nonces.get(botNonceKey(input.clientNonce)))
       if (Option.isSome(known) && typeof known.value === "string") {
         const existing = yield* orDie(bots.get(known.value as BotId))
         if (Option.isSome(existing)) return existing.value
@@ -221,6 +243,7 @@ export const BotServiceLive: Layer.Layer<
       const directConversationId = yield* ids.conversationId
       const bot: Bot = compact({
         id,
+        ownerProfileId: profileId,
         name,
         label: label === undefined || label === "" ? undefined : label,
         avatar: input.avatar ?? defaultBotAvatar(id),
@@ -238,19 +261,24 @@ export const BotServiceLive: Layer.Layer<
         createdAt: now,
         updatedAt: now,
       })
-      yield* publishBot(bot)
-      yield* store.create({
-        id: directConversationId,
-        kind: "direct",
-        botId: id,
-        title: name,
-        createdAt: now,
-        lastActivityAt: now,
-        unreadCount: 0,
-        hiddenFromSidebar: false,
-        epoch: yield* ids.next("epc"),
-      })
-      yield* orDie(settingsRepo.set(botNonceKey(input.clientNonce), id))
+      yield* ownerProfiles.adding(
+        profileId,
+        Effect.gen(function* () {
+          yield* publishBot(bot)
+          yield* store.create({
+            id: directConversationId,
+            kind: "direct",
+            botId: id,
+            title: name,
+            createdAt: now,
+            lastActivityAt: now,
+            unreadCount: 0,
+            hiddenFromSidebar: false,
+            epoch: yield* ids.next("epc"),
+          })
+          yield* orDie(nonces.set(botNonceKey(input.clientNonce), id))
+        }),
+      )
       yield* Effect.ignore(
         conversationService.appendEvent({
           conversationId: directConversationId,
@@ -306,7 +334,7 @@ export const BotServiceLive: Layer.Layer<
         const { sectionId: _drop, ...rest } = next
         if (patch.sectionId === null) next = rest
         else {
-          yield* required(sections.get(patch.sectionId), "section", patch.sectionId)
+          yield* getSection(patch.sectionId)
           next = { ...rest, sectionId: patch.sectionId }
         }
       }
@@ -334,7 +362,8 @@ export const BotServiceLive: Layer.Layer<
         const skills = [...new Set(patch.skills)]
         for (const name of skills) {
           // a skill already deleted from the library may be dropped, never added
-          if (!before.skills.includes(name) && Option.isNone(yield* orDie(skillStore.get(name)))) {
+          const inLibrary = yield* orDie(skillStore.get(name)).pipe(inProfile(before.ownerProfileId))
+          if (!before.skills.includes(name) && Option.isNone(inLibrary)) {
             return yield* new InvalidInput({ message: `There is no skill named "${name}" in the library.` })
           }
         }
@@ -365,15 +394,21 @@ export const BotServiceLive: Layer.Layer<
       return next
     })
 
+    /** The Bot stops: its turns, background work and requests end and its tools stop answering. */
+    const haltBot = (botId: BotId) =>
+      Effect.gen(function* () {
+        yield* orDie(tokens.revokeAll(botId))
+        yield* orchestrator.stopBot(botId)
+        // Its background work stops and its records go (D5.7).
+        yield* tasks.removeBot(botId)
+        yield* approvals.cancelPending({ botId, reason: "bot-deleted" })
+      })
+
     const deleteBot = Effect.fn("BotService.delete")(function* (botId: BotId) {
       const bot = yield* getBot(botId)
-      yield* orchestrator.stopBot(botId)
-      // Its background work stops and its records go (D5.7).
-      yield* tasks.removeBot(botId)
-      yield* approvals.cancelPending({ botId, reason: "bot-deleted" })
+      yield* haltBot(botId)
       for (const routine of yield* routines.list({ botId })) yield* Effect.ignore(routines.delete(routine.id))
       yield* orDie(memoryStore.deleteAll(botId))
-      yield* orDie(tokens.revokeAll(botId))
       yield* orDie(bots.clearSession(botId))
       const owned = yield* orDie(conversations.list({ botId }))
       for (const conversation of owned) {
@@ -407,7 +442,7 @@ export const BotServiceLive: Layer.Layer<
         )
       }
       yield* orDie(bots.delete(botId))
-      yield* hub.publishRoster({ type: "bot.removed", botId })
+      yield* hub.publishRoster({ type: "bot.removed", botId }, bot.ownerProfileId)
     })
 
     // ------------------------------------------------------------------ context preview
@@ -457,15 +492,15 @@ export const BotServiceLive: Layer.Layer<
 
     const createSection = Effect.fn("BotService.createSection")(function* (raw: string) {
       const name = yield* validName(raw, "section", MAX_SECTION_NAME_LENGTH)
-      const all = yield* orDie(sections.list)
+      const all = yield* profileSections
       const order = all.reduce((max, s) => Math.max(max, s.order), -1) + 1
-      const section: Section = { id: yield* ids.sectionId, name, order }
+      const section: Section = { id: yield* ids.sectionId, ownerProfileId: yield* currentProfileId, name, order }
       yield* publishSection(section)
       return section
     })
 
     const renameSection = Effect.fn("BotService.renameSection")(function* (sectionId: SectionId, raw: string) {
-      const current = yield* required(sections.get(sectionId), "section", sectionId)
+      const current = yield* getSection(sectionId)
       const name = yield* validName(raw, "section", MAX_SECTION_NAME_LENGTH)
       const section: Section = { ...current, name }
       if (name !== current.name) yield* publishSection(section)
@@ -473,9 +508,9 @@ export const BotServiceLive: Layer.Layer<
     })
 
     const deleteSection = Effect.fn("BotService.deleteSection")(function* (sectionId: SectionId) {
-      yield* required(sections.get(sectionId), "section", sectionId)
+      const section = yield* getSection(sectionId)
       const now = yield* Clock.currentTimeMillis
-      for (const bot of yield* orDie(bots.list)) {
+      for (const bot of yield* profileBots) {
         if (bot.sectionId !== sectionId) continue
         const { sectionId: _drop, ...rest } = bot
         yield* publishBot({ ...rest, updatedAt: now })
@@ -487,7 +522,7 @@ export const BotServiceLive: Layer.Layer<
         }
       }
       yield* orDie(sections.delete(sectionId))
-      yield* hub.publishRoster({ type: "section.removed", sectionId })
+      yield* hub.publishRoster({ type: "section.removed", sectionId }, section.ownerProfileId)
     })
 
     const arrangeSidebar = Effect.fn("BotService.arrangeSidebar")(function* (input: {
@@ -496,7 +531,7 @@ export const BotServiceLive: Layer.Layer<
     }) {
       const { place } = input
       const section = place === "pinned" || place === "unassigned" || place === "groups" ? undefined : place
-      if (section !== undefined) yield* required(sections.get(section), "section", section)
+      if (section !== undefined) yield* getSection(section)
       for (const [index, item] of input.items.entries()) {
         if (item.kind === "bot") {
           if (place === "groups")
@@ -517,7 +552,7 @@ export const BotServiceLive: Layer.Layer<
     })
 
     const reorderSections = Effect.fn("BotService.reorderSections")(function* (sectionIds: ReadonlyArray<SectionId>) {
-      const all = yield* orDie(sections.list)
+      const all = yield* profileSections
       const byId = new Map(all.map((s) => [s.id, s] as const))
       if (new Set(sectionIds).size !== sectionIds.length) {
         return yield* new InvalidInput({ message: "A section can only appear once." })
@@ -540,10 +575,11 @@ export const BotServiceLive: Layer.Layer<
       create,
       update,
       delete: deleteBot,
+      halt: (botId) => Effect.andThen(getBot(botId), haltBot(botId)),
       get: getBot,
-      list: orDie(bots.list),
+      list: profileBots,
       resolve: (ref) =>
-        Effect.flatMap(orDie(bots.list), (all) => {
+        Effect.flatMap(profileBots, (all) => {
           const bot = findBotByRef(all, ref)
           return bot === undefined ? Effect.fail(new NotFound({ entity: "bot", id: ref.trim() })) : Effect.succeed(bot)
         }),
@@ -556,7 +592,7 @@ export const BotServiceLive: Layer.Layer<
       }),
       newSession: (botId) => Effect.andThen(getBot(botId), orchestrator.newSession({ botId })),
       compact: (botId) => Effect.andThen(getBot(botId), orchestrator.compact({ botId })),
-      listSections: orDie(sections.list),
+      listSections: profileSections,
       createSection,
       renameSection,
       deleteSection,

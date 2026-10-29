@@ -29,6 +29,8 @@ export const Keys = {
   hark: "hark",
   /** ntfy, notifications on any phone (D3.6). */
   ntfy: "ntfy",
+  /** What the active profile held back while another one was active ("While you were away"). */
+  away: "away",
 } as const
 export type ReactivityKey = (typeof Keys)[keyof typeof Keys]
 
@@ -82,6 +84,8 @@ export const keysForRosterChange = (change: RosterChange): ReadonlyArray<Reactiv
     case "task.upserted":
     case "task.removed":
       return [Keys.tasks]
+    case "away.changed":
+      return [Keys.away]
     default:
       return []
   }

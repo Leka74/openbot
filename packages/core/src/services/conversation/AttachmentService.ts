@@ -1,11 +1,12 @@
 /**
  * AttachmentService: `attachments.upload` / contract views of stored attachments. Bytes live in
- * `AttachmentStore` (`<data>/attachments/<id>`); harnesses get the brain path at turn start.
+ * `AttachmentStore` (the profile's `attachments/<id>`); harnesses get the brain path at turn start.
  */
 import type { Attachment } from "@openbot/contracts"
 import { InvalidInput } from "@openbot/contracts"
 import { Effect, Layer } from "effect"
 import { RepoError } from "../../ports/errors.ts"
+import type { CurrentProfile } from "../../ports/Profiles.ts"
 import { AttachmentStore, type AttachmentRecord, type AttachmentStreamInput } from "../../ports/stores.ts"
 import { AttachmentService } from "../../ports/services.ts"
 import { compact, orDie, required } from "./internal/util.ts"
@@ -45,7 +46,7 @@ const validName = (raw: string): Effect.Effect<string, InvalidInput> => {
 export const storeAttachmentStream = <E>(
   store: AttachmentStore["Service"],
   input: AttachmentStreamInput<E>,
-): Effect.Effect<Attachment, InvalidInput | E> =>
+): Effect.Effect<Attachment, InvalidInput | E, CurrentProfile> =>
   Effect.gen(function* () {
     const name = yield* validName(input.name)
     if (!MIME.test(input.mime)) return yield* new InvalidInput({ message: `Unsupported media type "${input.mime}".` })

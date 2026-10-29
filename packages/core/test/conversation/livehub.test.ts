@@ -7,9 +7,10 @@ import type {
 } from "@openbot/contracts"
 import { MAX_REPLAY_GAP } from "@openbot/contracts"
 import { Effect, Layer, Stream } from "effect"
-import { ConversationRepo, LiveHub } from "../../src/ports/index.ts"
+import { BotRepo, ConversationRepo, LiveHub } from "../../src/ports/index.ts"
 import { LiveHubLive } from "../../src/services/conversation/index.ts"
 import {
+  makeBot,
   botId,
   conversationId,
   makeDirectConversation,
@@ -191,6 +192,7 @@ describe("LiveHub roster", () => {
           Effect.map(live.items, (items) => items.length === 2),
           "roster snapshot",
         )
+        yield* (yield* BotRepo).upsert(makeBot({ id: botId("bot_x") }))
         const activity = { botId: botId("bot_x"), state: "thinking" as const, since: 1 }
         yield* hub.setActivity(activity)
         yield* hub.setActivity({ ...activity, since: 2 })

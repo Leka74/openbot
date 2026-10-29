@@ -3,6 +3,8 @@
 // with a link to the chat and a high priority when a Bot needs the owner; a slow push does not hold
 // back the next; "when a Bot needs you" and "not while I'm at my computer" drop the rest.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
+import { inProfile } from "@openbot/core"
 import { Effect, Fiber } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { readFileSync, statSync } from "node:fs"
@@ -111,7 +113,7 @@ describe("ntfy", () => {
           seen.push({ url, authorization: new Headers(init.headers).get("authorization") })
           return Response.json({ id: "x" })
         })
-        const first = yield* makeNtfy({ file, fetch: fetchImpl })
+        const first = yield* makeNtfy({ file: () => file, fetch: fetchImpl })
         yield* first.connect({ topic: "alerts", server: "https://ntfy.example.com/", token: "tk_secret" })
         yield* first.setSends("needs-you")
         yield* first.setQuietAtComputer(false)
@@ -119,7 +121,7 @@ describe("ntfy", () => {
         expect(statSync(file).mode & 0o777).toBe(0o600)
         expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ token: "tk_secret" })
 
-        const reloaded = yield* makeNtfy({ file, fetch: fetchImpl })
+        const reloaded = yield* makeNtfy({ file: () => file, fetch: fetchImpl })
         expect(yield* reloaded.status).toEqual({
           connected: true,
           sends: "needs-you",
@@ -130,7 +132,7 @@ describe("ntfy", () => {
         yield* reloaded.test
         expect(seen.at(-1)).toEqual({ url: "https://ntfy.example.com", authorization: "Bearer tk_secret" })
         expect(yield* reloaded.disconnect).toEqual({ connected: false, sends: "all" })
-      }),
+      }).pipe(inProfile(MAIN_PROFILE_ID)),
     ))
 
   test("a server that never answers times out as Unavailable", () =>
@@ -141,7 +143,7 @@ describe("ntfy", () => {
           started.resolve()
           return new Promise<never>(() => {})
         })
-        const service = yield* makeNtfy({ file: join(server.dataDir, "ntfy-timeout.json"), fetch: fetchImpl })
+        const service = yield* makeNtfy({ file: () => join(server.dataDir, "ntfy-timeout.json"), fetch: fetchImpl })
         const call = yield* service
           .connect({ topic: "alerts", server: "https://ntfy.example.com" })
           .pipe(Effect.flip, Effect.forkScoped)
@@ -149,7 +151,7 @@ describe("ntfy", () => {
         yield* TestClock.adjust("15 seconds")
         expect(yield* Fiber.join(call)).toMatchObject({ _tag: "Unavailable", message: "ntfy did not answer." })
         expect(yield* service.status).toEqual({ connected: false, sends: "all" })
-      }).pipe(Effect.provide(TestClock.layer())),
+      }).pipe(Effect.provide(TestClock.layer()), inProfile(MAIN_PROFILE_ID)),
     ))
 
   test(

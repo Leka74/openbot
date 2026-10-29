@@ -1,6 +1,6 @@
 /**
- * `SkillStore` on disk (D5.5): one library at `<data>/skills-lib` in Claude plugin layout, mounted
- * per harness:
+ * `SkillStore` on disk (D5.5): one library per owner profile at `DataDir.profile(id).skillsLib`
+ * (the main profile's at `<data>/skills-lib`) in Claude plugin layout, mounted per harness:
  *
  * ```
  * skills-lib/.claude-plugin/plugin.json
@@ -14,9 +14,16 @@
  * An imported skill records where it came from in `metadata.source` (`skills.sh:<owner/repo/skill>`)
  * and `metadata.source-hash`.
  */
-import type { Millis, Skill, SkillName, SkillSource } from "@openbot/contracts"
-import { type DataDirShape, joinPath, RepoError, SkillStore } from "@openbot/core"
-import { Effect, Option } from "effect"
+import {
+  MAIN_PROFILE_ID,
+  type Millis,
+  type OwnerProfileId,
+  type Skill,
+  type SkillName,
+  type SkillSource,
+} from "@openbot/contracts"
+import { currentProfileId, type DataDirShape, joinPath, RepoError, type SkillFile, SkillStore } from "@openbot/core"
+import { Cache, Duration, Effect, Exit, Option } from "effect"
 import { listDirectory, modifiedAt, readTextFile, removePath, writeFileAtomic } from "./files.ts"
 import {
   formatTimestamp,
@@ -58,9 +65,18 @@ export const pluginManifest = {
   version: "1.0.0",
 }
 
-export const makeFileSkillStore = (dataDir: DataDirShape) =>
+const parseSkillFile = (text: string) => {
+  const frontmatter = parseFrontmatter(text)
+  return {
+    name: scalar(frontmatter, "name"),
+    description: scalar(frontmatter, "description"),
+    body: frontmatter.body,
+  }
+}
+
+/** One library at `root`. */
+const makeSkillLibrary = (root: string) =>
   Effect.gen(function* () {
-    const root = dataDir.skillsLib
     const skillsDir = joinPath(root, "skills")
     const manifestPath = joinPath(root, PLUGIN_MANIFEST)
 
@@ -114,8 +130,7 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
     // The library is mounted even when empty, so the manifest exists from the start.
     yield* ensureManifest("SkillStore.init")
 
-    return SkillStore.of({
-      root,
+    return {
       list: Effect.gen(function* () {
         const names = (yield* listDirectory("SkillStore.list", skillsDir))
           .filter((e) => e.isDirectory && SKILL_NAME.test(e.name))
@@ -128,8 +143,9 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
         }
         return skills
       }),
-      get: (name) => (SKILL_NAME.test(name) ? readSkill("SkillStore.get", name) : Effect.succeed(Option.none())),
-      put: (skill) =>
+      get: (name: SkillName) =>
+        SKILL_NAME.test(name) ? readSkill("SkillStore.get", name) : Effect.succeed(Option.none()),
+      put: (skill: Skill) =>
         Effect.gen(function* () {
           const path = yield* skillFile("SkillStore.put", skill.name)
           yield* ensureManifest("SkillStore.put")
@@ -145,7 +161,7 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
           })
           yield* writeFileAtomic("SkillStore.put", path, renderFrontmatter(frontmatter))
         }),
-      install: (skill, files) =>
+      install: (skill: Skill, files: ReadonlyArray<SkillFile>) =>
         Effect.gen(function* () {
           const path = yield* skillFile("SkillStore.install", skill.name)
           yield* ensureManifest("SkillStore.install")
@@ -165,16 +181,39 @@ export const makeFileSkillStore = (dataDir: DataDirShape) =>
           })
           yield* writeFileAtomic("SkillStore.install", path, renderFrontmatter(frontmatter))
         }),
-      parse: (text) => {
-        const frontmatter = parseFrontmatter(text)
-        return {
-          name: scalar(frontmatter, "name"),
-          description: scalar(frontmatter, "description"),
-          body: frontmatter.body,
-        }
-      },
-      dir: (name) => joinPath(skillsDir, name),
-      delete: (name) =>
+      delete: (name: SkillName) =>
         SKILL_NAME.test(name) ? removePath("SkillStore.delete", joinPath(skillsDir, name)) : Effect.succeed(false),
+    }
+  })
+
+export const makeFileSkillStore = (dataDir: DataDirShape) =>
+  Effect.gen(function* () {
+    /** Deleted profiles: a late write of one of their Bots must not bring their folder back. */
+    const forgotten = new Set<OwnerProfileId>()
+    const open = (id: OwnerProfileId) =>
+      forgotten.has(id)
+        ? Effect.fail(new RepoError({ op: "SkillStore", message: "This profile was deleted." }))
+        : makeSkillLibrary(dataDir.profile(id).skillsLib)
+    // a library that failed to open is tried again next time
+    const libraries = yield* Cache.makeWith(open, {
+      capacity: Number.MAX_SAFE_INTEGER,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+    })
+    yield* Cache.get(libraries, MAIN_PROFILE_ID)
+    const library = Effect.flatMap(currentProfileId, (id) => Cache.get(libraries, id))
+
+    return SkillStore.of({
+      list: Effect.flatMap(library, (lib) => lib.list),
+      get: (name) => Effect.flatMap(library, (lib) => lib.get(name)),
+      put: (skill) => Effect.flatMap(library, (lib) => lib.put(skill)),
+      install: (skill, files) => Effect.flatMap(library, (lib) => lib.install(skill, files)),
+      parse: parseSkillFile,
+      delete: (name) => Effect.flatMap(library, (lib) => lib.delete(name)),
+      dir: (name) => Effect.map(currentProfileId, (id) => joinPath(dataDir.profile(id).skillsLib, "skills", name)),
+      forget: (id) =>
+        Effect.suspend(() => {
+          forgotten.add(id)
+          return Cache.invalidate(libraries, id)
+        }),
     })
   })

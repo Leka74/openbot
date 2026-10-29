@@ -6,14 +6,14 @@
  *   directory, or a file for worktrees / submodules). Remote computers answer `undefined` (they do
  *   not report a home yet), so autonomy keeps asking for their `~` folders and "Allow in ‹folder›"
  *   offers the request's directory.
- * - `projectFolderRoots`: the local node's extra path-policy roots per bot = Settings' shared
- *   project folders ∪ the bot's own, `~` expanded, kept current from the roster replica (snapshot,
- *   then `bot.upserted` / `bot.removed` / `settings.updated`). Remote nodes keep their own roots
+ * - `projectFolderRoots`: the local node's extra path-policy roots per bot = its profile's shared
+ *   project folders ∪ the bot's own, `~` expanded, kept current from every profile's roster replica
+ *   (snapshot, then `bot.upserted` / `bot.removed` / `settings.updated`). Remote nodes keep their own roots
  *   (their owner's `--root` flags): the brain never widens a remote node's policy.
  */
-import type { Bot, NodeId, Settings } from "@openbot/contracts"
+import type { Bot, NodeId, OwnerProfileId } from "@openbot/contracts"
 import { LOCAL_NODE_ID, normalizeProjectFolder, projectFolderProblem } from "@openbot/contracts"
-import { HostPaths, LiveHub } from "@openbot/core"
+import { HostPaths, LiveHub, OwnerProfiles } from "@openbot/core"
 import { Deferred, Effect, Layer, Option, type Scope, Stream } from "effect"
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
@@ -67,8 +67,9 @@ export const localProjectRoots = (folders: ReadonlyArray<string>, home: string):
 }
 
 /**
- * The local node's per-bot extra roots (`NodeConfigInput.extraRoots`), kept current from the roster
- * while the calling scope lives. Without a `LiveHub` (tests of the node layers alone) there are none.
+ * The local node's per-bot extra roots (`NodeConfigInput.extraRoots`): the shared project folders of
+ * the bot's own profile ∪ the bot's own, kept current from every profile's roster while the calling
+ * scope lives. Without a `LiveHub` (tests of the node layers alone) there are none.
  */
 export const projectFolderRoots: Effect.Effect<
   ((botId: string) => ReadonlyArray<string>) | undefined,
@@ -76,39 +77,57 @@ export const projectFolderRoots: Effect.Effect<
   Scope.Scope
 > = Effect.gen(function* () {
   const hub = Option.getOrUndefined(yield* Effect.serviceOption(LiveHub))
-  if (hub === undefined) return undefined
+  const profiles = Option.getOrUndefined(yield* Effect.serviceOption(OwnerProfiles))
+  if (hub === undefined || profiles === undefined) return undefined
   const home = localHome()
-  let shared: ReadonlyArray<string> = []
-  const perBot = new Map<string, ReadonlyArray<string>>()
-  const setSettings = (settings: Settings) => {
-    shared = settings.sharedProjectFolders
-  }
-  const setBot = (bot: Bot) => {
-    if (bot.projectFolders.length === 0) perBot.delete(bot.id)
-    else perBot.set(bot.id, bot.projectFolders)
-  }
-  const ready = yield* Deferred.make<void>()
-  yield* hub.subscribeRoster({}).pipe(
-    Stream.runForEach((item) =>
-      Effect.gen(function* () {
-        if (item.kind === "snapshot") {
-          setSettings(item.settings)
-          perBot.clear()
-          for (const bot of item.bots) setBot(bot)
-          yield* Deferred.succeed(ready, undefined)
-          return
-        }
-        if (item.kind !== "change") return
-        const change = item.change
-        if (change.type === "settings.updated") setSettings(change.settings)
-        else if (change.type === "bot.upserted") setBot(change.bot)
-        else if (change.type === "bot.removed") perBot.delete(change.botId)
-      }),
+  const shared = new Map<OwnerProfileId, ReadonlyArray<string>>()
+  const perBot = new Map<string, Bot>()
+  const tracked = new Set<OwnerProfileId>()
+
+  /** Follows one profile's roster; the returned Deferred completes with its first snapshot. */
+  const track = (profileId: OwnerProfileId) =>
+    Effect.gen(function* () {
+      tracked.add(profileId)
+      const ready = yield* Deferred.make<void>()
+      yield* hub.subscribeRoster({ profileId }).pipe(
+        Stream.runForEach((item) =>
+          Effect.gen(function* () {
+            if (item.kind === "snapshot") {
+              shared.set(profileId, item.settings.sharedProjectFolders)
+              for (const [id, bot] of perBot) if (bot.ownerProfileId === profileId) perBot.delete(id)
+              for (const bot of item.bots) perBot.set(bot.id, bot)
+              yield* Deferred.succeed(ready, undefined)
+              return
+            }
+            if (item.kind !== "change") return
+            const change = item.change
+            if (change.type === "settings.updated") shared.set(profileId, change.settings.sharedProjectFolders)
+            else if (change.type === "bot.upserted") perBot.set(change.bot.id, change.bot)
+            else if (change.type === "bot.removed") perBot.delete(change.botId)
+          }),
+        ),
+        Effect.catchCause((cause) => Effect.logWarning("local node: project folders no longer tracked", cause)),
+        Effect.forkScoped,
+      )
+      return ready
+    })
+
+  const initial = yield* Effect.forEach((yield* profiles.view).profiles, (profile) => track(profile.id))
+  yield* profiles.changes.pipe(
+    Stream.runForEach((view) =>
+      Effect.forEach(
+        view.profiles.filter((profile) => !tracked.has(profile.id)),
+        (profile) => track(profile.id),
+        { discard: true },
+      ),
     ),
-    Effect.catchCause((cause) => Effect.logWarning("local node: project folders no longer tracked", cause)),
     Effect.forkScoped,
   )
-  // the first snapshot (bounded: the node must come up even if the roster is slow)
-  yield* Deferred.await(ready).pipe(Effect.timeoutOption("5 seconds"))
-  return (botId: string) => localProjectRoots([...shared, ...(perBot.get(botId) ?? [])], home)
+  // the first snapshots (bounded: the node must come up even if the roster is slow)
+  yield* Effect.forEach(initial, Deferred.await, { discard: true }).pipe(Effect.timeoutOption("5 seconds"))
+  return (botId: string) => {
+    const bot = perBot.get(botId)
+    if (bot === undefined) return []
+    return localProjectRoots([...(shared.get(bot.ownerProfileId) ?? []), ...bot.projectFolders], home)
+  }
 })

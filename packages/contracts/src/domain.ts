@@ -7,11 +7,13 @@ import {
   ConversationId,
   HarnessKindName,
   LOCAL_NODE_ID,
+  MAIN_PROFILE_ID,
   Millis,
   NodeId,
   NonEmptyString,
   NonNegativeInt,
   NotificationId,
+  OwnerProfileId,
   RoutineId,
   RoutineRunId,
   SectionId,
@@ -103,6 +105,8 @@ export type BotNotify = typeof BotNotify.Type
 
 export const Bot = Schema.Struct({
   id: BotId,
+  /** The owner's profile it belongs to, for good: everything of a Bot stays in its profile. */
+  ownerProfileId: OwnerProfileId.pipe(Schema.withDecodingDefaultKey(Effect.succeed(MAIN_PROFILE_ID))),
   name: NonEmptyString.check(Schema.isMaxLength(64)),
   /** Short role chip under the name ("Research", "Infra"); Grok "Add a label". */
   label: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
@@ -163,11 +167,27 @@ export type BotActivity = typeof BotActivity.Type
 // ---------------------------------------------------------------------------- Sections
 export const Section = Schema.Struct({
   id: SectionId,
+  ownerProfileId: OwnerProfileId.pipe(Schema.withDecodingDefaultKey(Effect.succeed(MAIN_PROFILE_ID))),
   name: NonEmptyString.check(Schema.isMaxLength(64)),
   /** Ascending sort key. */
   order: Schema.Number,
 })
 export type Section = typeof Section.Type
+
+// ---------------------------------------------------------------------------- Owner profiles
+export const OwnerProfile = Schema.Struct({
+  id: OwnerProfileId,
+  name: NonEmptyString.check(Schema.isMaxLength(64)),
+  createdAt: Millis,
+})
+export type OwnerProfile = typeof OwnerProfile.Type
+
+/** Every profile and the active one (the one the apps show). */
+export const OwnerProfilesView = Schema.Struct({
+  profiles: Schema.Array(OwnerProfile),
+  activeId: OwnerProfileId,
+})
+export type OwnerProfilesView = typeof OwnerProfilesView.Type
 
 // ---------------------------------------------------------------------------- Conversation
 export const ConversationKind = Schema.Literals(["direct", "group", "routine-run"])
@@ -437,3 +457,24 @@ export const Notification = Schema.Struct({
   at: Millis,
 })
 export type Notification = typeof Notification.Type
+
+/** A notification of a profile that wasn't active, kept for its "While you were away" view. */
+export const HeldNotification = Schema.Struct({
+  notification: Notification,
+  /** `waiting` or `error`: decided by the brain so the view and pushes agree. */
+  needsYou: Schema.Boolean,
+  /** The Bot's name when it was held; the Bot may have been renamed or deleted since. */
+  botName: Schema.optionalKey(Schema.String),
+})
+export type HeldNotification = typeof HeldNotification.Type
+
+/** What the active profile missed while another one was active. */
+export const AwaySummary = Schema.Struct({
+  /** When the owner last left this profile; absent if never. */
+  since: Schema.optionalKey(Millis),
+  /** Oldest first. */
+  items: Schema.Array(HeldNotification),
+  /** Held items dropped, oldest first, past the cap of 500. */
+  dropped: NonNegativeInt,
+})
+export type AwaySummary = typeof AwaySummary.Type

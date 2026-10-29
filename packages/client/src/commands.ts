@@ -20,7 +20,7 @@ import { OpenBotClient } from "./rpc.ts"
 type Rpcs = RpcGroup.Rpcs<typeof OpenBotRpcs>
 export type RpcTag = Rpcs["_tag"]
 /** The streaming RPCs, served by the replica atoms instead. */
-export type StreamTag = "roster.subscribe" | "conversations.subscribe"
+export type StreamTag = "roster.subscribe" | "conversations.subscribe" | "profiles.subscribe"
 export type CommandTag = Exclude<RpcTag, StreamTag>
 
 export type CommandPayload<T extends RpcTag> = Rpc.PayloadConstructor<Rpc.ExtractTag<Rpcs, T>>
@@ -28,7 +28,11 @@ export type CommandSuccess<T extends RpcTag> = Rpc.Success<Rpc.ExtractTag<Rpcs, 
 export type CommandError<T extends RpcTag> = Rpc.Error<Rpc.ExtractTag<Rpcs, T>> | RpcClientError.RpcClientError
 export type CommandAtom<T extends CommandTag> = Atom.AtomResultFn<CommandPayload<T>, CommandSuccess<T>, CommandError<T>>
 
-const STREAM_TAGS: ReadonlySet<string> = new Set<StreamTag>(["roster.subscribe", "conversations.subscribe"])
+const STREAM_TAGS: ReadonlySet<string> = new Set<StreamTag>([
+  "roster.subscribe",
+  "conversations.subscribe",
+  "profiles.subscribe",
+])
 
 /** What each mutating RPC invalidates. Read-only RPCs are absent. */
 export const COMMAND_INVALIDATES: Partial<Record<CommandTag, ReadonlyArray<ReactivityKey>>> = {
@@ -37,6 +41,11 @@ export const COMMAND_INVALIDATES: Partial<Record<CommandTag, ReadonlyArray<React
   "bots.delete": [Keys.session, Keys.botContext, Keys.routines, Keys.usage],
   "bots.newSession": [Keys.botContext],
   "bots.compact": [Keys.botContext],
+  "profiles.create": [],
+  "profiles.rename": [],
+  "profiles.switch": [],
+  "profiles.delete": [],
+  "profiles.dismissAway": [Keys.away],
   "sections.create": [Keys.sections],
   "sections.rename": [Keys.sections],
   "sections.delete": [Keys.sections],

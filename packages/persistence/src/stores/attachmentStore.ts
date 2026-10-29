@@ -1,15 +1,31 @@
 /**
- * `AttachmentStore`: bytes at `<data>/attachments/<id>` (atomic write), metadata in the
- * `attachments` table (Schema-encoded `AttachmentRecord`). Bytes are written before the row, so a
- * listed attachment always has its file.
+ * `AttachmentStore`: bytes at `<attachments>/<id>` of the current profile (atomic write), metadata in
+ * the `attachments` table (Schema-encoded `AttachmentRecord`, with the profile in `owner_profile_id`).
+ * Bytes are written before the row, so a listed attachment always has its file.
  */
-import { AttachmentRecord, AttachmentStore, type DataDirShape, IdGen, joinPath, RepoError } from "@openbot/core"
-import { Clock, Effect, Exit, Option, Stream } from "effect"
+import {
+  AttachmentRecord,
+  AttachmentStore,
+  currentProfileId,
+  type DataDirShape,
+  IdGen,
+  joinPath,
+  RepoError,
+} from "@openbot/core"
+import { OwnerProfileId } from "@openbot/contracts"
+import { Clock, Effect, Exit, Option, Schema, Stream, Struct } from "effect"
 import { SqlClient } from "effect/sql"
 import { jsonCodec, repoOp } from "../codec.ts"
 import { openStreamWriter, readBytesFile, removePath, safeSegment, writeFileAtomic } from "./files.ts"
 
-const RecordJson = jsonCodec(AttachmentRecord, "attachment")
+/** The payload; the profile is the row's `owner_profile_id`. */
+const RecordJson = jsonCodec(AttachmentRecord.mapFields(Struct.omit(["ownerProfileId"])), "attachment")
+const decodeProfileId = Schema.decodeUnknownEffect(OwnerProfileId)
+
+interface Row {
+  readonly payload_json: string
+  readonly owner_profile_id: string
+}
 
 export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
   Effect.gen(function* () {
@@ -18,21 +34,24 @@ export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
 
     const getRecord = (op: string, id: string) =>
       Effect.gen(function* () {
-        const rows = yield* sql<{ payload_json: string }>`SELECT payload_json FROM attachments WHERE id = ${id}`
+        const rows = yield* sql<Row>`SELECT payload_json, owner_profile_id FROM attachments WHERE id = ${id}`
         const row = rows[0]
-        return row === undefined
-          ? Option.none<AttachmentRecord>()
-          : Option.some(yield* RecordJson.decode(op, row.payload_json, id))
+        if (row === undefined) return Option.none<AttachmentRecord>()
+        const payload = yield* RecordJson.decode(op, row.payload_json, id)
+        const ownerProfileId = yield* decodeProfileId(row.owner_profile_id)
+        return Option.some<AttachmentRecord>({ ...payload, ownerProfileId })
       }).pipe(repoOp(op))
 
     return AttachmentStore.of({
       put: (input) =>
         Effect.gen(function* () {
           const id = yield* ids.attachmentId
-          const path = joinPath(dataDir.attachments, yield* safeSegment("AttachmentStore.put", id))
+          const profileId = yield* currentProfileId
+          const path = joinPath(dataDir.profile(profileId).attachments, yield* safeSegment("AttachmentStore.put", id))
           const createdAt = yield* Clock.currentTimeMillis
           const record: AttachmentRecord = {
             id,
+            ownerProfileId: profileId,
             name: input.name,
             mime: input.mime,
             byteSize: input.bytes.byteLength,
@@ -41,7 +60,8 @@ export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
           }
           yield* writeFileAtomic("AttachmentStore.put", path, input.bytes)
           const payload = yield* RecordJson.encode("AttachmentStore.put", record)
-          yield* sql`INSERT INTO attachments (id, created_at, payload_json) VALUES (${id}, ${createdAt}, ${payload})`.pipe(
+          yield* sql`INSERT INTO attachments (id, owner_profile_id, created_at, payload_json)
+            VALUES (${id}, ${profileId}, ${createdAt}, ${payload})`.pipe(
             Effect.tapError(() => removePath("AttachmentStore.put", path).pipe(Effect.ignore)),
           )
           return record
@@ -49,7 +69,11 @@ export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
       putStream: (input) =>
         Effect.gen(function* () {
           const id = yield* ids.attachmentId
-          const path = joinPath(dataDir.attachments, yield* safeSegment("AttachmentStore.putStream", id))
+          const profileId = yield* currentProfileId
+          const path = joinPath(
+            dataDir.profile(profileId).attachments,
+            yield* safeSegment("AttachmentStore.putStream", id),
+          )
           // chunks go to a sibling temp file as they arrive; renamed into place once complete
           const writer = yield* openStreamWriter("AttachmentStore.putStream", path)
           const written = yield* Stream.runForEach(input.chunks, (chunk) => writer.write(chunk)).pipe(
@@ -59,6 +83,7 @@ export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
           const createdAt = yield* Clock.currentTimeMillis
           const record: AttachmentRecord = {
             id,
+            ownerProfileId: profileId,
             name: input.name,
             mime: input.mime,
             byteSize: written,
@@ -68,7 +93,8 @@ export const makeFileAttachmentStore = (dataDir: DataDirShape) =>
             ...(input.height === undefined ? {} : { height: input.height }),
           }
           const payload = yield* RecordJson.encode("AttachmentStore.putStream", record)
-          yield* sql`INSERT INTO attachments (id, created_at, payload_json) VALUES (${id}, ${createdAt}, ${payload})`.pipe(
+          yield* sql`INSERT INTO attachments (id, owner_profile_id, created_at, payload_json)
+            VALUES (${id}, ${profileId}, ${createdAt}, ${payload})`.pipe(
             repoOp("AttachmentStore.putStream"),
             Effect.tapError(() => removePath("AttachmentStore.putStream", path).pipe(Effect.ignore)),
           )

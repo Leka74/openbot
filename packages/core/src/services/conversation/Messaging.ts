@@ -56,6 +56,7 @@ import { detectMime, formatBytes, imageDimensions } from "./files.ts"
 import { routeBotMessage } from "./GroupRouter.ts"
 import { describeFileFailure } from "./internal/inbox.ts"
 import { compact, conversationBotIds, findBotByRef, orDie, required } from "./internal/util.ts"
+import { inBotProfile } from "../profiles/lookup.ts"
 
 /** Longest text a bot may send through these tools (characters). */
 export const MAX_BOT_MESSAGE_CHARS = 16_000
@@ -106,14 +107,16 @@ export const MessagingLive: Layer.Layer<
 
     // ------------------------------------------------------------------ guards
 
-    const ensureEnabled = Effect.flatMap(settings.get, (s) =>
-      s.botMessaging ? Effect.void : Effect.fail(new InvalidInput({ message: MESSAGING_DISABLED })),
-    )
+    const ensureEnabled = (ctx: ToolContext) =>
+      Effect.flatMap(inBotProfile(ctx.claims.botId)(settings.get).pipe(Effect.provideService(BotRepo, bots)), (s) =>
+        s.botMessaging ? Effect.void : Effect.fail(new InvalidInput({ message: MESSAGING_DISABLED })),
+      )
 
     const senderOf = (ctx: ToolContext) => required(bots.get(ctx.claims.botId), "bot", ctx.claims.botId)
 
-    const resolveBot = (ref: string) =>
-      Effect.flatMap(orDie(bots.list), (all) => {
+    /** A teammate of `sender`: a Bot of its own profile. */
+    const resolveBot = (sender: Bot, ref: string) =>
+      Effect.flatMap(orDie(bots.listIn(sender.ownerProfileId)), (all) => {
         const bot = findBotByRef(all, ref)
         return bot === undefined ? Effect.fail(new NotFound({ entity: "bot", id: ref.trim() })) : Effect.succeed(bot)
       })
@@ -191,9 +194,9 @@ export const MessagingLive: Layer.Layer<
       Effect.gen(function* () {
         const key = idempotencyKey(tool, ctx)
         if (key !== undefined && done.has(key)) return done.get(key) as MessageBotResult
-        yield* ensureEnabled
+        yield* ensureEnabled(ctx)
         const sender = yield* senderOf(ctx)
-        const recipient = yield* resolveBot(input.to)
+        const recipient = yield* resolveBot(sender, input.to)
         if (recipient.id === sender.id) {
           return yield* new InvalidInput({ message: "You cannot message yourself. Use list_bots to find another Bot." })
         }
@@ -352,7 +355,7 @@ export const MessagingLive: Layer.Layer<
       if (key !== undefined && done.has(key)) {
         return done.get(key) as { readonly conversationId: ConversationId; readonly entryId: EntryId }
       }
-      yield* ensureEnabled
+      yield* ensureEnabled(ctx)
       const text = yield* validText(input.text, "post")
       const sender = yield* senderOf(ctx)
       const conversationId = input.conversationId ?? ctx.claims.conversationId
@@ -499,8 +502,8 @@ export const MessagingLive: Layer.Layer<
           }
           return { kind: "group", conversationId: group.id, group } satisfies FileDestination as FileDestination
         }
-        yield* ensureEnabled
-        const recipient = yield* resolveBot(ref)
+        yield* ensureEnabled(ctx)
+        const recipient = yield* resolveBot(sender, ref)
         if (recipient.id === sender.id) {
           return yield* new InvalidInput({
             message: "You cannot send files to yourself. Leave out `to` to send them to the owner.",

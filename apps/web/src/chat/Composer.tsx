@@ -5,11 +5,11 @@
 // Return inserts a newline and the send button sends; no autofocus (it would pop the keyboard).
 import { ArrowUp, AudioLines, Paperclip, Plus, Sparkles, Square, X } from "lucide-react"
 import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { useAtomSet } from "@effect/atom-react"
+import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Exit, Option, Schema } from "effect"
 import { type Attachment, type AttachmentId, type Bot, type BotId, SkillName } from "@openbot/contracts"
 import { insertDictation } from "@openbot/app-model"
-import { uploadFilesAtom } from "@openbot/client"
+import { activeProfileIdAtom, uploadFilesAtom } from "@openbot/client"
 import { Avatar, IconButton, Menu, MenuItem, MenuPanel, Spinner, cn, useToast } from "@openbot/ui"
 import { plainPreview } from "../app/format.ts"
 import { isTouchNow, useIsPhone } from "../app/layout.ts"
@@ -108,7 +108,9 @@ const textWidth = (text: string, font: string): number => {
 }
 
 export function Composer(props: ComposerProps): ReactNode {
-  const { draftKey, placeholder, mentionable, members, allowEveryone = false, working = false } = props
+  const { placeholder, mentionable, members, allowEveryone = false, working = false } = props
+  // each profile keeps its own drafts: another profile's stay hidden until the owner switches back
+  const draftKey = `${useAtomValue(activeProfileIdAtom)}/${props.draftKey}`
   const [text, setText] = useState(() => drafts.get(draftKey) ?? "")
   const [uploads, setUploads] = useState<ReadonlyArray<Upload>>([])
   const [uploading, setUploading] = useState(false)

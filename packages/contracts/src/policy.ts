@@ -1,8 +1,8 @@
 // Approval rules (D5.6, architecture §4.1 policy.ts, §4.3.4). Rules live on the brain; nodes
 // enforce their own ceiling on top. Evaluation order is owned by core's ApprovalService:
 // bot deny > bot ask > bot allow > global deny > global ask > global allow > default (ask).
-import { Schema } from "effect"
-import { ApprovalRuleId, BotId, Millis } from "./base.ts"
+import { Effect, Schema } from "effect"
+import { ApprovalRuleId, BotId, MAIN_PROFILE_ID, Millis, OwnerProfileId } from "./base.ts"
 
 /**
  * What a request touches (rule surfaces). `skills`: a Bot changing which skills a Bot has; its
@@ -37,6 +37,7 @@ export type ApprovalRuleMatch = typeof ApprovalRuleMatch.Type
 
 export const ApprovalRule = Schema.Struct({
   id: ApprovalRuleId,
+  ownerProfileId: OwnerProfileId.pipe(Schema.withDecodingDefaultKey(Effect.succeed(MAIN_PROFILE_ID))),
   /** Absent = global rule (applies to every bot). */
   botId: Schema.optionalKey(BotId),
   surface: ApprovalSurface,

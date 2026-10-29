@@ -8,17 +8,23 @@ import {
   type HarnessStatus,
   Internal,
   InvalidInput,
+  MAIN_PROFILE_ID,
   MAX_DICTATION_CHUNK_BYTES,
+  NotFound,
   OpenBotRpcs,
+  type OwnerProfileId,
   type SessionInfo,
 } from "@openbot/contracts"
 import {
   ApprovalService,
   AttachmentService,
+  Away,
   BackgroundTasks,
   BotService,
   ComputerPort,
   ConversationService,
+  CurrentProfile,
+  currentProfileId,
   type HarnessDriver,
   HarnessRegistry,
   LiveHub,
@@ -26,7 +32,11 @@ import {
   MemoryService,
   NodeAdmin,
   NodeDirectory,
+  inProfile,
   Orchestrator,
+  OwnerProfiles,
+  ProfileGuard,
+  ProfileRemoval,
   RoutineScheduler,
   SearchService,
   SettingsService,
@@ -37,7 +47,8 @@ import {
   UsageService,
   userActor,
 } from "@openbot/core"
-import { Cause, Clock, Effect, Option, Stream } from "effect"
+import { Cause, Clock, Context, Effect, Option, Schema, Stream } from "effect"
+import { RpcSchema } from "effect/rpc"
 import { userInfo } from "node:os"
 import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
 import { Hark } from "./hark.ts"
@@ -136,6 +147,11 @@ const defaultOwnerName = (): string => {
   }
 }
 
+/** The profile one owner request works in, fixed when it arrives. */
+const RequestProfile = Context.Reference<OwnerProfileId | undefined>("openbot/server/RequestProfile", {
+  defaultValue: () => undefined,
+})
+
 export const RpcHandlersLive = OpenBotRpcs.toLayer(
   Effect.gen(function* () {
     const config = yield* ServerConfig
@@ -166,216 +182,306 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
     const hark = yield* Hark
     const presence = yield* OwnerPresence
     const ntfy = yield* Ntfy
+    const ownerProfiles = yield* OwnerProfiles
+    const guard = yield* ProfileGuard
+    const profileRemoval = yield* ProfileRemoval
+    const away = yield* Away
     const ownerFallback = defaultOwnerName()
 
-    return OpenBotRpcs.of({
-      // ---------------------------------------------------------------- session
-      "session.info": () =>
-        edge(
-          "session.info",
-          Effect.gen(function* () {
-            const current = yield* settings.get
-            const all = yield* bots.list
-            const info: SessionInfo = {
-              ownerName: current.ownerName ?? ownerFallback,
-              version: OPENBOT_VERSION,
-              dataDir: config.dataDir,
-              firstRun: all.length === 0,
-            }
-            return info
-          }),
-        ),
+    // The owner's requests work in the profile the apps show, read once per request (`guarded`).
+    const requestProfile = Effect.flatMap(RequestProfile, (pinned) =>
+      pinned === undefined ? ownerProfiles.active : Effect.succeed(pinned),
+    )
+    const owner = <A, E, R>(rpc: string, effect: Effect.Effect<A, E, R>) =>
+      edge(
+        rpc,
+        Effect.flatMap(requestProfile, (id) => inProfile(id)(effect)),
+      )
+    const ownerStream = <A, E, R>(rpc: string, stream: Stream.Stream<A, E, R>) =>
+      edgeStream(
+        rpc,
+        Stream.unwrap(Effect.map(requestProfile, (id) => Stream.provideService(stream, CurrentProfile, { id }))),
+      )
 
-      // ---------------------------------------------------------------- roster
-      "roster.subscribe": ({ after }) => edgeStream("roster.subscribe", hub.subscribeRoster({ after })),
+    // What a request names (a Bot, a chat, an entry, …) must be of the active profile. Requests that
+    // cannot answer "not found" (filters of lists and searches) are scoped by their services instead.
+    const missing = new NotFound({ entity: "", id: "" })
+    const answersNotFound = new Set<string>(
+      [...OpenBotRpcs.requests.values()]
+        .filter((rpc) =>
+          RpcSchema.isStreamSchema(rpc.successSchema)
+            ? Schema.is(rpc.successSchema.error)(missing)
+            : Schema.is(rpc.errorSchema)(missing),
+        )
+        .map((rpc) => rpc._tag),
+    )
+    const checked = (tag: string, payload: unknown, profileId: OwnerProfileId) =>
+      answersNotFound.has(tag) ? inProfile(profileId)(guard.check(payload)) : Effect.void
+    const guarded = <H extends Record<string, (payload: never, options: never) => unknown>>(handlers: H): H =>
+      Object.fromEntries(
+        Object.entries(handlers).map(([tag, handler]) => [
+          tag,
+          (payload: never, options: never) => {
+            const result = handler(payload, options)
+            return Stream.isStream(result)
+              ? Stream.unwrap(
+                  Effect.map(ownerProfiles.active, (id) =>
+                    Stream.unwrap(Effect.as(checked(tag, payload, id), result)).pipe(
+                      Stream.provideService(RequestProfile, id),
+                    ),
+                  ),
+                )
+              : Effect.flatMap(ownerProfiles.active, (id) =>
+                  Effect.andThen(checked(tag, payload, id), result as Effect.Effect<unknown, unknown, unknown>).pipe(
+                    Effect.provideService(RequestProfile, id),
+                  ),
+                )
+          },
+        ]),
+      ) as H
 
-      // ---------------------------------------------------------------- bots
-      "bots.create": (input) => edge("bots.create", bots.create(input, { introduce: input.introduce !== false })),
-      "bots.update": ({ botId, patch }) => edge("bots.update", bots.update(botId, patch)),
-      "bots.delete": ({ botId }) => edge("bots.delete", bots.delete(botId)),
-      "bots.get": ({ botId }) => edge("bots.get", bots.get(botId)),
-      "bots.readContext": ({ botId }) => edge("bots.readContext", bots.readContext(botId)),
-      "bots.newSession": ({ botId }) => edge("bots.newSession", bots.newSession(botId)),
-      "bots.compact": ({ botId }) => edge("bots.compact", bots.compact(botId)),
+    return guarded(
+      OpenBotRpcs.of({
+        // ---------------------------------------------------------------- session
+        "session.info": () =>
+          owner(
+            "session.info",
+            Effect.gen(function* () {
+              const current = yield* settings.get
+              const all = yield* bots.list
+              // the computer's user name is the main profile's to show, never a demo's
+              const fallback = (yield* currentProfileId) === MAIN_PROFILE_ID ? ownerFallback : "You"
+              const info: SessionInfo = {
+                ownerName: current.ownerName ?? fallback,
+                version: OPENBOT_VERSION,
+                dataDir: config.dataDir,
+                firstRun: all.length === 0,
+              }
+              return info
+            }),
+          ),
 
-      // ---------------------------------------------------------------- sections
-      "sections.list": () => edge("sections.list", bots.listSections),
-      "sections.create": ({ name }) => edge("sections.create", bots.createSection(name)),
-      "sections.rename": ({ name, sectionId }) => edge("sections.rename", bots.renameSection(sectionId, name)),
-      "sections.delete": ({ sectionId }) => edge("sections.delete", bots.deleteSection(sectionId)),
-      "sections.reorder": ({ sectionIds }) => edge("sections.reorder", bots.reorderSections(sectionIds)),
+        // ---------------------------------------------------------------- roster
+        "roster.subscribe": ({ after }) => ownerStream("roster.subscribe", hub.subscribeRoster({ after })),
 
-      // ---------------------------------------------------------------- conversations
-      "conversations.subscribe": ({ after, conversationId, tailLimit }) =>
-        edgeStream("conversations.subscribe", hub.subscribeConversation({ conversationId, after, tailLimit })),
-      "conversations.history": (input) => edge("conversations.history", conversations.history(input)),
-      "conversations.exchange": (input) => edge("conversations.exchange", conversations.exchange(input)),
-      "conversations.around": (input) => edge("conversations.around", conversations.around(input)),
-      "conversations.createGroup": (input) => edge("conversations.createGroup", conversations.createGroup(input)),
-      "conversations.setMembers": (input) => edge("conversations.setMembers", conversations.setMembers(input)),
-      "conversations.rename": ({ conversationId, title }) =>
-        edge("conversations.rename", conversations.rename(conversationId, title)),
-      "conversations.markRead": (input) => edge("conversations.markRead", conversations.markRead(input)),
-      "conversations.setHidden": ({ conversationId, hidden }) =>
-        edge("conversations.setHidden", conversations.setHidden(conversationId, hidden)),
-      "conversations.delete": ({ conversationId }) =>
-        edge("conversations.delete", orchestrator.deleteConversation(conversationId)),
+        // ---------------------------------------------------------------- owner profiles
+        "profiles.list": () => owner("profiles.list", ownerProfiles.view),
+        "profiles.subscribe": () => ownerStream("profiles.subscribe", ownerProfiles.changes),
+        "profiles.create": ({ name }) => owner("profiles.create", ownerProfiles.create(name)),
+        "profiles.rename": ({ name, profileId }) => owner("profiles.rename", ownerProfiles.rename(profileId, name)),
+        "profiles.switch": ({ profileId }) => owner("profiles.switch", ownerProfiles.switchTo(profileId)),
+        "profiles.delete": ({ profileId }) => owner("profiles.delete", profileRemoval.remove(profileId)),
+        "profiles.away": () => owner("profiles.away", away.summary),
+        "profiles.dismissAway": ({ through }) => owner("profiles.dismissAway", away.dismiss(through)),
 
-      // ---------------------------------------------------------------- messages + turns
-      "messages.send": (input) => edge("messages.send", orchestrator.send(input)),
-      "messages.lookupSend": (input) => edge("messages.lookupSend", orchestrator.lookupSend(input)),
-      "messages.react": (input) => edge("messages.react", orchestrator.react(input)),
-      "turns.interrupt": (input) => edge("turns.interrupt", orchestrator.interrupt(input)),
-      "turns.retry": (input) => edge("turns.retry", orchestrator.retry(input)),
-      "attachments.upload": ({ bytesBase64, mime, name }) =>
-        edge(
-          "attachments.upload",
-          Effect.suspend(() => {
-            // base64 is 4/3 of the bytes: refuse oversized payloads before decoding them
-            if (bytesBase64.length > Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 16) {
-              return Effect.fail(
-                new InvalidInput({ message: `The file is larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB.` }),
-              )
-            }
-            const bytes = decodeBase64(bytesBase64)
-            if (bytes === undefined)
-              return Effect.fail(new InvalidInput({ message: "bytesBase64 is not valid base64." }))
-            return attachments.upload({ name, mime, bytes })
-          }),
-        ),
+        // ---------------------------------------------------------------- bots
+        "bots.create": (input) => owner("bots.create", bots.create(input, { introduce: input.introduce !== false })),
+        "bots.update": ({ botId, patch }) => owner("bots.update", bots.update(botId, patch)),
+        "bots.delete": ({ botId }) => owner("bots.delete", bots.delete(botId)),
+        "bots.get": ({ botId }) => owner("bots.get", bots.get(botId)),
+        "bots.readContext": ({ botId }) => owner("bots.readContext", bots.readContext(botId)),
+        "bots.newSession": ({ botId }) => owner("bots.newSession", bots.newSession(botId)),
+        "bots.compact": ({ botId }) => owner("bots.compact", bots.compact(botId)),
 
-      // ---------------------------------------------------------------- runtime requests
-      "requests.respond": (input) => edge("requests.respond", approvals.respond(input)),
-      "requests.listPending": (input) => edge("requests.listPending", approvals.listPending(input)),
+        // ---------------------------------------------------------------- sections
+        "sections.list": () => owner("sections.list", bots.listSections),
+        "sections.create": ({ name }) => owner("sections.create", bots.createSection(name)),
+        "sections.rename": ({ name, sectionId }) => owner("sections.rename", bots.renameSection(sectionId, name)),
+        "sections.delete": ({ sectionId }) => owner("sections.delete", bots.deleteSection(sectionId)),
+        "sections.reorder": ({ sectionIds }) => owner("sections.reorder", bots.reorderSections(sectionIds)),
 
-      // ---------------------------------------------------------------- routines
-      "routines.list": ({ botId }) => edge("routines.list", routines.list({ botId })),
-      "routines.create": (input) => edge("routines.create", routines.create(userActor, input)),
-      "routines.update": (input) => edge("routines.update", routines.update(userActor, input)),
-      "routines.setEnabled": ({ enabled, routineId }) =>
-        edge("routines.setEnabled", routines.setEnabled(routineId, enabled)),
-      "routines.delete": ({ routineId }) => edge("routines.delete", routines.delete(routineId)),
-      "routines.runNow": ({ routineId }) => edge("routines.runNow", routines.runNow(routineId)),
-      "routines.runs": ({ routineId }) => edge("routines.runs", routines.runs(routineId)),
-
-      // ---------------------------------------------------------------- memory
-      "memory.get": ({ botId }) => edge("memory.get", memory.get(botId)),
-      "memory.putFact": ({ botId, fact }) => edge("memory.putFact", memory.putFact(userActor, botId, fact)),
-      "memory.deleteFact": ({ botId, factId }) =>
-        edge("memory.deleteFact", memory.deleteFact(userActor, botId, factId)),
-      "memory.setIndex": ({ botId, index }) => edge("memory.setIndex", memory.setIndex(botId, index)),
-
-      // ---------------------------------------------------------------- skills
-      "skills.list": () => edge("skills.list", skills.list),
-      "skills.upsert": (input) => edge("skills.upsert", skills.upsert(userActor, input)),
-      "skills.delete": ({ name }) => edge("skills.delete", skills.delete(name)),
-      "skills.assign": ({ name, botIds }) => edge("skills.assign", skills.assign(name, botIds)),
-      "skills.search": ({ query }) => edge("skills.search", skills.search(query)),
-      "skills.preview": ({ id }) => edge("skills.preview", skills.preview(id)),
-      "skills.install": ({ id, botIds, name }) => edge("skills.install", skills.install(id, botIds, name)),
-
-      // ---------------------------------------------------------------- harnesses
-      "harnesses.status": () => edge("harnesses.status", profiles.status(probeDriver)),
-      "harnesses.models": ({ kind, profileId }) =>
-        edge(
-          "harnesses.models",
-          Effect.flatMap(harnesses.get(kind, profileId), (driver) =>
-            driver.listModels.pipe(
-              Effect.mapError((error) => new HarnessUnavailable({ harness: kind, message: error.message })),
+        // ---------------------------------------------------------------- conversations
+        // a chat of a profile the owner switches away from closes
+        "conversations.subscribe": ({ after, conversationId, tailLimit }) =>
+          ownerStream(
+            "conversations.subscribe",
+            Stream.unwrap(
+              Effect.map(requestProfile, (profileId) =>
+                hub.subscribeConversation({ conversationId, after, tailLimit, closeOnSwitchFrom: profileId }),
+              ),
             ),
           ),
-        ),
-      "harnesses.profiles": ({ kind }) => edge("harnesses.profiles", profiles.list(kind)),
-      "harnesses.addProfile": (input) => edge("harnesses.addProfile", profiles.add(input)),
-      "harnesses.removeProfile": ({ profileId }) => edge("harnesses.removeProfile", profiles.remove(profileId)),
-      "harnesses.discover": ({ kind }) => edge("harnesses.discover", profiles.discover(kind)),
+        "conversations.history": (input) => owner("conversations.history", conversations.history(input)),
+        "conversations.exchange": (input) => owner("conversations.exchange", conversations.exchange(input)),
+        "conversations.around": (input) => owner("conversations.around", conversations.around(input)),
+        "conversations.createGroup": (input) => owner("conversations.createGroup", conversations.createGroup(input)),
+        "conversations.setMembers": (input) => owner("conversations.setMembers", conversations.setMembers(input)),
+        "conversations.rename": ({ conversationId, title }) =>
+          owner("conversations.rename", conversations.rename(conversationId, title)),
+        "conversations.markRead": (input) => owner("conversations.markRead", conversations.markRead(input)),
+        "conversations.setHidden": ({ conversationId, hidden }) =>
+          owner("conversations.setHidden", conversations.setHidden(conversationId, hidden)),
+        "conversations.delete": ({ conversationId }) =>
+          owner("conversations.delete", orchestrator.deleteConversation(conversationId)),
 
-      // ---------------------------------------------------------------- nodes
-      "nodes.list": () => edge("nodes.list", nodes.list),
-      "nodes.createPairingCode": () => edge("nodes.createPairingCode", nodeAdmin.createPairingCode),
-      "nodes.rename": ({ label, nodeId }) => edge("nodes.rename", nodeAdmin.rename(nodeId, label)),
-      "nodes.revoke": ({ nodeId }) => edge("nodes.revoke", nodeAdmin.revoke(nodeId)),
-      "nodes.setCapabilities": ({ approved, nodeId }) =>
-        edge("nodes.setCapabilities", nodeAdmin.setCapabilities(nodeId, approved)),
+        // ---------------------------------------------------------------- messages + turns
+        "messages.send": (input) => owner("messages.send", orchestrator.send(input)),
+        "messages.lookupSend": (input) => owner("messages.lookupSend", orchestrator.lookupSend(input)),
+        "messages.react": (input) => owner("messages.react", orchestrator.react(input)),
+        "turns.interrupt": (input) => owner("turns.interrupt", orchestrator.interrupt(input)),
+        "turns.retry": (input) => owner("turns.retry", orchestrator.retry(input)),
+        "attachments.upload": ({ bytesBase64, mime, name }) =>
+          owner(
+            "attachments.upload",
+            Effect.suspend(() => {
+              // base64 is 4/3 of the bytes: refuse oversized payloads before decoding them
+              if (bytesBase64.length > Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 16) {
+                return Effect.fail(
+                  new InvalidInput({ message: `The file is larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB.` }),
+                )
+              }
+              const bytes = decodeBase64(bytesBase64)
+              if (bytes === undefined)
+                return Effect.fail(new InvalidInput({ message: "bytesBase64 is not valid base64." }))
+              return attachments.upload({ name, mime, bytes })
+            }),
+          ),
 
-      // ---------------------------------------------------------------- computer
-      "computer.status": ({ botId }) => edge("computer.status", computer.status(botId)),
-      "computer.ensure": ({ botId }) => edge("computer.ensure", computer.ensure(botId)),
-      "computer.lease": ({ botId, take }) => edge("computer.lease", computer.lease(botId, take)),
-      // stops the bot's desktop (and the owner's control with it); a browser-only screen is unchanged
-      "computer.reset": ({ botId }) => edge("computer.reset", computer.reset(botId)),
+        // ---------------------------------------------------------------- runtime requests
+        "requests.respond": (input) => owner("requests.respond", approvals.respond(input)),
+        "requests.listPending": (input) => owner("requests.listPending", approvals.listPending(input)),
 
-      // ---------------------------------------------------------------- settings + rules
-      "settings.get": () => edge("settings.get", settings.get),
-      "settings.update": ({ patch }) => edge("settings.update", settings.update(patch)),
-      "rules.list": ({ botId }) => edge("rules.list", settings.listRules({ botId })),
-      "rules.upsert": ({ rule }) => edge("rules.upsert", settings.upsertRule(rule)),
-      "rules.delete": ({ ruleId }) => edge("rules.delete", settings.deleteRule(ruleId)),
+        // ---------------------------------------------------------------- routines
+        "routines.list": ({ botId }) => owner("routines.list", routines.list({ botId })),
+        "routines.create": (input) => owner("routines.create", routines.create(userActor, input)),
+        "routines.update": (input) => owner("routines.update", routines.update(userActor, input)),
+        "routines.setEnabled": ({ enabled, routineId }) =>
+          owner("routines.setEnabled", routines.setEnabled(routineId, enabled)),
+        "routines.delete": ({ routineId }) => owner("routines.delete", routines.delete(routineId)),
+        "routines.runNow": ({ routineId }) => owner("routines.runNow", routines.runNow(routineId)),
+        "routines.runs": ({ routineId }) => owner("routines.runs", routines.runs(routineId)),
 
-      // ---------------------------------------------------------------- background tasks (D5.7)
-      "tasks.list": ({ botId, limit }) =>
-        edge("tasks.list", Effect.andThen(bots.get(botId), tasks.list({ botId, limit }))),
-      "tasks.get": ({ taskId }) => edge("tasks.get", tasks.get(taskId)),
-      // the owner's Stop: only that task; the bot is told
-      "tasks.cancel": ({ taskId }) => edge("tasks.cancel", tasks.cancel(taskId, "owner")),
+        // ---------------------------------------------------------------- memory
+        "memory.get": ({ botId }) => owner("memory.get", memory.get(botId)),
+        "memory.putFact": ({ botId, fact }) => owner("memory.putFact", memory.putFact(userActor, botId, fact)),
+        "memory.deleteFact": ({ botId, factId }) =>
+          owner("memory.deleteFact", memory.deleteFact(userActor, botId, factId)),
+        "memory.setIndex": ({ botId, index }) => owner("memory.setIndex", memory.setIndex(botId, index)),
 
-      // ---------------------------------------------------------------- message search
-      "search.query": (input) => edge("search.query", search.query(input)),
-      "search.inConversation": (input) => edge("search.inConversation", search.inConversation(input)),
+        // ---------------------------------------------------------------- skills
+        "skills.list": () => owner("skills.list", skills.list),
+        "skills.upsert": (input) => owner("skills.upsert", skills.upsert(userActor, input)),
+        "skills.delete": ({ name }) => owner("skills.delete", skills.delete(name)),
+        "skills.assign": ({ name, botIds }) => owner("skills.assign", skills.assign(name, botIds)),
+        "skills.search": ({ query }) => owner("skills.search", skills.search(query)),
+        "skills.preview": ({ id }) => owner("skills.preview", skills.preview(id)),
+        "skills.install": ({ id, botIds, name }) => owner("skills.install", skills.install(id, botIds, name)),
 
-      // ---------------------------------------------------------------- Slack (D3.4)
-      "slack.status": () => edge("slack.status", slack.status),
-      "slack.connect": (input) => edge("slack.connect", slack.connect(input)),
-      "slack.disconnect": () => edge("slack.disconnect", Effect.andThen(slack.disconnect, slack.status)),
-      "slack.sendDraft": ({ entryId, text }) => edge("slack.sendDraft", slackDrafts.send({ entryId, text })),
-      "slack.discardDraft": ({ entryId }) => edge("slack.discardDraft", slackDrafts.discard(entryId)),
-      "cards.act": (input) => edge("cards.act", uiCards.act(input)),
+        // ---------------------------------------------------------------- harnesses
+        "harnesses.status": () => owner("harnesses.status", profiles.status(probeDriver)),
+        "harnesses.models": ({ kind, profileId }) =>
+          owner(
+            "harnesses.models",
+            Effect.flatMap(harnesses.get(kind, profileId), (driver) =>
+              driver.listModels.pipe(
+                Effect.mapError((error) => new HarnessUnavailable({ harness: kind, message: error.message })),
+              ),
+            ),
+          ),
+        "harnesses.profiles": ({ kind }) => owner("harnesses.profiles", profiles.list(kind)),
+        "harnesses.addProfile": (input) => owner("harnesses.addProfile", profiles.add(input)),
+        "harnesses.removeProfile": ({ profileId }) => owner("harnesses.removeProfile", profiles.remove(profileId)),
+        "harnesses.discover": ({ kind }) => owner("harnesses.discover", profiles.discover(kind)),
 
-      "stt.status": () => edge("stt.status", speech.status),
-      "stt.install": () => edge("stt.install", speech.install),
-      "stt.remove": () => edge("stt.remove", speech.remove),
-      "stt.open": () => edge("stt.open", speech.open),
-      "stt.append": ({ sessionId, pcmBase64 }) =>
-        edge(
-          "stt.append",
-          withPcm(pcmBase64, (pcm) => speech.append(sessionId, pcm)),
-        ),
-      "stt.finish": ({ sessionId, pcmBase64 }) =>
-        edge(
-          "stt.finish",
-          withPcm(pcmBase64, (pcm) => speech.finish(sessionId, pcm)),
-        ),
-      "stt.discard": ({ sessionId }) => edge("stt.discard", speech.discard(sessionId)),
-      "voice.status": () => edge("voice.status", voice.status),
-      "voice.install": () => edge("voice.install", voice.install),
-      "voice.remove": () => edge("voice.remove", voice.remove),
-      "voice.preview": ({ voice: id, text }) => edge("voice.preview", voice.preview(id, text)),
-      "updates.status": () => edge("updates.status", updates.status),
-      "updates.check": () => edge("updates.check", updates.check),
-      "updates.install": () => edge("updates.install", updates.install),
-      "updates.rollback": () => edge("updates.rollback", updates.rollback),
+        // ---------------------------------------------------------------- nodes
+        "nodes.list": () => owner("nodes.list", nodes.list),
+        "nodes.createPairingCode": () => owner("nodes.createPairingCode", nodeAdmin.createPairingCode),
+        "nodes.rename": ({ label, nodeId }) => owner("nodes.rename", nodeAdmin.rename(nodeId, label)),
+        "nodes.revoke": ({ nodeId }) => owner("nodes.revoke", nodeAdmin.revoke(nodeId)),
+        "nodes.setCapabilities": ({ approved, nodeId }) =>
+          owner("nodes.setCapabilities", nodeAdmin.setCapabilities(nodeId, approved)),
 
-      // ---------------------------------------------------------------- sidebar (drag and drop)
-      "sidebar.arrange": (input) => edge("sidebar.arrange", bots.arrangeSidebar(input)),
+        // ---------------------------------------------------------------- computer
+        "computer.status": ({ botId }) => owner("computer.status", computer.status(botId)),
+        "computer.ensure": ({ botId }) => owner("computer.ensure", computer.ensure(botId)),
+        "computer.lease": ({ botId, take }) => owner("computer.lease", computer.lease(botId, take)),
+        // stops the bot's desktop (and the owner's control with it); a browser-only screen is unchanged
+        "computer.reset": ({ botId }) => owner("computer.reset", computer.reset(botId)),
 
-      // ---------------------------------------------------------------- Hark (D3.5)
-      "hark.status": () => edge("hark.status", hark.status),
-      "hark.connect": ({ webhook }) => edge("hark.connect", hark.connect(webhook)),
-      "hark.disconnect": () => edge("hark.disconnect", hark.disconnect),
-      "hark.test": () => edge("hark.test", hark.test),
-      "hark.setSends": ({ sends }) => edge("hark.setSends", hark.setSends(sends)),
-      "hark.setQuietAtComputer": ({ quiet }) => edge("hark.setQuietAtComputer", hark.setQuietAtComputer(quiet)),
-      "presence.active": () => edge("presence.active", presence.active),
-      // ---------------------------------------------------------------- ntfy (D3.6)
-      "ntfy.status": () => edge("ntfy.status", ntfy.status),
-      "ntfy.connect": (input) => edge("ntfy.connect", ntfy.connect(input)),
-      "ntfy.disconnect": () => edge("ntfy.disconnect", ntfy.disconnect),
-      "ntfy.test": () => edge("ntfy.test", ntfy.test),
-      "ntfy.setSends": ({ sends }) => edge("ntfy.setSends", ntfy.setSends(sends)),
-      "ntfy.setQuietAtComputer": ({ quiet }) => edge("ntfy.setQuietAtComputer", ntfy.setQuietAtComputer(quiet)),
+        // ---------------------------------------------------------------- settings + rules
+        "settings.get": () => owner("settings.get", settings.get),
+        "settings.update": ({ patch }) => owner("settings.update", settings.update(patch)),
+        "rules.list": ({ botId }) => owner("rules.list", settings.listRules({ botId })),
+        "rules.upsert": ({ rule }) => owner("rules.upsert", settings.upsertRule(rule)),
+        "rules.delete": ({ ruleId }) => owner("rules.delete", settings.deleteRule(ruleId)),
 
-      // ---------------------------------------------------------------- usage
-      "usage.byBot": ({ sinceMs }) => edge("usage.byBot", usage.byBot({ sinceMs })),
-    })
+        // ---------------------------------------------------------------- background tasks (D5.7)
+        "tasks.list": ({ botId, limit }) =>
+          owner("tasks.list", Effect.andThen(bots.get(botId), tasks.list({ botId, limit }))),
+        "tasks.get": ({ taskId }) => owner("tasks.get", tasks.get(taskId)),
+        // the owner's Stop: only that task; the bot is told
+        "tasks.cancel": ({ taskId }) => owner("tasks.cancel", tasks.cancel(taskId, "owner")),
+
+        // ---------------------------------------------------------------- message search
+        "search.query": (input) => owner("search.query", search.query(input)),
+        "search.inConversation": (input) => owner("search.inConversation", search.inConversation(input)),
+
+        // ---------------------------------------------------------------- Slack (D3.4)
+        "slack.status": () =>
+          owner(
+            "slack.status",
+            Effect.flatMap(slack.connection, (c) => c.status),
+          ),
+        "slack.connect": (input) =>
+          owner(
+            "slack.connect",
+            Effect.flatMap(slack.connection, (c) => c.connect(input)),
+          ),
+        "slack.disconnect": () =>
+          owner(
+            "slack.disconnect",
+            Effect.flatMap(slack.connection, (c) => Effect.andThen(c.disconnect, c.status)),
+          ),
+        "slack.sendDraft": ({ entryId, text }) => owner("slack.sendDraft", slackDrafts.send({ entryId, text })),
+        "slack.discardDraft": ({ entryId }) => owner("slack.discardDraft", slackDrafts.discard(entryId)),
+        "cards.act": (input) => owner("cards.act", uiCards.act(input)),
+
+        "stt.status": () => owner("stt.status", speech.status),
+        "stt.install": () => owner("stt.install", speech.install),
+        "stt.remove": () => owner("stt.remove", speech.remove),
+        "stt.open": () => owner("stt.open", speech.open),
+        "stt.append": ({ sessionId, pcmBase64 }) =>
+          owner(
+            "stt.append",
+            withPcm(pcmBase64, (pcm) => speech.append(sessionId, pcm)),
+          ),
+        "stt.finish": ({ sessionId, pcmBase64 }) =>
+          owner(
+            "stt.finish",
+            withPcm(pcmBase64, (pcm) => speech.finish(sessionId, pcm)),
+          ),
+        "stt.discard": ({ sessionId }) => owner("stt.discard", speech.discard(sessionId)),
+        "voice.status": () => owner("voice.status", voice.status),
+        "voice.install": () => owner("voice.install", voice.install),
+        "voice.remove": () => owner("voice.remove", voice.remove),
+        "voice.preview": ({ voice: id, text }) => owner("voice.preview", voice.preview(id, text)),
+        "updates.status": () => owner("updates.status", updates.status),
+        "updates.check": () => owner("updates.check", updates.check),
+        "updates.install": () => owner("updates.install", updates.install),
+        "updates.rollback": () => owner("updates.rollback", updates.rollback),
+
+        // ---------------------------------------------------------------- sidebar (drag and drop)
+        "sidebar.arrange": (input) => owner("sidebar.arrange", bots.arrangeSidebar(input)),
+
+        // ---------------------------------------------------------------- Hark (D3.5)
+        "hark.status": () => owner("hark.status", hark.status),
+        "hark.connect": ({ webhook }) => owner("hark.connect", hark.connect(webhook)),
+        "hark.disconnect": () => owner("hark.disconnect", hark.disconnect),
+        "hark.test": () => owner("hark.test", hark.test),
+        "hark.setSends": ({ sends }) => owner("hark.setSends", hark.setSends(sends)),
+        "hark.setQuietAtComputer": ({ quiet }) => owner("hark.setQuietAtComputer", hark.setQuietAtComputer(quiet)),
+        "presence.active": () => owner("presence.active", presence.active),
+        // ---------------------------------------------------------------- ntfy (D3.6)
+        "ntfy.status": () => owner("ntfy.status", ntfy.status),
+        "ntfy.connect": (input) => owner("ntfy.connect", ntfy.connect(input)),
+        "ntfy.disconnect": () => owner("ntfy.disconnect", ntfy.disconnect),
+        "ntfy.test": () => owner("ntfy.test", ntfy.test),
+        "ntfy.setSends": ({ sends }) => owner("ntfy.setSends", ntfy.setSends(sends)),
+        "ntfy.setQuietAtComputer": ({ quiet }) => owner("ntfy.setQuietAtComputer", ntfy.setQuietAtComputer(quiet)),
+
+        // ---------------------------------------------------------------- usage
+        "usage.byBot": ({ sinceMs }) => owner("usage.byBot", usage.byBot({ sinceMs })),
+      }),
+    )
   }),
 )

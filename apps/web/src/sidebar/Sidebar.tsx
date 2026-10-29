@@ -29,10 +29,13 @@ import {
   SunMoon,
   Trash2,
   Pencil,
+  UserRound,
+  UsersRound,
 } from "lucide-react"
 import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
-import { useAtomSet } from "@effect/atom-react"
+import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Exit } from "effect"
+import { AsyncResult } from "effect/reactivity"
 import {
   DEFAULT_SETTINGS,
   type BotId,
@@ -41,7 +44,7 @@ import {
   type SectionId,
   type SidebarPlace,
 } from "@openbot/contracts"
-import { commands, updateSettingsAtom, updatesStatusAtom } from "@openbot/client"
+import { commands, profilesAtom, updateSettingsAtom, updatesStatusAtom } from "@openbot/client"
 import {
   Avatar,
   AvatarStack,
@@ -548,11 +551,13 @@ function OwnerMenu(): ReactNode {
   const roster = useRoster()
   const settingsDialog = useSettingsDialog()
   const setSettings = useAtomSet(updateSettingsAtom, { mode: "promiseExit" })
+  const switchProfile = useAtomSet(commands["profiles.switch"], { mode: "promiseExit" })
+  const profiles = useAtomValue(profilesAtom)
   const { toast } = useToast()
-  const updateSettings = async (input: Parameters<typeof setSettings>[0]) => {
-    const exit = await setSettings(input)
+  const toastFailure = (exit: Exit.Exit<unknown, unknown>) => {
     if (Exit.isFailure(exit)) toast({ title: describeFailure(exit), tone: "danger" })
   }
+  const updateSettings = async (input: Parameters<typeof setSettings>[0]) => toastFailure(await setSettings(input))
   const settings = roster.state.settings ?? DEFAULT_SETTINGS
   const owner = valueOr(info, undefined)
   const name = settings.ownerName ?? owner?.ownerName
@@ -583,6 +588,27 @@ function OwnerMenu(): ReactNode {
       <MenuItem icon={ShieldCheck} onSelect={() => settingsDialog.show("permissions")}>
         Permissions
       </MenuItem>
+      {AsyncResult.isSuccess(profiles) && (
+        <>
+          <MenuSeparator />
+          <MenuLabel>Profile</MenuLabel>
+          {profiles.value.profiles.map((profile) => (
+            <MenuItem
+              key={profile.id}
+              icon={UserRound}
+              checked={profile.id === profiles.value.activeId}
+              onSelect={async () => {
+                if (profile.id !== profiles.value.activeId) toastFailure(await switchProfile({ profileId: profile.id }))
+              }}
+            >
+              {profile.name}
+            </MenuItem>
+          ))}
+          <MenuItem icon={UsersRound} onSelect={() => settingsDialog.show("profiles")}>
+            Manage profiles…
+          </MenuItem>
+        </>
+      )}
       <MenuSeparator />
       <MenuLabel>Theme</MenuLabel>
       <MenuItem

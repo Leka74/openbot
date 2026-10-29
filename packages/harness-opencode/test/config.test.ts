@@ -1,6 +1,8 @@
-import type { RenderedInstructions } from "@openbot/core"
+import { MAIN_PROFILE_ID, OwnerProfileId } from "@openbot/contracts"
+import { makeDataDir, type RenderedInstructions } from "@openbot/core"
 import { describe, expect, test } from "bun:test"
 import { isNotFoundError } from "../src/client.ts"
+import { openCodePaths } from "../src/Driver.ts"
 import {
   instructionEntries,
   mcpServerName,
@@ -329,5 +331,13 @@ describe("client errors", () => {
     ).toBe(false)
     expect(isNotFoundError(new Error("boom"))).toBe(false)
     expect(isNotFoundError(undefined)).toBe(false)
+  })
+})
+
+describe("skills of a profile", () => {
+  test("a profile's server lists its own library: the main one's in skills-lib, the others' in profiles/<id>", () => {
+    const paths = openCodePaths(makeDataDir("/data"))
+    expect(paths.skillsDir(MAIN_PROFILE_ID)).toBe("/data/skills-lib/skills")
+    expect(paths.skillsDir(OwnerProfileId.make("prf_demo"))).toBe("/data/profiles/prf_demo/skills-lib/skills")
   })
 })

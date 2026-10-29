@@ -117,6 +117,22 @@ export const closeSocket = (socket: Socket.Socket, code: number, reason?: string
 export const closeWriter = (writer: Socket.Writer, code: number, reason?: string): Effect.Effect<void> =>
   Effect.ignore(writer.write(new Socket.CloseEvent(code, truncateReason(reason))))
 
+/** `socket`, closed with 1001 once `until` completes while it is being read. */
+export const closedWhen = (socket: Socket.Socket, until: Effect.Effect<void> | undefined): Socket.Socket =>
+  until === undefined
+    ? socket
+    : Socket.make({
+        reader: Effect.tap(socket.reader, () =>
+          Effect.forkScoped(
+            Effect.andThen(
+              until,
+              Effect.flatMap(socket.writer, (writer) => closeWriter(writer, 1001)),
+            ),
+          ),
+        ),
+        writer: socket.writer,
+      })
+
 /** WebSocket close reasons are limited to 123 UTF-8 bytes. */
 export const truncateReason = (reason: string | undefined): string | undefined => {
   if (reason === undefined) return undefined

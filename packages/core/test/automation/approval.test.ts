@@ -8,6 +8,7 @@ import type {
   RuntimeRequest,
   TranscriptEntry,
 } from "@openbot/contracts"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
 import { Effect, Exit, Fiber, Layer, Logger, Option, Ref, Stream } from "effect"
 import {
   type ApprovalContext,
@@ -246,7 +247,7 @@ describe("ApprovalService.evaluate", () => {
         const request = yield* firstPending
         yield* approvals.respond({ requestId: request.id, response: { type: "decision", decision: "allow-always" } })
         const first = yield* Fiber.join(fiber)
-        const rules = yield* Effect.flatMap(ApprovalRuleRepo, (r) => r.list())
+        const rules = yield* Effect.flatMap(ApprovalRuleRepo, (r) => r.list({ profileId: MAIN_PROFILE_ID }))
         const second = yield* approvals.evaluate(ctx(), { ...shell, command: "git status" })
         // A chained command is not covered by the saved allow rule: it asks again.
         const third = yield* approvals
@@ -599,7 +600,7 @@ describe("ApprovalService.evaluate with the bot's autonomy", () => {
           ...chained,
           command: "cd /elsewhere && bun test --watch | head",
         })
-        return { rules: yield* Effect.flatMap(ApprovalRuleRepo, (r) => r.list()), later }
+        return { rules: yield* Effect.flatMap(ApprovalRuleRepo, (r) => r.list({ profileId: MAIN_PROFILE_ID })), later }
       }),
       layer(),
     )

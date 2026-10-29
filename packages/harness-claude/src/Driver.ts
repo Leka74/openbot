@@ -148,13 +148,14 @@ export const makeClaudeDriver = (config: ClaudeHarnessConfig, deps: DriverDeps):
         )
       }),
       openSession: (input) => {
+        const profile = deps.dataDir.profile(input.bot.ownerProfileId)
         let skillsLibrary: string | undefined
         try {
           skillsLibrary =
             (config.skills ?? true)
               ? botSkillsPlugin({
                   root: joinPath(deps.dataDir.botDir(input.bot.id), "skills-plugin"),
-                  library: deps.dataDir.skillsLib,
+                  library: profile.skillsLib,
                   skills: input.bot.skills,
                 })
               : undefined
@@ -169,7 +170,7 @@ export const makeClaudeDriver = (config: ClaudeHarnessConfig, deps: DriverDeps):
           memoryDirectory: config.memory === "native" ? deps.dataDir.memoryDir(input.bot.id) : undefined,
           skillsLibrary,
           // Uploaded attachments are referenced by path in the turn text (input.ts).
-          additionalDirectories: [deps.dataDir.attachments],
+          additionalDirectories: [profile.attachments],
           mcpTimeoutMs: config.mcpTimeoutMs ?? DEFAULT_MCP_TIMEOUT_MS,
           mcpRegistrationTimeoutMs: config.mcpRegistrationTimeoutMs ?? 15_000,
           interruptTimeoutMs: config.interruptTimeoutMs ?? 10_000,

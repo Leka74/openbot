@@ -13,9 +13,12 @@ import type {
   Conversation,
   ConversationId,
   EntryId,
+  HeldNotification,
   KnownTranscriptEntry,
   Millis,
   NodeId,
+  OwnerProfile,
+  OwnerProfileId,
   RequestId,
   Routine,
   RoutineId,
@@ -32,7 +35,7 @@ import type {
   TurnId,
   Usage,
 } from "@openbot/contracts"
-import { ROUTINE_RUNS_KEPT } from "@openbot/contracts"
+import { MAIN_PROFILE_ID, ROUTINE_RUNS_KEPT } from "@openbot/contracts"
 import { Context, Effect, Layer, Option } from "effect"
 import { RepoError } from "../ports/errors.ts"
 import {
@@ -44,6 +47,7 @@ import {
 } from "./memorySearch.ts"
 import { McpTokenRepo, type McpTokenRecord } from "../ports/Mcp.ts"
 import { ProcessLedger, type ProcessRecord } from "../ports/ProcessLedger.ts"
+import { HeldNotificationRepo, OwnerProfileRepo, ProfileStorage } from "../ports/Profiles.ts"
 import {
   ApprovalRuleRepo,
   BotRepo,
@@ -65,6 +69,7 @@ import {
   SearchRepo,
   SectionRepo,
   SettingsRepo,
+  type SettingsStore,
   TaskRepo,
   TurnRepo,
   type UpsertOutcome,
@@ -86,6 +91,8 @@ export const makeMemoryBotRepo = () =>
     return BotRepo.of({
       get: (id) => Effect.sync(() => option(bots.get(id))),
       list: Effect.sync(() => [...bots.values()].sort(byCreatedAt)),
+      listIn: (profileId) =>
+        Effect.sync(() => [...bots.values()].filter((b) => b.ownerProfileId === profileId).sort(byCreatedAt)),
       upsert: (bot) => Effect.sync(() => void bots.set(bot.id, bot)),
       delete: (id) =>
         Effect.sync(() => {
@@ -102,9 +109,12 @@ export const makeMemorySectionRepo = () =>
   Effect.sync(() => {
     const sections = new Map<SectionId, Section>()
     return SectionRepo.of({
-      list: Effect.sync(() =>
-        [...sections.values()].sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-      ),
+      list: (profileId) =>
+        Effect.sync(() =>
+          [...sections.values()]
+            .filter((s) => s.ownerProfileId === profileId)
+            .sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+        ),
       get: (id) => Effect.sync(() => option(sections.get(id))),
       upsert: (section) => Effect.sync(() => void sections.set(section.id, section)),
       delete: (id) => Effect.sync(() => sections.delete(id)),
@@ -436,6 +446,55 @@ export const makeMemoryNodeRepo = () =>
     })
   })
 
+// ============================================================================ owner profiles
+
+export const MAIN_PROFILE: OwnerProfile = { id: MAIN_PROFILE_ID, name: "Main", createdAt: 0 as Millis }
+
+export const makeMemoryOwnerProfileRepo = () =>
+  Effect.sync(() => {
+    const profiles = new Map<OwnerProfileId, OwnerProfile>([[MAIN_PROFILE.id, MAIN_PROFILE]])
+    return OwnerProfileRepo.of({
+      list: Effect.sync(() => [...profiles.values()].sort(byCreatedAt)),
+      get: (id) => Effect.sync(() => option(profiles.get(id))),
+      upsert: (profile) => Effect.sync(() => void profiles.set(profile.id, profile)),
+      delete: (id) => Effect.sync(() => void profiles.delete(id)),
+    })
+  })
+
+export const makeMemoryHeldNotificationRepo = () =>
+  Effect.sync(() => {
+    const held = new Map<OwnerProfileId, Array<HeldNotification>>()
+    const dropped = new Map<OwnerProfileId, number>()
+    const left = new Map<OwnerProfileId, Millis>()
+    return HeldNotificationRepo.of({
+      hold: (profileId, item, cap) =>
+        Effect.sync(() => {
+          const items = [...(held.get(profileId) ?? []), item]
+          const over = Math.max(0, items.length - cap)
+          held.set(profileId, items.slice(over))
+          dropped.set(profileId, (dropped.get(profileId) ?? 0) + over)
+        }),
+      summary: (profileId) =>
+        Effect.sync(() => {
+          const since = left.get(profileId)
+          return {
+            ...(since === undefined ? {} : { since }),
+            items: held.get(profileId) ?? [],
+            dropped: dropped.get(profileId) ?? 0,
+          }
+        }),
+      dismiss: (profileId, through) =>
+        Effect.sync(() => {
+          const items = held.get(profileId) ?? []
+          const index = items.findIndex((item) => item.notification.id === through)
+          if (index === -1) return
+          held.set(profileId, items.slice(index + 1))
+          dropped.delete(profileId)
+        }),
+      markLeft: (profileId, at) => Effect.sync(() => void left.set(profileId, at)),
+    })
+  })
+
 // ============================================================================ approval rules
 
 export const makeMemoryApprovalRuleRepo = () =>
@@ -446,7 +505,8 @@ export const makeMemoryApprovalRuleRepo = () =>
       list: (filter) =>
         Effect.sync(() =>
           [...rules.values()]
-            .filter((r) => filter?.botId === undefined || r.botId === undefined || r.botId === filter.botId)
+            .filter((r) => r.ownerProfileId === filter.profileId)
+            .filter((r) => filter.botId === undefined || r.botId === undefined || r.botId === filter.botId)
             .sort(byCreatedAt),
         ),
       upsert: (rule) => Effect.sync(() => void rules.set(rule.id, rule)),
@@ -463,15 +523,28 @@ const jsonCopy = (op: string, value: unknown) =>
     catch: (cause) => new RepoError({ op, message: "Value is not JSON-serializable", cause }),
   })
 
+/** `initial`: the brain's own keys (the main profile's). */
 export const makeMemorySettingsRepo = (initial?: Readonly<Record<string, unknown>>) =>
   Effect.sync(() => {
-    const values = new Map<string, unknown>(Object.entries(initial ?? {}))
-    return SettingsRepo.of({
-      get: (key) => Effect.sync(() => (values.has(key) ? Option.some(values.get(key)) : Option.none())),
-      getAll: Effect.sync(() => new Map(values)),
-      set: (key, value) => Effect.map(jsonCopy("SettingsRepo.set", value), (copy) => void values.set(key, copy)),
-      remove: (key) => Effect.sync(() => void values.delete(key)),
-    })
+    const profiles = new Map<OwnerProfileId, Map<string, unknown>>([
+      [MAIN_PROFILE_ID, new Map(Object.entries(initial ?? {}))],
+    ])
+    const storeOf = (profileId: OwnerProfileId): SettingsStore => {
+      const values = () => {
+        const found = profiles.get(profileId)
+        if (found !== undefined) return found
+        const created = new Map<string, unknown>()
+        profiles.set(profileId, created)
+        return created
+      }
+      return {
+        get: (key) => Effect.sync(() => (values().has(key) ? Option.some(values().get(key)) : Option.none())),
+        getAll: Effect.sync(() => new Map(values())),
+        set: (key, value) => Effect.map(jsonCopy("SettingsRepo.set", value), (copy) => void values().set(key, copy)),
+        remove: (key) => Effect.sync(() => void values().delete(key)),
+      }
+    }
+    return SettingsRepo.of({ ...storeOf(MAIN_PROFILE_ID), forProfile: storeOf })
   })
 
 // ============================================================================ usage
@@ -633,7 +706,7 @@ export const MemoryTaskRepo = Layer.effect(TaskRepo, makeMemoryTaskRepo())
 export const MemorySearchableTranscript: Layer.Layer<
   EntryRepo | TaskRepo | SearchRepo,
   never,
-  ConversationRepo | TurnRepo
+  ConversationRepo | TurnRepo | BotRepo
 > = Layer.effectContext(
   Effect.gen(function* () {
     const index = makeMemorySearchIndex()
@@ -645,6 +718,10 @@ export const MemorySearchableTranscript: Layer.Layer<
 )
 export const MemoryRoutineRepo = Layer.effect(RoutineRepo, makeMemoryRoutineRepo())
 export const MemoryNodeRepo = Layer.effect(NodeRepo, makeMemoryNodeRepo())
+export const MemoryOwnerProfileRepo = Layer.effect(OwnerProfileRepo, makeMemoryOwnerProfileRepo())
+/** The in-memory repositories drop with their records; nothing is left to purge. */
+export const MemoryProfileStorage = Layer.succeed(ProfileStorage, ProfileStorage.of({ purge: () => Effect.void }))
+export const MemoryHeldNotificationRepo = Layer.effect(HeldNotificationRepo, makeMemoryHeldNotificationRepo())
 export const MemoryApprovalRuleRepo = Layer.effect(ApprovalRuleRepo, makeMemoryApprovalRuleRepo())
 export const MemorySettingsRepo = (initial?: Readonly<Record<string, unknown>>) =>
   Layer.effect(SettingsRepo, makeMemorySettingsRepo(initial))

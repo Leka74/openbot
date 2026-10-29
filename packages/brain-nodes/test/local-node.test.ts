@@ -3,8 +3,8 @@
 // ApprovalService, and the terminal socket (`/ws/terminal/:botId` → pty.open → StreamBroker.dialLocal).
 import { afterAll, describe, expect, test } from "bun:test"
 import type { BotId } from "@openbot/contracts"
-import { DEFAULT_SETTINGS, LOCAL_NODE_ID } from "@openbot/contracts"
-import { LiveHub, NodeDirectory, NodeFiles } from "@openbot/core"
+import { DEFAULT_SETTINGS, LOCAL_NODE_ID, MAIN_PROFILE_ID } from "@openbot/contracts"
+import { LiveHub, NodeDirectory, NodeFiles, OwnerProfiles } from "@openbot/core"
 import { ApprovalServiceFake, makeBot } from "@openbot/core/testing"
 import type { ExecEvent } from "@openbot/node-protocol"
 import { Effect, Layer, Stream } from "effect"
@@ -49,12 +49,14 @@ describe("local node", () => {
     mkdirSync(project, { recursive: true })
     mkdirSync(shared, { recursive: true })
     const proj = makeBot({ id: "bot_proj" as BotId, projectFolders: [project] })
-    const hub = Layer.mock(LiveHub, {
+    const plain = makeBot({ id: "bot_plain" as BotId })
+    const view = { profiles: [{ id: MAIN_PROFILE_ID, name: "Main", createdAt: 0 }], activeId: MAIN_PROFILE_ID }
+    const roster = Layer.mock(LiveHub, {
       subscribeRoster: () =>
         Stream.make({
           kind: "snapshot" as const,
           cursor: { epoch: "r", sequence: 0 },
-          bots: [proj],
+          bots: [proj, plain],
           conversations: [],
           activities: [],
           nodes: [],
@@ -62,6 +64,7 @@ describe("local node", () => {
           settings: { ...DEFAULT_SETTINGS, sharedProjectFolders: [shared] },
         }).pipe(Stream.concat(Stream.never)),
     })
+    const profiles = Layer.mock(OwnerProfiles, { view: Effect.succeed(view), changes: Stream.make(view) })
     return withLocal(
       daemon(),
       Effect.gen(function* () {
@@ -80,7 +83,7 @@ describe("local node", () => {
         const denied = yield* Effect.flip(client["fs.read"]({ inv: inv("bot_plain", 4), path: join(project, "a.txt") }))
         expect(denied._tag).toBe("PathDenied")
       }),
-      hub,
+      Layer.merge(roster, profiles),
     )
   })
 

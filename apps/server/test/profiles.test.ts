@@ -2,7 +2,7 @@
 // ~/.codex-* in a temp home, one status per (kind, profile), add/remove/discover over `/rpc`, bots
 // bound to an account, and no re-seeding after the owner removed one.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import type { HarnessProfile, HarnessStatus } from "@openbot/contracts"
+import { type HarnessProfile, type HarnessStatus, MAIN_PROFILE_ID } from "@openbot/contracts"
 import { type HarnessDriver, HarnessRegistry } from "@openbot/core"
 import { FakeHarnessLive, makeFakeDriver } from "@openbot/harness-fake"
 import { Effect, Layer } from "effect"
@@ -218,6 +218,30 @@ describe("harness accounts", () => {
     expect(out.forbidden._tag).toBe("Forbidden")
     expect(out.gone._tag).toBe("NotFound")
     expect(out.status.some((s) => s.profileId === out.two.id)).toBe(false)
+  })
+
+  test("the account in use names only the active profile's Bots", async () => {
+    const out = await withClient((client) =>
+      Effect.gen(function* () {
+        const profiles = yield* client["harnesses.profiles"]({ kind: "claude" })
+        const three = profiles.find((p) => p.configDir === join(home, ".claude-3"))!
+        const harness = { kind: "claude", profileId: three.id } as const
+        const other = yield* client["profiles.create"]({ name: "Other" })
+        yield* client["profiles.switch"]({ profileId: other.id })
+        yield* client["bots.create"]({ name: "Hidden", harness, clientNonce: "hidden-1", introduce: false })
+        yield* client["profiles.switch"]({ profileId: MAIN_PROFILE_ID })
+        const elsewhere = yield* Effect.flip(client["harnesses.removeProfile"]({ profileId: three.id }))
+        yield* client["bots.create"]({ name: "Shown", harness, clientNonce: "shown-1", introduce: false })
+        const both = yield* Effect.flip(client["harnesses.removeProfile"]({ profileId: three.id }))
+        return { elsewhere, both }
+      }),
+    )
+    expect(out.elsewhere._tag === "Conflict" && out.elsewhere.reason).toBe(
+      "1 Bot in another profile uses this account. Move it to another account first.",
+    )
+    expect(out.both._tag === "Conflict" && out.both.reason).toBe(
+      "Shown and 1 Bot in another profile use this account. Move them to another account first.",
+    )
   })
 
   test("after a restart the accounts come back, and a removed one is not rediscovered automatically", async () => {

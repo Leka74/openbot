@@ -185,7 +185,7 @@ describe("helpers", () => {
 
   test("there is one command atom per unary RPC", () => {
     const unary = [...OpenBotRpcs.requests.keys()]
-      .filter((t) => t !== "roster.subscribe" && t !== "conversations.subscribe")
+      .filter((t) => t !== "roster.subscribe" && t !== "conversations.subscribe" && t !== "profiles.subscribe")
       .sort()
     expect(Object.keys(commands).sort()).toEqual(unary)
     for (const tag of Object.keys(COMMAND_INVALIDATES)) expect(unary).toContain(tag as CommandTag)

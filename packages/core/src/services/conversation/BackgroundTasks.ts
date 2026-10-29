@@ -66,6 +66,7 @@ import { IdGen } from "../../ports/IdGen.ts"
 import { McpBindingIssuer, type McpClaims } from "../../ports/Mcp.ts"
 import type { BootRecoveryReport } from "../../ports/Persistence.ts"
 import { PlacementService } from "../../ports/Placement.ts"
+import { inProfile } from "../../ports/Profiles.ts"
 import { BotRepo, ConversationRepo, EntryRepo, TaskRepo, TurnRepo } from "../../ports/repos.ts"
 import { SkillStore } from "../../ports/stores.ts"
 import {
@@ -700,7 +701,7 @@ const makeBackgroundTasks = (options: BackgroundTasksOptions) =>
             onClosed: (reason) => Effect.asVoid(Deferred.succeed(closed, reason)),
           })
           live.ingest = ingest
-          const ownerOnly = yield* ownerOnlySkills(skills, bot.skills)
+          const ownerOnly = yield* ownerOnlySkills(skills, bot.skills).pipe(inProfile(bot.ownerProfileId))
           const open = (nativeSessionId: string | undefined) =>
             Effect.result(
               driver.success.openSession({

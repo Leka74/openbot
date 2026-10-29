@@ -17,6 +17,7 @@ import { type Actor, BotService, ConversationService, SkillService } from "../..
 import { SkillDirectory } from "../../ports/SkillDirectory.ts"
 import { type SkillFile, SkillStore } from "../../ports/stores.ts"
 import { utf8Length } from "./text.ts"
+import { currentProfileId } from "../../ports/Profiles.ts"
 
 export const SKILL_LIMITS = {
   descriptionChars: 1024,
@@ -106,7 +107,7 @@ export const makeSkillService = Effect.gen(function* () {
       Effect.catchTag("Conflict", (error) => Effect.die(error)),
     )
 
-  const allBots = Effect.orDie(bots.list)
+  const allBots = Effect.flatMap(currentProfileId, (profileId) => Effect.orDie(bots.listIn(profileId)))
 
   const upsert = (actor: Actor, input: SkillInput) =>
     Effect.gen(function* () {

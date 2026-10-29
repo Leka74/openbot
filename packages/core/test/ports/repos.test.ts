@@ -37,6 +37,7 @@ describe("in-memory repositories satisfy the repository contract", () => {
       "TurnRepo",
       "RoutineRepo",
       "NodeRepo",
+      "HeldNotificationRepo",
       "ApprovalRuleRepo",
       "SettingsRepo",
       "UsageRepo",

@@ -32,10 +32,17 @@ export const makeSqlBotRepo = Effect.gen(function* () {
       const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM bots ORDER BY created_at, rowid`
       return yield* decodeAll("BotRepo.list", rows)
     }).pipe(repoOp("BotRepo.list")),
+    listIn: (profileId) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM bots
+          WHERE owner_profile_id = ${profileId} ORDER BY created_at, rowid`
+        return yield* decodeAll("BotRepo.listIn", rows)
+      }).pipe(repoOp("BotRepo.listIn")),
     upsert: (bot) =>
       Effect.gen(function* () {
         const payload = yield* BotJson.encode("BotRepo.upsert", bot)
-        yield* sql`INSERT INTO bots (id, created_at, payload_json) VALUES (${bot.id}, ${bot.createdAt}, ${payload})
+        yield* sql`INSERT INTO bots (id, owner_profile_id, created_at, payload_json)
+          VALUES (${bot.id}, ${bot.ownerProfileId}, ${bot.createdAt}, ${payload})
           ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at, payload_json = excluded.payload_json`
       }).pipe(repoOp("BotRepo.upsert")),
     delete: (id) =>
@@ -68,10 +75,12 @@ export const makeSqlBotRepo = Effect.gen(function* () {
 export const makeSqlSectionRepo = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   return SectionRepo.of({
-    list: Effect.gen(function* () {
-      const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM sections ORDER BY sort_order, id`
-      return yield* Effect.forEach(rows, (row) => SectionJson.decode("SectionRepo.list", row.payload_json, row.id))
-    }).pipe(repoOp("SectionRepo.list")),
+    list: (profileId) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM sections
+          WHERE owner_profile_id = ${profileId} ORDER BY sort_order, id`
+        return yield* Effect.forEach(rows, (row) => SectionJson.decode("SectionRepo.list", row.payload_json, row.id))
+      }).pipe(repoOp("SectionRepo.list")),
     get: (id) =>
       Effect.gen(function* () {
         const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM sections WHERE id = ${id}`
@@ -83,7 +92,8 @@ export const makeSqlSectionRepo = Effect.gen(function* () {
     upsert: (section) =>
       Effect.gen(function* () {
         const payload = yield* SectionJson.encode("SectionRepo.upsert", section)
-        yield* sql`INSERT INTO sections (id, sort_order, payload_json) VALUES (${section.id}, ${section.order}, ${payload})
+        yield* sql`INSERT INTO sections (id, owner_profile_id, sort_order, payload_json)
+          VALUES (${section.id}, ${section.ownerProfileId}, ${section.order}, ${payload})
           ON CONFLICT (id) DO UPDATE SET sort_order = excluded.sort_order, payload_json = excluded.payload_json`
       }).pipe(repoOp("SectionRepo.upsert")),
     delete: (id) =>

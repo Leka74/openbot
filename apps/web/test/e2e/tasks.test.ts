@@ -252,8 +252,12 @@ describe.skipIf(!hasChromium)("e2e: background work on a phone", () => {
     await pane.getByTestId("tasks-tab").waitFor()
     const row = pane.getByTestId("task-row").filter({ hasText: "phone digest" })
     await row.waitFor()
-    const width = (await pane.boundingBox())?.width ?? 0
-    expect(width).toBe(393)
+    // the pane slides in: its width settles at full screen once the animation ends
+    await eventually(
+      async () => (await pane.boundingBox())?.width,
+      (width) => width === 393,
+      { label: "the pane at full width" },
+    )
     await page.waitForTimeout(300)
     await page.screenshot({ path: `${shotsDir}/e2e-56-phone-tasks.png` })
     await row.getByTestId("task-stop").tap()

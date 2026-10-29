@@ -1,6 +1,7 @@
 // Pure projection reducers: resume decision, conversation reset/history, roster reducer.
 import { describe, expect, test } from "bun:test"
 import {
+  MAIN_PROFILE_ID,
   activeTasksOf,
   applyConversationStreamItem,
   applyRosterStreamItem,
@@ -166,6 +167,7 @@ describe("conversation projection", () => {
 describe("roster projection", () => {
   const bot = (id: string, name: string): Bot => ({
     id: id as BotId,
+    ownerProfileId: MAIN_PROFILE_ID,
     name,
     avatar: { shape: "blob", color: "blue" },
     harness: { kind: "fake" },
@@ -193,7 +195,7 @@ describe("roster projection", () => {
         conversations: [],
         activities: [],
         nodes: [],
-        sections: [{ id: "sec_b" as SectionId, name: "B", order: 2 }],
+        sections: [{ id: "sec_b" as SectionId, ownerProfileId: MAIN_PROFILE_ID, name: "B", order: 2 }],
         settings: DEFAULT_SETTINGS,
       },
       { kind: "synchronized", cursor: at(0) },
@@ -201,7 +203,10 @@ describe("roster projection", () => {
       {
         kind: "change",
         cursor: at(2),
-        change: { type: "section.upserted", section: { id: "sec_a" as SectionId, name: "A", order: 1 } },
+        change: {
+          type: "section.upserted",
+          section: { id: "sec_a" as SectionId, ownerProfileId: MAIN_PROFILE_ID, name: "A", order: 1 },
+        },
       },
       {
         kind: "change",

@@ -4,9 +4,10 @@
  * it arrived; `click` is the owner's "Send to OpenBot" on a message; `sent` lists what was posted and
  * `replies` the notes Slack showed the owner; `missingScopes` makes it an app from an older manifest.
  */
-import { InvalidInput, type SlackStatus, Unavailable } from "@openbot/contracts"
+import { InvalidInput, MAIN_PROFILE_ID, type OwnerProfileId, type SlackStatus, Unavailable } from "@openbot/contracts"
 import { Context, Effect, Layer, PubSub, Stream } from "effect"
 import {
+  type SlackConnection,
   SlackConnector,
   type SlackConversation,
   type SlackEvent,
@@ -37,9 +38,15 @@ export interface SlackSent {
 export class SlackConnectorFake extends Context.Service<
   SlackConnectorFake,
   {
-    readonly emit: (event: SlackEvent) => Effect.Effect<void>
+    /** A message in the Slack of `event.profileId` (default: the main profile). */
+    readonly emit: (
+      event: Omit<SlackEvent, "profileId"> & { readonly profileId?: OwnerProfileId },
+    ) => Effect.Effect<void>
     readonly click: (
-      shortcut: Omit<SlackShortcut, "reply" | "via"> & { readonly via?: SlackShortcut["via"] },
+      shortcut: Omit<SlackShortcut, "reply" | "via" | "profileId"> & {
+        readonly via?: SlackShortcut["via"]
+        readonly profileId?: OwnerProfileId
+      },
     ) => Effect.Effect<void>
     readonly sent: Effect.Effect<ReadonlyArray<SlackSent>>
     readonly replies: Effect.Effect<ReadonlyArray<string>>
@@ -79,7 +86,7 @@ export class SlackConnectorFake extends Context.Service<
           if (key === "@alice" || key === "alice" || key === "d_alice") return Effect.succeed(SLACK_ALICE_DM)
           return Effect.fail(new InvalidInput({ message: `Nobody in Slack is called "${to.trim()}".` }))
         }
-        const connector = SlackConnector.of({
+        const connection: SlackConnection = {
           status: Effect.sync(status),
           changes: Stream.fromPubSub(changes),
           connect: () =>
@@ -144,13 +151,21 @@ export class SlackConnectorFake extends Context.Service<
             ),
           events: Stream.fromPubSub(events),
           shortcuts: Stream.fromPubSub(shortcuts),
+        }
+        // one Slack, whichever profile asks
+        const connector = SlackConnector.of({
+          connection: Effect.succeed(connection),
+          events: connection.events,
+          shortcuts: connection.shortcuts,
+          forget: () => Effect.void,
         })
         const fake = SlackConnectorFake.of({
-          emit: (event) => Effect.asVoid(PubSub.publish(events, event)),
+          emit: (event) => Effect.asVoid(PubSub.publish(events, { profileId: MAIN_PROFILE_ID, ...event })),
           click: (shortcut) =>
             Effect.asVoid(
               PubSub.publish(shortcuts, {
                 via: "click",
+                profileId: MAIN_PROFILE_ID,
                 ...shortcut,
                 reply: (text) => Effect.sync(() => void replies.push(text)),
               }),

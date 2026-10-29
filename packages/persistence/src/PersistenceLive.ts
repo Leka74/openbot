@@ -23,13 +23,17 @@ import {
   ConversationRepo,
   type DataDirShape,
   EntryRepo,
+  HeldNotificationRepo,
   IdGen,
   makeDataDir,
   McpTokenRepo,
   MemoryStore,
   NodeRepo,
+  OwnerProfileRepo,
   ProcessLedger,
+  ProfileStorage,
   type ProcessRecord,
+  ProfileDirs,
   ReplicaLog,
   RepoError,
   type RepositoryPorts,
@@ -44,6 +48,7 @@ import {
   TurnRepo,
   UsageRepo,
 } from "@openbot/core"
+import { MAIN_PROFILE_ID } from "@openbot/contracts"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { SqlClient } from "effect/sql"
@@ -54,6 +59,9 @@ import { makeSqlBotRepo, makeSqlSectionRepo } from "./repos/bots.ts"
 import { makeSqlConversationRepo } from "./repos/conversations.ts"
 import { makeSqlEntryRepo } from "./repos/entries.ts"
 import { makeSqlNodeRepo } from "./repos/nodes.ts"
+import { makeSqlHeldNotificationRepo } from "./repos/held.ts"
+import { makeSqlOwnerProfileRepo } from "./repos/profiles.ts"
+import { makeSqlProfileStorage } from "./repos/profileStorage.ts"
 import { makeSqlReplicaLog } from "./repos/replica.ts"
 import { makeSqlRoutineRepo } from "./repos/routines.ts"
 import { makeSqlSearchRepo } from "./repos/search.ts"
@@ -65,6 +73,7 @@ import { makeFileAttachmentStore } from "./stores/attachmentStore.ts"
 import { makeFileCarryoverStore } from "./stores/carryoverStore.ts"
 import { ensureDirectory } from "./stores/files.ts"
 import { makeFileMemoryStore } from "./stores/memoryStore.ts"
+import { makeProfileDirs } from "./stores/profileDirs.ts"
 import { makeFileSkillStore } from "./stores/skillStore.ts"
 
 /** Building the persistence layer failed (data dir not writable, database unreadable, migration failed). */
@@ -125,30 +134,38 @@ export const makeRepositories = (
   dirs: DataDirShape,
 ): Effect.Effect<Context.Context<RepositoryPorts>, RepoError, SqlClient.SqlClient | IdGen> =>
   Effect.gen(function* () {
-    yield* ensureDirectory("Persistence.init", dirs.attachments)
-    yield* ensureDirectory("Persistence.init", dirs.skillsLib)
+    const main = dirs.profile(MAIN_PROFILE_ID)
+    yield* ensureDirectory("Persistence.init", main.attachments)
+    yield* ensureDirectory("Persistence.init", main.skillsLib)
     const skills = yield* makeFileSkillStore(dirs)
-    return Context.make(BotRepo, yield* makeSqlBotRepo).pipe(
-      Context.add(SectionRepo, yield* makeSqlSectionRepo),
-      Context.add(ConversationRepo, yield* makeSqlConversationRepo),
-      Context.add(EntryRepo, yield* makeSqlEntryRepo),
-      Context.add(SearchRepo, yield* makeSqlSearchRepo),
-      Context.add(RequestRepo, yield* makeSqlRequestRepo),
-      Context.add(TurnRepo, yield* makeSqlTurnRepo),
-      Context.add(TaskRepo, yield* makeSqlTaskRepo),
-      Context.add(RoutineRepo, yield* makeSqlRoutineRepo),
-      Context.add(NodeRepo, yield* makeSqlNodeRepo),
-      Context.add(ApprovalRuleRepo, yield* makeSqlApprovalRuleRepo),
-      Context.add(SettingsRepo, yield* makeSqlSettingsRepo),
-      Context.add(UsageRepo, yield* makeSqlUsageRepo),
-      Context.add(ReplicaLog, yield* makeSqlReplicaLog()),
-      Context.add(McpTokenRepo, yield* makeSqlMcpTokenRepo),
-      Context.add(ProcessLedger, yield* makeSqlProcessLedger),
-      Context.add(MemoryStore, yield* makeFileMemoryStore(dirs)),
-      Context.add(SkillStore, skills),
-      Context.add(AttachmentStore, yield* makeFileAttachmentStore(dirs)),
-      Context.add(CarryoverStore, yield* makeFileCarryoverStore(dirs)),
-    )
+    return Context.make(BotRepo, yield* makeSqlBotRepo)
+      .pipe(
+        Context.add(SectionRepo, yield* makeSqlSectionRepo),
+        Context.add(ConversationRepo, yield* makeSqlConversationRepo),
+        Context.add(EntryRepo, yield* makeSqlEntryRepo),
+        Context.add(SearchRepo, yield* makeSqlSearchRepo),
+        Context.add(RequestRepo, yield* makeSqlRequestRepo),
+        Context.add(TurnRepo, yield* makeSqlTurnRepo),
+        Context.add(TaskRepo, yield* makeSqlTaskRepo),
+        Context.add(RoutineRepo, yield* makeSqlRoutineRepo),
+        Context.add(NodeRepo, yield* makeSqlNodeRepo),
+        Context.add(OwnerProfileRepo, yield* makeSqlOwnerProfileRepo),
+        Context.add(ProfileStorage, yield* makeSqlProfileStorage),
+        Context.add(HeldNotificationRepo, yield* makeSqlHeldNotificationRepo),
+        Context.add(ApprovalRuleRepo, yield* makeSqlApprovalRuleRepo),
+        Context.add(SettingsRepo, yield* makeSqlSettingsRepo),
+        Context.add(UsageRepo, yield* makeSqlUsageRepo),
+        Context.add(ReplicaLog, yield* makeSqlReplicaLog()),
+        Context.add(McpTokenRepo, yield* makeSqlMcpTokenRepo),
+        Context.add(ProcessLedger, yield* makeSqlProcessLedger),
+      )
+      .pipe(
+        Context.add(MemoryStore, yield* makeFileMemoryStore(dirs)),
+        Context.add(SkillStore, skills),
+        Context.add(AttachmentStore, yield* makeFileAttachmentStore(dirs)),
+        Context.add(CarryoverStore, yield* makeFileCarryoverStore(dirs)),
+        Context.add(ProfileDirs, makeProfileDirs(dirs)),
+      )
   })
 
 /**

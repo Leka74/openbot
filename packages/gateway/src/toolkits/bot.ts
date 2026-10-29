@@ -30,6 +30,7 @@ import {
   type SkillName,
 } from "@openbot/contracts"
 import {
+  type CurrentProfile,
   ApprovalService,
   BotService,
   botActor,
@@ -53,6 +54,7 @@ import { approve, chooseNode } from "./node.ts"
 import { notInTask } from "./tasks.ts"
 
 export type BotToolkitServices =
+  | CurrentProfile
   | Messaging
   | BotService
   | ApprovalService

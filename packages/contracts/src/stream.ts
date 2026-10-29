@@ -155,6 +155,8 @@ export const RosterChangeMembers = [
   Schema.Struct({ type: Schema.Literal("sign-in.requested"), request: SignInRequest }),
   /** It was allowed, refused, cancelled or replaced. */
   Schema.Struct({ type: Schema.Literal("sign-in.ended"), code: Schema.String }),
+  /** The active profile's "While you were away" list changed. */
+  Schema.Struct({ type: Schema.Literal("away.changed") }),
 ] as const
 const rosterChangeFallback = withUnknownFallback({ members: RosterChangeMembers, tag: "type", keep: {} })
 export const RosterChange = rosterChangeFallback.schema

@@ -20,6 +20,7 @@ import type {
   HarnessRequestResolution,
   HarnessStatus,
   ModelInfo,
+  OwnerProfileId,
   SkillName,
   TaskId,
   TurnId,
@@ -182,6 +183,8 @@ export interface HarnessDriver {
   readonly listModels: Effect.Effect<ReadonlyArray<ModelInfo>, HarnessError>
   /** The session lives until the provided scope closes. */
   readonly openSession: (input: OpenSessionInput) => Effect.Effect<HarnessSession, HarnessError, Scope.Scope>
+  /** Stops what the driver keeps for a deleted owner profile (its server); absent = nothing kept. */
+  readonly forgetOwnerProfile?: ((profileId: OwnerProfileId) => Effect.Effect<void>) | undefined
 }
 
 export interface HarnessRegistryShape {
@@ -198,6 +201,8 @@ export interface HarnessRegistryShape {
    * removed when the caller's scope closes (driver layers call this inside `Layer.effectDiscard`).
    */
   readonly register: (driver: HarnessDriver) => Effect.Effect<void, never, Scope.Scope>
+  /** Every driver forgets a deleted owner profile (`HarnessDriver.forgetOwnerProfile`). */
+  readonly forgetOwnerProfile: (profileId: OwnerProfileId) => Effect.Effect<void>
 }
 
 /** Registry key of a (kind, profile): `"claude"` for the default profile, `"claude/<profileId>"` otherwise. */
@@ -238,6 +243,12 @@ export class HarnessRegistry extends Context.Service<HarnessRegistry, HarnessReg
             )
           }),
         list: Effect.map(Ref.get(drivers), (map) => [...map.values()]),
+        forgetOwnerProfile: (profileId) =>
+          Effect.flatMap(Ref.get(drivers), (map) =>
+            Effect.forEach(map.values(), (driver) => driver.forgetOwnerProfile?.(profileId) ?? Effect.void, {
+              discard: true,
+            }),
+          ),
         register: (driver) => {
           const key = driverKeyOf(driver.kind, driver.profileId)
           return Effect.acquireRelease(

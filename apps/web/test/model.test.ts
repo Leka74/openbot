@@ -1,6 +1,7 @@
 // Unit tests for the pure view models: transcript layout, markdown parsing, sidebar model.
 import { describe, expect, test } from "bun:test"
 import {
+  MAIN_PROFILE_ID,
   type BotId,
   type ConversationId,
   type ConversationSummary,
@@ -429,7 +430,12 @@ describe("sidebar model", () => {
         ["c", mkBot("c", "Gamma")],
         ["d", mkBot("d", "Delta", { hidden: true })],
       ]) as never,
-      sections: new Map([["sec_1" as SectionId, { id: "sec_1" as SectionId, name: "Revenue", order: 1 }]]),
+      sections: new Map([
+        [
+          "sec_1" as SectionId,
+          { id: "sec_1" as SectionId, ownerProfileId: MAIN_PROFILE_ID, name: "Revenue", order: 1 },
+        ],
+      ]),
       conversations: new Map([
         ["cnv_b" as ConversationId, summary("cnv_b", { unreadCount: 2 })],
         ["cnv_c" as ConversationId, summary("cnv_c", { pendingRequestCount: 1 })],
@@ -456,7 +462,12 @@ describe("sidebar model", () => {
         ["p", mkBot("p", "Pin1", { pinned: true, sidebarOrder: 1, createdAt: 1 })],
         ["q", mkBot("q", "Pin2", { pinned: true, sidebarOrder: 0, createdAt: 2 })],
       ]) as never,
-      sections: new Map([["sec_1" as SectionId, { id: "sec_1" as SectionId, name: "Revenue", order: 1 }]]),
+      sections: new Map([
+        [
+          "sec_1" as SectionId,
+          { id: "sec_1" as SectionId, ownerProfileId: MAIN_PROFILE_ID, name: "Revenue", order: 1 },
+        ],
+      ]),
       conversations: new Map([
         ["cnv_a" as ConversationId, summary("cnv_a", { lastActivityAt: 50 })],
         ["cnv_c" as ConversationId, summary("cnv_c", { lastActivityAt: 10 })],

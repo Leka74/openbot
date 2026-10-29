@@ -86,6 +86,7 @@ import type {
   NodeId,
   NoticeLevel,
   NotFound,
+  OwnerProfileId,
   Question,
   RequestId,
   RequestNotPending,
@@ -138,6 +139,7 @@ import type { RenderedInstructions } from "./Harness.ts"
 import type { McpClaims } from "./Mcp.ts"
 import type { BootRecoveryReport } from "./Persistence.ts"
 import type { PlacementSummary } from "./Placement.ts"
+import type { CurrentProfile } from "./Profiles.ts"
 
 // ============================================================================ shared types
 
@@ -284,8 +286,13 @@ export class LiveHub extends Context.Service<
       conversationId: ConversationId,
       change: KnownConversationChange,
     ) => Effect.Effect<StreamCursor>
-    /** Same for the roster replica. */
-    readonly publishRoster: (change: KnownRosterChange) => Effect.Effect<StreamCursor>
+    /**
+     * Same for the roster replica of the profile the change belongs to (or of every profile).
+     * A removal names it in `profileId`: its record is gone by then.
+     */
+    readonly publishRoster: (change: KnownRosterChange, profileId?: OwnerProfileId) => Effect.Effect<void>
+    /** `settings.updated` to one profile's roster. */
+    readonly publishSettings: (profileId: OwnerProfileId, settings: Settings) => Effect.Effect<StreamCursor>
     /**
      * `conversations.subscribe`: matching epoch and gap ≤ 256 → replay, else snapshot (tail of 100
      * entries + pending requests + recent turns); then `synchronized`; then live changes.
@@ -294,10 +301,16 @@ export class LiveHub extends Context.Service<
       readonly conversationId: ConversationId
       readonly after?: StreamCursor | undefined
       readonly tailLimit?: number | undefined
+      /** Fails the stream with `NotFound` once the owner switches away from this profile. */
+      readonly closeOnSwitchFrom?: OwnerProfileId | undefined
     }) => Stream.Stream<KnownConversationStreamItem, NotFound>
-    /** `roster.subscribe`: same resume rules for the roster replica. */
+    /**
+     * `roster.subscribe`: same resume rules for the active profile's roster; a switch sends the new
+     * one's snapshot. With `profileId`, that profile's roster only.
+     */
     readonly subscribeRoster: (input: {
       readonly after?: StreamCursor | undefined
+      readonly profileId?: OwnerProfileId | undefined
     }) => Stream.Stream<KnownRosterStreamItem>
     /** Starts a new epoch for a conversation (new session / rebuild); subscribers get `reset` then a snapshot. */
     readonly resetConversation: (
@@ -308,6 +321,8 @@ export class LiveHub extends Context.Service<
     readonly activities: Effect.Effect<ReadonlyArray<BotActivity>>
     /** Updates a bot's activity and publishes `activity.updated`. */
     readonly setActivity: (activity: BotActivity) => Effect.Effect<void>
+    /** Forgets a deleted profile's roster replica. */
+    readonly dropRoster: (profileId: OwnerProfileId) => Effect.Effect<void>
   }
 >()("openbot/core/LiveHub") {}
 
@@ -327,44 +342,52 @@ export class BotService extends Context.Service<
     readonly create: (
       input: BotCreateInput,
       options?: { readonly autonomyCeiling?: BotAutonomy | undefined; readonly introduce?: boolean | undefined },
-    ) => Effect.Effect<Bot, NotFound | InvalidInput | Conflict | HarnessUnavailable>
+    ) => Effect.Effect<Bot, NotFound | InvalidInput | Conflict | HarnessUnavailable, CurrentProfile>
     /**
      * `bots.update`. Changing `harness.kind` or `hostNodeId` stops the bot's runners and drops native
      * sessions (a different driver/placement cannot resume them).
      */
-    readonly update: (botId: BotId, patch: BotPatch) => Effect.Effect<Bot, NotFound | InvalidInput | Conflict>
+    readonly update: (
+      botId: BotId,
+      patch: BotPatch,
+    ) => Effect.Effect<Bot, NotFound | InvalidInput | Conflict, CurrentProfile>
+    /** Stops the Bot without deleting it: MCP tokens revoked, runners, background tasks and pending requests ended. */
+    readonly halt: (botId: BotId) => Effect.Effect<void, NotFound, CurrentProfile>
     /** `bots.delete`: stops runners, revokes MCP tokens, deletes routines, memory and conversations it solely owns. */
-    readonly delete: (botId: BotId) => Effect.Effect<void, NotFound>
+    readonly delete: (botId: BotId) => Effect.Effect<void, NotFound, CurrentProfile>
     /** `bots.get`. */
-    readonly get: (botId: BotId) => Effect.Effect<Bot, NotFound>
+    readonly get: (botId: BotId) => Effect.Effect<Bot, NotFound, CurrentProfile>
     /** `list_bots` tool and roster snapshot; ordered by `createdAt`. */
-    readonly list: Effect.Effect<ReadonlyArray<Bot>>
+    readonly list: Effect.Effect<ReadonlyArray<Bot>, never, CurrentProfile>
     /** Resolves a bot by id, exact name or `@name` (case-insensitive) — used by bot tools (`to`). */
-    readonly resolve: (ref: string) => Effect.Effect<Bot, NotFound>
+    readonly resolve: (ref: string) => Effect.Effect<Bot, NotFound, CurrentProfile>
     /**
      * `bots.readContext`: instructions as rendered for the harness (with a placement PREVIEW from
      * `planPlacement` + `describePlacement` + `workspacePathFor`; nothing is opened) + memory.
      */
-    readonly readContext: (botId: BotId) => Effect.Effect<BotContext, NotFound>
+    readonly readContext: (botId: BotId) => Effect.Effect<BotContext, NotFound, CurrentProfile>
     /**
      * `bots.newSession`: drops the bot's single native session (its DM gets a new replica epoch and a
      * `session-changed` event). `Conflict` while the bot has a running or queued turn.
      */
-    readonly newSession: (botId: BotId) => Effect.Effect<void, NotFound | Conflict>
+    readonly newSession: (botId: BotId) => Effect.Effect<void, NotFound | Conflict, CurrentProfile>
     /**
      * `bots.compact`: compacts the bot's single session. `HarnessUnavailable` when the harness lacks
      * `capabilities.compact`; `Conflict` while the bot has a running or queued turn.
      */
-    readonly compact: (botId: BotId) => Effect.Effect<void, NotFound | Conflict | HarnessUnavailable>
+    readonly compact: (botId: BotId) => Effect.Effect<void, NotFound | Conflict | HarnessUnavailable, CurrentProfile>
 
     /** `sections.list`. */
-    readonly listSections: Effect.Effect<ReadonlyArray<Section>>
+    readonly listSections: Effect.Effect<ReadonlyArray<Section>, never, CurrentProfile>
     /** `sections.create`: appended at the end. */
-    readonly createSection: (name: string) => Effect.Effect<Section, InvalidInput>
+    readonly createSection: (name: string) => Effect.Effect<Section, InvalidInput, CurrentProfile>
     /** `sections.rename`. */
-    readonly renameSection: (sectionId: SectionId, name: string) => Effect.Effect<Section, NotFound | InvalidInput>
+    readonly renameSection: (
+      sectionId: SectionId,
+      name: string,
+    ) => Effect.Effect<Section, NotFound | InvalidInput, CurrentProfile>
     /** `sections.delete`: bots in it become Unassigned. */
-    readonly deleteSection: (sectionId: SectionId) => Effect.Effect<void, NotFound>
+    readonly deleteSection: (sectionId: SectionId) => Effect.Effect<void, NotFound, CurrentProfile>
     /**
      * `sidebar.arrange`: `items` (Bots and group chats) is the new order at `place`; each moves there
      * (pinned, a section, Unassigned or Group chats) and keeps its position.
@@ -372,11 +395,11 @@ export class BotService extends Context.Service<
     readonly arrangeSidebar: (input: {
       readonly place: SidebarPlace
       readonly items: ReadonlyArray<SidebarItemRef>
-    }) => Effect.Effect<void, NotFound | InvalidInput>
+    }) => Effect.Effect<void, NotFound | InvalidInput, CurrentProfile>
     /** `sections.reorder`: full ordered list of section ids. */
     readonly reorderSections: (
       sectionIds: ReadonlyArray<SectionId>,
-    ) => Effect.Effect<ReadonlyArray<Section>, NotFound | InvalidInput | Conflict>
+    ) => Effect.Effect<ReadonlyArray<Section>, NotFound | InvalidInput | Conflict, CurrentProfile>
   }
 >()("openbot/core/BotService") {}
 
@@ -387,7 +410,7 @@ export class ConversationService extends Context.Service<
   {
     readonly get: (conversationId: ConversationId) => Effect.Effect<Conversation, NotFound>
     /** Sidebar rows (roster snapshot). */
-    readonly summaries: Effect.Effect<ReadonlyArray<ConversationSummary>>
+    readonly summaries: Effect.Effect<ReadonlyArray<ConversationSummary>, never, CurrentProfile>
     readonly summary: (conversationId: ConversationId) => Effect.Effect<ConversationSummary, NotFound>
     /** `conversations.history`. */
     readonly history: (input: {
@@ -425,13 +448,13 @@ export class ConversationService extends Context.Service<
       readonly memberBotIds: ReadonlyArray<BotId>
       readonly leadBotId?: BotId | undefined
       readonly clientNonce?: string | undefined
-    }) => Effect.Effect<Conversation, NotFound | InvalidInput | Conflict>
+    }) => Effect.Effect<Conversation, NotFound | InvalidInput | Conflict, CurrentProfile>
     /** `conversations.setMembers` (groups only); emits member-added/removed events. */
     readonly setMembers: (input: {
       readonly conversationId: ConversationId
       readonly memberBotIds: ReadonlyArray<BotId>
       readonly leadBotId?: BotId | null | undefined
-    }) => Effect.Effect<Conversation, NotFound | InvalidInput | Conflict>
+    }) => Effect.Effect<Conversation, NotFound | InvalidInput | Conflict, CurrentProfile>
     /** `conversations.rename`. */
     readonly rename: (
       conversationId: ConversationId,
@@ -735,7 +758,7 @@ export class Messaging extends Context.Service<
         /** Progress lines while large files transfer (the gateway forwards them to the harness). */
         readonly progress?: ((message: string) => Effect.Effect<void>) | undefined
       },
-    ) => Effect.Effect<SendFilesResult, NotFound | InvalidInput>
+    ) => Effect.Effect<SendFilesResult, NotFound | InvalidInput, CurrentProfile>
     /**
      * The files at `paths` on a node, brought into OpenBot (attachments) without posting them: for a
      * Slack draft's files. Same limits and path policy as `sendFiles`.
@@ -746,7 +769,7 @@ export class Messaging extends Context.Service<
       readonly cwd?: string | undefined
       readonly paths: ReadonlyArray<string>
       readonly progress?: ((message: string) => Effect.Effect<void>) | undefined
-    }) => Effect.Effect<ReadonlyArray<Attachment>, InvalidInput>
+    }) => Effect.Effect<ReadonlyArray<Attachment>, InvalidInput, CurrentProfile>
   }
 >()("openbot/core/Messaging") {}
 
@@ -846,7 +869,7 @@ export class ApprovalService extends Context.Service<
     /** `requests.listPending`. */
     readonly listPending: (input: {
       readonly conversationId?: ConversationId | undefined
-    }) => Effect.Effect<ReadonlyArray<RuntimeRequest>>
+    }) => Effect.Effect<ReadonlyArray<RuntimeRequest>, never, CurrentProfile>
     /** `ask_user` tool (D3.3): posts a question card, returns immediately; the answer becomes a delivery. */
     readonly askUser: (
       ctx: ToolContext,
@@ -987,7 +1010,9 @@ export class RoutineScheduler extends Context.Service<
   RoutineScheduler,
   {
     /** `routines.list` / `list_routines` tool. */
-    readonly list: (input: { readonly botId?: BotId | undefined }) => Effect.Effect<ReadonlyArray<Routine>>
+    readonly list: (input: {
+      readonly botId?: BotId | undefined
+    }) => Effect.Effect<ReadonlyArray<Routine>, never, CurrentProfile>
     readonly get: (routineId: RoutineId) => Effect.Effect<Routine, NotFound>
     /** `routines.create` / `create_routine` (a bot may only create routines for itself). */
     readonly create: (
@@ -1069,21 +1094,24 @@ export class SkillService extends Context.Service<
   SkillService,
   {
     /** `skills.list` / `list_skills` tool. */
-    readonly list: Effect.Effect<ReadonlyArray<Skill>>
-    readonly get: (name: SkillName) => Effect.Effect<Skill, NotFound>
+    readonly list: Effect.Effect<ReadonlyArray<Skill>, never, CurrentProfile>
+    readonly get: (name: SkillName) => Effect.Effect<Skill, NotFound, CurrentProfile>
     /**
      * `skills.upsert` / `save_skill` tool. A Bot saving a skill gets it (`Bot.skills`) and a
      * `skill-saved` event; it may replace only a skill it has (InvalidInput otherwise).
      */
-    readonly upsert: (actor: Actor, input: SkillInput) => Effect.Effect<Skill, InvalidInput>
-    /** `skills.delete`: from the library and from every Bot. */
-    readonly delete: (name: SkillName) => Effect.Effect<void, NotFound>
+    readonly upsert: (actor: Actor, input: SkillInput) => Effect.Effect<Skill, InvalidInput, CurrentProfile>
+    /** `skills.delete`: from the library and from every Bot of the profile. */
+    readonly delete: (name: SkillName) => Effect.Effect<void, NotFound, CurrentProfile>
     /** `skills.assign`: exactly `botIds` have the skill afterwards. */
-    readonly assign: (name: SkillName, botIds: ReadonlyArray<BotId>) => Effect.Effect<void, NotFound | InvalidInput>
+    readonly assign: (
+      name: SkillName,
+      botIds: ReadonlyArray<BotId>,
+    ) => Effect.Effect<void, NotFound | InvalidInput, CurrentProfile>
     /** `skills.search` (skills.sh). */
     readonly search: (query: string) => Effect.Effect<ReadonlyArray<SkillSearchResult>, InvalidInput | Unavailable>
     /** `skills.preview`: downloads and reads a skills.sh skill without installing it. */
-    readonly preview: (id: string) => Effect.Effect<SkillPreview, NotFound | InvalidInput | Unavailable>
+    readonly preview: (id: string) => Effect.Effect<SkillPreview, NotFound | InvalidInput | Unavailable, CurrentProfile>
     /**
      * `skills.install`: downloads a skills.sh skill into the library (replacing a same-named one,
      * which keeps its Bots) and gives it to `botIds` too. With `name`, InvalidInput when the skill
@@ -1093,7 +1121,7 @@ export class SkillService extends Context.Service<
       id: string,
       botIds: ReadonlyArray<BotId>,
       name?: SkillName,
-    ) => Effect.Effect<Skill, NotFound | InvalidInput | Unavailable>
+    ) => Effect.Effect<Skill, NotFound | InvalidInput | Unavailable, CurrentProfile>
   }
 >()("openbot/core/SkillService") {}
 
@@ -1102,18 +1130,24 @@ export class SkillService extends Context.Service<
 export class SettingsService extends Context.Service<
   SettingsService,
   {
-    /** `settings.get` (defaults applied). */
-    readonly get: Effect.Effect<Settings>
+    /** `settings.get`: the current profile's settings (defaults applied). */
+    readonly get: Effect.Effect<Settings, never, CurrentProfile>
     /** `settings.update`: applies the patch, persists, publishes `settings.updated`. */
-    readonly update: (patch: SettingsPatch) => Effect.Effect<Settings, InvalidInput>
+    readonly update: (patch: SettingsPatch) => Effect.Effect<Settings, InvalidInput, CurrentProfile>
     /** Current value first, then every change. */
-    readonly changes: Stream.Stream<Settings>
-    /** `rules.list`: all rules, or a bot's rules plus global ones. */
-    readonly listRules: (input: { readonly botId?: BotId | undefined }) => Effect.Effect<ReadonlyArray<ApprovalRule>>
+    readonly changes: Stream.Stream<Settings, never, CurrentProfile>
+    /** `rules.list`: the current profile's rules, or a bot's rules plus the profile's global ones. */
+    readonly listRules: (input: {
+      readonly botId?: BotId | undefined
+    }) => Effect.Effect<ReadonlyArray<ApprovalRule>, never, CurrentProfile>
     /** `rules.upsert`: allocates id/createdAt when absent. */
-    readonly upsertRule: (input: ApprovalRuleInput) => Effect.Effect<ApprovalRule, NotFound | InvalidInput>
+    readonly upsertRule: (
+      input: ApprovalRuleInput,
+    ) => Effect.Effect<ApprovalRule, NotFound | InvalidInput, CurrentProfile>
     /** `rules.delete`. */
-    readonly deleteRule: (ruleId: ApprovalRuleId) => Effect.Effect<void, NotFound>
+    readonly deleteRule: (ruleId: ApprovalRuleId) => Effect.Effect<void, NotFound, CurrentProfile>
+    /** Forgets what it keeps of a deleted profile's settings. */
+    readonly forgetProfile: (id: OwnerProfileId) => Effect.Effect<void>
   }
 >()("openbot/core/SettingsService") {}
 
@@ -1132,7 +1166,9 @@ export class UsageService extends Context.Service<
       readonly usage: Usage
     }) => Effect.Effect<void>
     /** `usage.byBot {sinceMs?}`. */
-    readonly byBot: (input: { readonly sinceMs?: Millis | undefined }) => Effect.Effect<ReadonlyArray<BotUsage>>
+    readonly byBot: (input: {
+      readonly sinceMs?: Millis | undefined
+    }) => Effect.Effect<ReadonlyArray<BotUsage>, never, CurrentProfile>
   }
 >()("openbot/core/UsageService") {}
 
@@ -1146,7 +1182,7 @@ export class AttachmentService extends Context.Service<
       readonly name: string
       readonly mime: string
       readonly bytes: Uint8Array
-    }) => Effect.Effect<Attachment, InvalidInput>
+    }) => Effect.Effect<Attachment, InvalidInput, CurrentProfile>
     /** Contract view (`url` = `/api/attachments/<id>`). */
     readonly get: (attachmentId: AttachmentId) => Effect.Effect<Attachment, NotFound>
   }
@@ -1202,7 +1238,7 @@ export class SearchService extends Context.Service<
   SearchService,
   {
     /** `search.query`: the owner's search over every chat. */
-    readonly query: (input: SearchInput) => Effect.Effect<SearchPage, InvalidInput>
+    readonly query: (input: SearchInput) => Effect.Effect<SearchPage, InvalidInput, CurrentProfile>
     /**
      * `search.inConversation`: every hit in one chat, for the Find bar. A query without words
      * (punctuation), or whose words match nothing, falls back to a plain substring match.
@@ -1212,7 +1248,7 @@ export class SearchService extends Context.Service<
       readonly query: string
       readonly kinds?: ReadonlyArray<SearchKind> | undefined
       readonly limit: number
-    }) => Effect.Effect<SearchPositions, NotFound | InvalidInput>
+    }) => Effect.Effect<SearchPositions, NotFound | InvalidInput, CurrentProfile>
     /** A bot's search (`search_messages`): only what it may read (`SearchFilter`), counted up to `BOT_SEARCH_TOTAL_CAP`. */
     readonly forBot: (botId: BotId, input: SearchInput) => Effect.Effect<BotSearchPage, InvalidInput>
     /** The bot may read this whole chat now: it is a member (its DM, a group it is in, its routine runs). */

@@ -61,7 +61,14 @@ import type { McpBindingIssuer, McpClaims } from "../../ports/Mcp.ts"
 import type { NodeFiles } from "../../ports/NodeFiles.ts"
 import type { Notifier } from "../../ports/Notifier.ts"
 import type { PlacementService, ResolvedPlacement } from "../../ports/Placement.ts"
-import type { BotRepo, BotSessionRecord, ConversationRepo, EntryRepo, TurnRepo } from "../../ports/repos.ts"
+import { inProfile } from "../../ports/Profiles.ts"
+import {
+  BotRepo,
+  type BotSessionRecord,
+  type ConversationRepo,
+  type EntryRepo,
+  type TurnRepo,
+} from "../../ports/repos.ts"
 import type {
   ApprovalService,
   ApprovalWorkspace,
@@ -94,6 +101,7 @@ import {
   type TurnTerminal,
   updateSessionRow,
 } from "./TurnIngest.ts"
+import { inBotProfile } from "../profiles/lookup.ts"
 
 type Service<T extends { readonly Service: unknown }> = T["Service"]
 
@@ -413,7 +421,8 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         ? Effect.succeed("bot")
         : Effect.map(orDie(deps.bots.get(id)), (bot) => (Option.isSome(bot) ? bot.value.name : id))
 
-    const ownerName = Effect.map(deps.settings.get, (s) => (s.ownerName?.trim() ? s.ownerName.trim() : "owner"))
+    const settings = inBotProfile(botId)(deps.settings.get).pipe(Effect.provideService(BotRepo, deps.bots))
+    const ownerName = Effect.map(settings, (s) => (s.ownerName?.trim() ? s.ownerName.trim() : "owner"))
 
     // ------------------------------------------------------------------ session record (cursors)
 
@@ -675,7 +684,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         const driver = yield* deps.registry
           .get(bot.harness.kind, bot.harness.profileId)
           .pipe(Effect.mapError((e) => fail("harness-unavailable", e.message)))
-        const ownerOnly = yield* ownerOnlySkills(deps.skills, bot.skills)
+        const ownerOnly = yield* ownerOnlySkills(deps.skills, bot.skills).pipe(inProfile(bot.ownerProfileId))
         const config: SessionConfig = { signature: signatureOf(bot, ownerOnly), ownerOnlySkills: ownerOnly }
         const current = state.session
         if (current !== undefined) {
@@ -752,9 +761,11 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         const command = parseSkillCommand(text, bot.value.skills)
         const name = bot.value.skills.find((skill) => skill === command?.name)
         if (command === undefined || name === undefined) return undefined
-        const skill = yield* orDie(deps.skills.get(name))
+        const inBotProfile = inProfile(bot.value.ownerProfileId)
+        const skill = yield* orDie(deps.skills.get(name)).pipe(inBotProfile)
         if (Option.isNone(skill)) return undefined
-        const instruction = renderSkillCommand(command, { body: skill.value.body, dir: deps.skills.dir(name) })
+        const dir = yield* deps.skills.dir(name).pipe(inBotProfile)
+        const instruction = renderSkillCommand(command, { body: skill.value.body, dir })
         return { ...command, instruction }
       })
 
@@ -1302,15 +1313,15 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
               body: previewOf(said),
             })
           } else if (terminal._tag === "failed" && terminal.code === "auth") {
-            // once per account for a while: every Bot (and routine) on it fails the same way
+            // once per account for a while: every Bot (and routine) on it fails the same way. The
+            // account is shared by every profile, so the alert names no Bot or conversation and
+            // reaches whichever profile is active.
             const account = `${bot.value.harness.kind}:${bot.value.harness.profileId ?? "default"}`
             const last = deps.signedOut?.get(account)
             if (last === undefined || now - last >= SIGNED_OUT_NOTIFY_MS) {
               deps.signedOut?.set(account, now)
               yield* deps.notifier.notify({
                 kind: "error",
-                botId,
-                conversationId,
                 title: `${HARNESS_NAMES[bot.value.harness.kind] ?? bot.value.harness.kind} is signed out`,
                 body: `Bots on this account can't reply until you sign in again on the computer OpenBot runs on (Settings › Harnesses).`,
               })
@@ -1549,7 +1560,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         (yield* Deferred.isDone(open.closed))
       )
         return
-      if (!(yield* Effect.map(deps.settings.get, (s) => s.compactIdleBots))) return
+      if (!(yield* Effect.map(settings, (s) => s.compactIdleBots))) return
       const usage = yield* open.session.contextUsage
       if (usage === undefined || usage.usedTokens < deps.options.idleCompactMinTokens) return
       yield* Effect.logInfo("compacting an idle bot's context", { botId, usedTokens: usage.usedTokens })

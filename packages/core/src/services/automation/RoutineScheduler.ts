@@ -49,6 +49,7 @@ import { SlackConnector, type SlackEvent } from "../../ports/Slack.ts"
 import { CATCH_UP_WINDOW_MS, describeTrigger, nextRunAfter, sameTrigger, validateTrigger } from "./schedule.ts"
 import { slackEventsText, slackTriggerMatches } from "./SlackService.ts"
 import { oneLine, truncate, utf8Length } from "./text.ts"
+import { currentProfileId, inProfile } from "../../ports/Profiles.ts"
 
 export const ROUTINE_LIMITS = {
   nameChars: 80,
@@ -134,7 +135,8 @@ export const makeRoutineScheduler = Effect.gen(function* () {
       ? Effect.fail(new InvalidInput({ message: "A bot can only manage its own routines." }))
       : Effect.void
 
-  const validateSpec = (spec: RoutineSpec, now: number) => {
+  /** A Slack trigger needs the Slack of the Bot's profile. */
+  const validateSpec = (bot: Bot, spec: RoutineSpec, now: number) => {
     const name = spec.name.trim()
     if (name.length === 0) return Effect.fail(new InvalidInput({ message: "A routine needs a name." }))
     if ([...name].length > ROUTINE_LIMITS.nameChars) {
@@ -160,7 +162,8 @@ export const makeRoutineScheduler = Effect.gen(function* () {
     })
     return slack === undefined
       ? Effect.fail(notConnected)
-      : slack.status.pipe(
+      : Effect.flatMap(slack.connection, (connection) => connection.status).pipe(
+          inProfile(bot.ownerProfileId),
           Effect.flatMap((status) => (status.connected ? Effect.succeed(name) : Effect.fail(notConnected))),
         )
   }
@@ -413,8 +416,18 @@ export const makeRoutineScheduler = Effect.gen(function* () {
 
   // ------------------------------------------------------------------------ scheduler loop
 
+  /** A run is work of its Bot's profile, whichever profile the owner looks at. */
+  const inRoutineProfile =
+    (routineId: RoutineId) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const routine = yield* repo.get(routineId).pipe(Effect.orDie)
+        const bot = Option.isSome(routine) ? yield* bots.get(routine.value.botId).pipe(Effect.orDie) : Option.none()
+        return yield* Option.isSome(bot) ? inProfile(bot.value.ownerProfileId)(effect) : effect
+      })
+
   const fireSafely = (routineId: RoutineId, firedBy: FiredBy, eventText?: string) =>
-    fire(routineId, firedBy, eventText).pipe(
+    inRoutineProfile(routineId)(fire(routineId, firedBy, eventText)).pipe(
       Effect.catch((error) => Effect.logWarning(`RoutineScheduler: ${routineId} did not start`, error)),
       Effect.catchDefect((defect) => Effect.logError(`RoutineScheduler: ${routineId} failed to fire`, defect)),
       Effect.asVoid,
@@ -560,8 +573,11 @@ export const makeRoutineScheduler = Effect.gen(function* () {
 
   const onSlackEvent = (event: SlackEvent) =>
     Effect.gen(function* () {
+      // a profile's Slack starts only its own Bots' routines
+      const profileBots = new Set((yield* bots.listIn(event.profileId).pipe(Effect.orDie)).map((b) => b.id))
       const matching = (yield* repo.list().pipe(Effect.orDie)).filter(
-        (r) => r.enabled && r.trigger.type === "slack" && slackTriggerMatches(r.trigger, event),
+        (r) =>
+          r.enabled && r.trigger.type === "slack" && profileBots.has(r.botId) && slackTriggerMatches(r.trigger, event),
       )
       for (const routine of matching) {
         const queue = slackQueue.get(routine.id) ?? []
@@ -591,7 +607,7 @@ export const makeRoutineScheduler = Effect.gen(function* () {
           const bot = yield* requireBot(input.botId)
           yield* checkOwner(actor, bot.id)
           const now = yield* Clock.currentTimeMillis
-          const name = yield* validateSpec(input.spec, now)
+          const name = yield* validateSpec(bot, input.spec, now)
           const existing = yield* checkNameFree(bot.id, name)
           if (existing.length >= ROUTINE_LIMITS.perBot) {
             return yield* new InvalidInput({ message: `A bot can have at most ${ROUTINE_LIMITS.perBot} routines.` })
@@ -630,6 +646,7 @@ export const makeRoutineScheduler = Effect.gen(function* () {
           const triggerChanged = !sameTrigger(current.trigger, input.spec.trigger)
           // An unchanged one-time trigger may lie in the past (already ran); only new triggers are checked.
           const name = yield* validateSpec(
+            bot,
             triggerChanged ? input.spec : { ...input.spec, trigger: { type: "manual" } },
             now,
           )
@@ -713,7 +730,7 @@ export const makeRoutineScheduler = Effect.gen(function* () {
       )
 
   const runNow = (routineId: RoutineId) =>
-    fire(routineId, "manual").pipe(
+    inRoutineProfile(routineId)(fire(routineId, "manual")).pipe(
       Effect.flatMap(
         Option.match({
           // Unreachable for manual runs (they fail instead of skipping); kept total.
@@ -724,7 +741,12 @@ export const makeRoutineScheduler = Effect.gen(function* () {
     )
 
   return RoutineScheduler.of({
-    list: ({ botId }) => repo.list(botId === undefined ? undefined : { botId }).pipe(Effect.orDie),
+    list: ({ botId }) =>
+      Effect.gen(function* () {
+        const profileBots = new Set((yield* bots.listIn(yield* currentProfileId).pipe(Effect.orDie)).map((b) => b.id))
+        const routines = yield* repo.list(botId === undefined ? undefined : { botId }).pipe(Effect.orDie)
+        return routines.filter((routine) => profileBots.has(routine.botId))
+      }),
     get: getRoutine,
     create,
     update,

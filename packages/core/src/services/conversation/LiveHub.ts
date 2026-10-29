@@ -11,6 +11,10 @@
  *   `synchronized`.
  * - Activities are in memory only (roster snapshot + `activity.updated`).
  * - `NodeDirectory.changes` is forwarded to the roster for the lifetime of the layer.
+ * - Every owner profile has its own roster replica. A change goes to the roster of the profile it
+ *   belongs to (its Bot's, or the one a removal names); what every profile shares (computers,
+ *   sign-ins) goes to every roster. `subscribeRoster` follows the active profile: a switch sends the
+ *   new profile's snapshot.
  */
 import type {
   BotActivity,
@@ -20,14 +24,15 @@ import type {
   KnownConversationStreamItem,
   KnownRosterChange,
   KnownRosterStreamItem,
-  NotFound,
+  OwnerProfileId,
   RequestId,
   StreamCursor,
 } from "@openbot/contracts"
-import { MAX_REPLAY_GAP, SNAPSHOT_TAIL_ENTRIES } from "@openbot/contracts"
+import { MAX_REPLAY_GAP, NotFound, SNAPSHOT_TAIL_ENTRIES } from "@openbot/contracts"
 import { Effect, Layer, Option, PubSub, Semaphore, Stream } from "effect"
 import { IdGen } from "../../ports/IdGen.ts"
 import { NodeDirectory } from "../../ports/NodeDirectory.ts"
+import { OwnerProfiles } from "../../ports/Profiles.ts"
 import {
   BotRepo,
   ConversationRepo,
@@ -49,6 +54,7 @@ import { LiveHub, SignInRequests } from "../../ports/services.ts"
 import { rosterTasks } from "./BackgroundTasks.ts"
 import { summarize, visiblePage } from "./internal/summary.ts"
 import { cardRequestId, orDie, required } from "./internal/util.ts"
+import { hasMemberIn } from "../profiles/lookup.ts"
 
 type ResetReason = "new-session" | "rollback" | "rebuild"
 
@@ -56,6 +62,7 @@ type ResetReason = "new-session" | "rollback" | "rebuild"
 type HubItem =
   | { readonly key: ReplicaKey; readonly kind: "change"; readonly cursor: StreamCursor; readonly change: ReplicaChange }
   | { readonly key: ReplicaKey; readonly kind: "reset"; readonly epoch: string; readonly reason: ResetReason }
+  | { readonly key: "profiles"; readonly kind: "switched"; readonly activeId: OwnerProfileId }
 
 /** Most recent turns included in a conversation snapshot. */
 const SNAPSHOT_TURNS = 20
@@ -82,6 +89,7 @@ export const LiveHubLive: Layer.Layer<
   | SettingsRepo
   | TaskRepo
   | NodeDirectory
+  | OwnerProfiles
   | IdGen
 > = Layer.effect(
   LiveHub,
@@ -94,6 +102,7 @@ export const LiveHubLive: Layer.Layer<
     const sections = yield* SectionRepo
     const taskRepo = yield* TaskRepo
     const directory = yield* NodeDirectory
+    const profiles = yield* OwnerProfiles
     const ids = yield* IdGen
     const signInRequests = yield* Effect.serviceOption(SignInRequests)
     const repos = yield* Effect.context<EntryRepo | RequestRepo | SettingsRepo | TurnRepo>()
@@ -103,17 +112,25 @@ export const LiveHubLive: Layer.Layer<
     const activities = new Map<BotId, BotActivity>()
     const pubsub = yield* PubSub.unbounded<HubItem>()
     yield* Effect.addFinalizer(() => PubSub.shutdown(pubsub))
+    yield* Effect.forkScoped(
+      profiles.changes.pipe(
+        Stream.map((view) => view.activeId),
+        Stream.changes,
+        Stream.runForEach((activeId) => PubSub.publish(pubsub, { key: "profiles", kind: "switched", activeId })),
+      ),
+      { startImmediately: true },
+    )
 
     // ------------------------------------------------------------------ heads (call under `lock`)
 
     const initialEpoch = (key: ReplicaKey): Effect.Effect<string> =>
-      key === rosterReplicaKey
-        ? ids.next("epc")
-        : Effect.gen(function* () {
+      key.startsWith("conversation:")
+        ? Effect.gen(function* () {
             const id = key.slice("conversation:".length) as ConversationId
             const conversation = yield* orDie(conversations.get(id))
             return Option.isSome(conversation) ? conversation.value.epoch : yield* ids.next("epc")
           })
+        : ids.next("epc")
 
     const headUnlocked = (key: ReplicaKey): Effect.Effect<StreamCursor> =>
       Effect.gen(function* () {
@@ -166,7 +183,63 @@ export const LiveHubLive: Layer.Layer<
         }),
       )
 
-    const publishRoster = (change: KnownRosterChange) => append(rosterReplicaKey, { replica: "roster", change })
+    const profileOfBot = (botId: BotId) =>
+      Effect.map(
+        orDie(bots.get(botId)),
+        Option.map((bot) => bot.ownerProfileId),
+      )
+
+    const profileOfConversation = (conversationId: ConversationId) =>
+      Effect.flatMap(orDie(conversations.members(conversationId)), (members) =>
+        members[0] === undefined ? Effect.succeed(Option.none<OwnerProfileId>()) : profileOfBot(members[0]),
+      )
+
+    const everyProfile = Effect.map(profiles.view, (view) => view.profiles.map((p) => p.id))
+
+    /** The rosters a change goes to (see the header). */
+    const rostersOf = (change: KnownRosterChange): Effect.Effect<ReadonlyArray<OwnerProfileId>> => {
+      const one = (found: Effect.Effect<Option.Option<OwnerProfileId>>) =>
+        Effect.map(found, (id) => (Option.isSome(id) ? [id.value] : []))
+      switch (change.type) {
+        case "bot.upserted":
+          return Effect.succeed([change.bot.ownerProfileId])
+        case "section.upserted":
+          return Effect.succeed([change.section.ownerProfileId])
+        case "conversation.upserted":
+          return one(profileOfConversation(change.conversation.id))
+        case "activity.updated":
+          return one(profileOfBot(change.activity.botId))
+        case "task.upserted":
+          return one(profileOfBot(change.task.botId))
+        case "notification": {
+          const { botId, conversationId } = change.notification
+          if (botId !== undefined) return one(profileOfBot(botId))
+          if (conversationId !== undefined) return one(profileOfConversation(conversationId))
+          return everyProfile
+        }
+        case "settings.updated":
+          return Effect.die(new Error("settings.updated goes to one profile: publishSettings"))
+        case "bot.removed":
+        case "conversation.removed":
+        case "section.removed":
+        case "task.removed":
+          return Effect.die(new Error(`${change.type} names its profile`))
+        case "node.upserted":
+        case "node.removed":
+        case "sign-in.requested":
+        case "sign-in.ended":
+        case "away.changed":
+          return everyProfile
+      }
+    }
+
+    const appendRoster = (profileId: OwnerProfileId, change: KnownRosterChange) =>
+      append(rosterReplicaKey(profileId), { replica: "roster", change })
+
+    const publishRoster = (change: KnownRosterChange, profileId?: OwnerProfileId) =>
+      Effect.flatMap(profileId === undefined ? rostersOf(change) : Effect.succeed([profileId]), (targets) =>
+        Effect.forEach(targets, (target) => appendRoster(target, change), { discard: true }),
+      )
 
     // ------------------------------------------------------------------ snapshots
 
@@ -201,15 +274,15 @@ export const LiveHubLive: Layer.Layer<
         return item
       })
 
-    const rosterSnapshot = (cursor: StreamCursor) =>
+    const rosterSnapshot = (profileId: OwnerProfileId) => (cursor: StreamCursor) =>
       Effect.gen(function* () {
-        const allBots = yield* orDie(bots.list)
+        const allBots = yield* orDie(bots.listIn(profileId))
         const botIds = new Set(allBots.map((b) => b.id))
-        const allConversations = yield* orDie(conversations.list())
+        const allConversations = (yield* orDie(conversations.list())).filter((c) => hasMemberIn(c, botIds))
         const summaries = yield* Effect.forEach(allConversations, (c) => Effect.provide(summarize(c), repos))
         const nodes = yield* directory.list
-        const allSections = yield* orDie(sections.list)
-        const settings = yield* Effect.provide(orDie(readSettings), repos)
+        const allSections = yield* orDie(sections.list(profileId))
+        const settings = yield* Effect.provide(orDie(readSettings(profileId)), repos)
         const tasks = (yield* orDie(rosterTasks(taskRepo))).filter((t) => botIds.has(t.botId))
         const signIns = Option.isSome(signInRequests) ? signInRequests.value.list(Date.now()) : []
         const item: KnownRosterStreamItem = {
@@ -251,6 +324,9 @@ export const LiveHubLive: Layer.Layer<
       readonly toChange: (record: { readonly cursor: StreamCursor; readonly change: ReplicaChange }) => Item | undefined
       readonly synchronized: (cursor: StreamCursor) => Item
       readonly onReset: (epoch: string, reason: ResetReason) => ReadonlyArray<Item>
+      /** Ends the live tail at the first bus item it holds for, then goes on with `then`. */
+      readonly closeWhen?:
+        { readonly item: (item: HubItem) => boolean; readonly then: Stream.Stream<Item, E> } | undefined
     }): Stream.Stream<Item, E> =>
       Stream.unwrap(
         Effect.gen(function* () {
@@ -274,7 +350,7 @@ export const LiveHubLive: Layer.Layer<
           initial.push(options.synchronized(last))
 
           const onItem = (item: HubItem): Effect.Effect<ReadonlyArray<Item>, E> => {
-            if (item.key !== options.key) return Effect.succeed([])
+            if (item.kind === "switched" || item.key !== options.key) return Effect.succeed([])
             if (item.kind === "change") {
               if (item.cursor.epoch !== last.epoch || item.cursor.sequence <= last.sequence) return Effect.succeed([])
               last = item.cursor
@@ -288,11 +364,50 @@ export const LiveHubLive: Layer.Layer<
               return [...options.onReset(item.epoch, item.reason), snapshot, options.synchronized(fresh)]
             })
           }
+          const close = options.closeWhen
           const live = Stream.fromSubscription(subscription).pipe(
+            Stream.takeWhile((item) => close === undefined || !close.item(item)),
             Stream.flatMap((item) => Stream.fromIterableEffect(onItem(item))),
           )
-          return Stream.concat(Stream.fromIterable(initial), live)
+          return Stream.concat(
+            Stream.fromIterable(initial),
+            close === undefined ? live : Stream.concat(live, close.then),
+          )
         }),
+      )
+
+    const switchedFrom =
+      (profileId: OwnerProfileId) =>
+      (item: HubItem): boolean =>
+        item.kind === "switched" && item.activeId !== profileId
+
+    const rosterOf = (
+      profileId: OwnerProfileId,
+      after: StreamCursor | undefined,
+      closeWhen?: { readonly item: (item: HubItem) => boolean; readonly then: Stream.Stream<KnownRosterStreamItem> },
+    ) =>
+      subscribe<KnownRosterStreamItem, never>({
+        key: rosterReplicaKey(profileId),
+        after,
+        preflight: Effect.void,
+        snapshot: rosterSnapshot(profileId),
+        toChange: ({ change, cursor }) =>
+          change.replica === "roster" ? { kind: "change", cursor, change: change.change } : undefined,
+        synchronized: (cursor) => ({ kind: "synchronized", cursor }),
+        // The roster stream has no `reset` item: a fresh snapshot replaces the client state.
+        onReset: () => [],
+        closeWhen,
+      })
+
+    /** The active profile's roster until the owner switches, then the next one's (from its snapshot). */
+    const followActive = (after: StreamCursor | undefined): Stream.Stream<KnownRosterStreamItem> =>
+      Stream.unwrap(
+        Effect.map(profiles.active, (profileId) =>
+          rosterOf(profileId, after, {
+            item: switchedFrom(profileId),
+            then: Stream.suspend(() => followActive(undefined)),
+          }),
+        ),
       )
 
     return LiveHub.of({
@@ -301,7 +416,9 @@ export const LiveHubLive: Layer.Layer<
 
       publishRoster,
 
-      subscribeConversation: ({ after, conversationId, tailLimit }) =>
+      publishSettings: (profileId, settings) => appendRoster(profileId, { type: "settings.updated", settings }),
+
+      subscribeConversation: ({ after, conversationId, tailLimit, closeOnSwitchFrom }) =>
         subscribe<KnownConversationStreamItem, NotFound>({
           key: conversationReplicaKey(conversationId),
           after,
@@ -311,25 +428,30 @@ export const LiveHubLive: Layer.Layer<
             change.replica === "conversation" ? { kind: "change", cursor, change: change.change } : undefined,
           synchronized: (cursor) => ({ kind: "synchronized", cursor }),
           onReset: (epoch, reason) => [{ kind: "reset", epoch, reason }],
+          closeWhen:
+            closeOnSwitchFrom === undefined
+              ? undefined
+              : {
+                  item: switchedFrom(closeOnSwitchFrom),
+                  then: Stream.fail(new NotFound({ entity: "conversation", id: conversationId })),
+                },
         }),
 
-      subscribeRoster: ({ after }) =>
-        subscribe<KnownRosterStreamItem, never>({
-          key: rosterReplicaKey,
-          after,
-          preflight: Effect.void,
-          snapshot: rosterSnapshot,
-          toChange: ({ change, cursor }) =>
-            change.replica === "roster" ? { kind: "change", cursor, change: change.change } : undefined,
-          synchronized: (cursor) => ({ kind: "synchronized", cursor }),
-          // The roster stream has no `reset` item: a fresh snapshot replaces the client state.
-          onReset: () => [],
-        }),
+      subscribeRoster: ({ after, profileId }) =>
+        profileId === undefined ? followActive(after) : rosterOf(profileId, after),
 
       resetConversation: (conversationId, reason) =>
         lock.withPermits(1)(resetUnlocked(conversationReplicaKey(conversationId), reason)),
 
       activities: Effect.sync(() => [...activities.values()]),
+
+      dropRoster: (profileId) =>
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            heads.delete(rosterReplicaKey(profileId))
+            yield* orDie(log.drop(rosterReplicaKey(profileId)))
+          }),
+        ),
 
       setActivity: (activity) =>
         Effect.gen(function* () {

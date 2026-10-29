@@ -1,8 +1,9 @@
 // Settings › About › Updates: the version that runs, the newest release and what changed since, the
 // Update button (the brain installs it and restarts into it), going back to the release before, and
 // "Install updates automatically" (Settings `autoUpdate`). The brain's side is apps/server/src/updates.ts.
-import { updatesStatusAtom } from "@openbot/client"
-import type { UpdateStatus } from "@openbot/contracts"
+import { useAtomValue } from "@effect/atom-react"
+import { activeProfileIdAtom, updatesStatusAtom } from "@openbot/client"
+import { MAIN_PROFILE_ID, type UpdateStatus } from "@openbot/contracts"
 import { PillButton, Spinner, Switch } from "@openbot/ui"
 import { RefreshCw } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
@@ -30,6 +31,8 @@ export function UpdatesCard(): ReactNode {
   const install = useCommand("updates.install", "about")
   const rollback = useCommand("updates.rollback", "about")
   const { settings, patch, error: settingsError } = useSettingsEditor()
+  // the brain reads autoUpdate from the main profile only
+  const inMain = useAtomValue(activeProfileIdAtom) === MAIN_PROFILE_ID
   const [allCommits, setAllCommits] = useState(false)
   const value = status.value
   const installing = value?.state === "installing"
@@ -143,7 +146,7 @@ export function UpdatesCard(): ReactNode {
       {(value.problem !== undefined || error !== undefined) && !installing && (
         <ErrorLine className="px-4 pb-3">{error ?? value.problem}</ErrorLine>
       )}
-      {value.canInstall && (
+      {value.canInstall && inMain && (
         <>
           <RowDivider />
           <SettingsRow

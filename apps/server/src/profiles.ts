@@ -31,7 +31,16 @@ import {
   normalizeProfileId,
   NotFound,
 } from "@openbot/contracts"
-import { BotRepo, DataDir, type HarnessDriver, HarnessRegistry, IdGen, SettingsRepo } from "@openbot/core"
+import {
+  BotRepo,
+  type CurrentProfile,
+  currentProfileId,
+  DataDir,
+  type HarnessDriver,
+  HarnessRegistry,
+  IdGen,
+  SettingsRepo,
+} from "@openbot/core"
 import {
   claudeDriver,
   defaultClaudeConfigDir,
@@ -164,7 +173,7 @@ export interface HarnessProfilesShape {
     readonly label: string
     readonly configDir: string
   }) => Effect.Effect<HarnessProfile, InvalidInput | Conflict>
-  readonly remove: (profileId: string) => Effect.Effect<void, NotFound | Conflict | Forbidden>
+  readonly remove: (profileId: string) => Effect.Effect<void, NotFound | Conflict | Forbidden, CurrentProfile>
   /** Config dirs of `kind` that look like logins and are neither the default nor added yet. */
   readonly discover: (kind: string) => Effect.Effect<ReadonlyArray<HarnessProfileCandidate>>
   /** One status per registered (kind, profile), with the profile's id, label and config dir. */
@@ -334,11 +343,15 @@ export const HarnessProfilesLayer = (
               (b) => b.harness.kind === profile.kind && b.harness.profileId === profileId,
             )
             if (users.length > 0) {
-              const names = users.map((b) => b.name)
-              const who =
-                names.length === 1 ? `${names[0]} uses` : `${names.slice(0, -1).join(", ")} and ${names.at(-1)} use`
+              const current = yield* currentProfileId
+              const names = users.filter((b) => b.ownerProfileId === current).map((b) => b.name)
+              const elsewhere = users.length - names.length
+              if (elsewhere > 0)
+                names.push(elsewhere === 1 ? "1 Bot in another profile" : `${elsewhere} Bots in other profiles`)
+              const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+              const one = users.length === 1
               return yield* new Conflict({
-                reason: `${who} this account. Move ${users.length === 1 ? "it" : "them"} to another account first.`,
+                reason: `${who} ${one ? "uses" : "use"} this account. Move ${one ? "it" : "them"} to another account first.`,
               })
             }
             yield* deactivate(profileId)

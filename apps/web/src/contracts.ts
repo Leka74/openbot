@@ -39,7 +39,8 @@ import type { BotId, ConversationId } from "@openbot/contracts"
 export type DetailsTab = "details" | "tasks" | "library" | "computer"
 
 /** Settings dialog pages. W2.3 may add pages; unknown values fall back to "general". */
-export type SettingsPage = "general" | "harnesses" | "computers" | "permissions" | "skills" | "usage" | "updates"
+export type SettingsPage =
+  "general" | "profiles" | "harnesses" | "computers" | "permissions" | "skills" | "usage" | "updates"
 
 export interface DetailsPaneProps {
   /** The bot whose details to show (direct chats and bot-scoped views). */

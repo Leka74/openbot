@@ -7,7 +7,7 @@
  *   `HarnessRegistry` + `InternalAddress` + all port fakes (NodeDirectory with the local node,
  *   NodeFiles, PlacementService, McpBindingIssuer, ComputerPort, Notifier).
  */
-import type { NodeSummary } from "@openbot/contracts"
+import { MAIN_PROFILE_ID, type NodeSummary } from "@openbot/contracts"
 import { Effect, Layer } from "effect"
 import type { Duration, Scope } from "effect"
 import { TestClock } from "effect/testing"
@@ -22,6 +22,8 @@ import type { NodeFiles } from "../ports/NodeFiles.ts"
 import type { Notifier } from "../ports/Notifier.ts"
 import { BootRecovery, type RepositoryPorts, runBootRecovery } from "../ports/Persistence.ts"
 import type { PlacementService } from "../ports/Placement.ts"
+import { CurrentProfile, type OwnerProfiles } from "../ports/Profiles.ts"
+import { OwnerProfilesLive } from "../services/profiles/OwnerProfiles.ts"
 import type { ProcessRecord } from "../ports/ProcessLedger.ts"
 import {
   ComputerPortFake,
@@ -36,8 +38,11 @@ import {
   MemoryApprovalRuleRepo,
   MemoryBotRepo,
   MemoryConversationRepo,
+  MemoryHeldNotificationRepo,
   MemoryMcpTokenRepo,
   MemoryNodeRepo,
+  MemoryOwnerProfileRepo,
+  MemoryProfileStorage,
   MemoryProcessLedger,
   MemoryReplicaLog,
   MemoryRequestRepo,
@@ -48,7 +53,13 @@ import {
   MemoryTurnRepo,
   MemoryUsageRepo,
 } from "./memoryRepos.ts"
-import { MemoryAttachmentStore, MemoryCarryoverStore, MemoryMemoryStore, MemorySkillStore } from "./memoryStores.ts"
+import {
+  MemoryAttachmentStore,
+  MemoryCarryoverStore,
+  MemoryMemoryStore,
+  MemoryProfileDirs,
+  MemorySkillStore,
+} from "./memoryStores.ts"
 
 /** Every repository and store port (what `PersistenceLive` provides). Defined in ports. */
 export type { RepositoryPorts }
@@ -59,13 +70,17 @@ export const TEST_INTERNAL_URL = "http://127.0.0.1:0"
 
 /** All repositories and stores in memory. Needs `IdGen` (attachment ids). */
 export const MemoryPersistence: Layer.Layer<RepositoryPorts, never, IdGen> = Layer.mergeAll(
-  MemoryBotRepo,
   MemorySectionRepo,
-  // entries, tasks and search share one index; it reads membership and voice turns at query time
-  MemorySearchableTranscript.pipe(Layer.provideMerge(Layer.merge(MemoryConversationRepo, MemoryTurnRepo))),
+  // entries, tasks and search share one index; it reads membership, profiles and voice turns at query time
+  MemorySearchableTranscript.pipe(
+    Layer.provideMerge(Layer.mergeAll(MemoryConversationRepo, MemoryTurnRepo, MemoryBotRepo)),
+  ),
   MemoryRequestRepo,
   MemoryRoutineRepo,
   MemoryNodeRepo,
+  MemoryOwnerProfileRepo,
+  MemoryProfileStorage,
+  MemoryHeldNotificationRepo,
   MemoryApprovalRuleRepo,
   MemorySettingsRepo(),
   MemoryUsageRepo,
@@ -73,9 +88,10 @@ export const MemoryPersistence: Layer.Layer<RepositoryPorts, never, IdGen> = Lay
   MemoryMcpTokenRepo,
   MemoryProcessLedger,
   MemoryMemoryStore,
-  MemorySkillStore(`${TEST_DATA_ROOT}/skills-lib`),
-  MemoryAttachmentStore(`${TEST_DATA_ROOT}/attachments`),
+  MemorySkillStore(TEST_DATA_ROOT),
+  MemoryAttachmentStore(TEST_DATA_ROOT),
   MemoryCarryoverStore,
+  MemoryProfileDirs,
 )
 
 /**
@@ -98,6 +114,8 @@ export const MemoryBootRecovery = (options?: {
   )
 
 export type TestPortServices =
+  | CurrentProfile
+  | OwnerProfiles
   | RepositoryPorts
   | BootRecovery
   | InternalAddress
@@ -134,9 +152,15 @@ export const TestPorts = (options?: {
     McpBindingIssuerFake.layer(),
     ComputerPortFake.layer,
     InternalAddress.layer(TEST_INTERNAL_URL),
+    // the owner works in the main profile unless a test says otherwise (`inProfile`)
+    Layer.succeed(CurrentProfile, { id: MAIN_PROFILE_ID }),
   )
   const persistence = Layer.provideMerge(MemoryBootRecovery(), MemoryPersistence)
-  const dependent = Layer.mergeAll(persistence, PlacementServiceFake.layer, NotifierFake.layer)
+  const dependent = Layer.mergeAll(
+    Layer.provideMerge(OwnerProfilesLive, persistence),
+    PlacementServiceFake.layer,
+    NotifierFake.layer,
+  )
   return dependent.pipe(Layer.provideMerge(base))
 }
 

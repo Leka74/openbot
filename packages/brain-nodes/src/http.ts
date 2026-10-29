@@ -89,10 +89,12 @@ const numberParam = (value: string | null): number | undefined => {
 
 /**
  * `/ws/computer/:botId` and `/ws/terminal/:botId` (public listener). `authorize` runs before any
- * upgrade; brain-nodes does not know about web sessions.
+ * upgrade; brain-nodes does not know about web sessions. An allowed viewer closes once
+ * `closeWhen(botId)` completes.
  */
 export const ViewerRoutes = <R>(
   authorize: ViewerAuthorizer<R>,
+  closeWhen?: (botId: string) => Effect.Effect<void, never, R>,
 ): Layer.Layer<never, never, HttpRouter.HttpRouter | ComputerService | R> =>
   routes(
     Effect.fnUntraced(function* (router) {
@@ -103,6 +105,7 @@ export const ViewerRoutes = <R>(
         handler: (
           request: HttpServerRequest.HttpServerRequest,
           botId: string,
+          until: Effect.Effect<void> | undefined,
         ) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, HttpServerRequest.HttpServerRequest>,
       ) =>
         Effect.gen(function* () {
@@ -111,18 +114,20 @@ export const ViewerRoutes = <R>(
           const botId = params["botId"] ?? ""
           const refused = yield* Effect.provide(authorize({ request, botId, surface: surface(request) }), context)
           if (refused !== undefined) return refused
-          return yield* handler(request, botId)
+          const until = closeWhen === undefined ? undefined : Effect.provide(closeWhen(botId), context)
+          return yield* handler(request, botId, until)
         })
       yield* router.add(
         "GET",
         "/ws/computer/:botId",
         guard(
           (request) => (queryOf(request).get("mode") === "control" ? "computer-control" : "computer-view"),
-          (request, botId) =>
+          (request, botId, until) =>
             computer.viewer({
               botId,
               mode: queryOf(request).get("mode") === "control" ? "control" : "view",
               passive: queryOf(request).get("passive") === "1",
+              closeWhen: until,
             }),
         ),
       )
@@ -131,9 +136,14 @@ export const ViewerRoutes = <R>(
         "/ws/terminal/:botId",
         guard(
           () => "terminal",
-          (request, botId) => {
+          (request, botId, until) => {
             const q = queryOf(request)
-            return computer.terminal({ botId, cols: numberParam(q.get("cols")), rows: numberParam(q.get("rows")) })
+            return computer.terminal({
+              botId,
+              cols: numberParam(q.get("cols")),
+              rows: numberParam(q.get("rows")),
+              closeWhen: until,
+            })
           },
         ),
       )

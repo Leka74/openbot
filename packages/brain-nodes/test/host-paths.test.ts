@@ -1,10 +1,18 @@
 // Project folders on the local computer: HOME / git repo roots (HostPathsLive) and the local node's
-// extra path-policy roots kept current from the roster (projectFolderRoots).
+// extra path-policy roots kept current from every profile's roster (projectFolderRoots).
 import { afterAll, describe, expect, test } from "bun:test"
-import type { BotId, KnownRosterStreamItem, NodeId } from "@openbot/contracts"
-import { DEFAULT_SETTINGS } from "@openbot/contracts"
-import { HostPaths, LiveHub } from "@openbot/core"
-import { makeBot } from "@openbot/core/testing"
+import type {
+  Bot,
+  BotId,
+  KnownRosterStreamItem,
+  NodeId,
+  OwnerProfile,
+  OwnerProfileId,
+  OwnerProfilesView,
+} from "@openbot/contracts"
+import { DEFAULT_SETTINGS, MAIN_PROFILE_ID } from "@openbot/contracts"
+import { HostPaths, LiveHub, OwnerProfiles } from "@openbot/core"
+import { makeBot, OTHER_PROFILE } from "@openbot/core/testing"
 import { Effect, Layer, Queue, Stream } from "effect"
 import { mkdirSync, writeFileSync } from "node:fs"
 import * as path from "node:path"
@@ -13,6 +21,8 @@ import { tempDir } from "./helpers.ts"
 
 const t = tempDir()
 afterAll(t.cleanup)
+const cursor = { epoch: "r", sequence: 0 }
+const LATER_PROFILE = "prf_later" as OwnerProfileId
 
 describe("HostPathsLive", () => {
   const repo = path.join(t.path, "projects", "snip")
@@ -57,48 +67,76 @@ describe("HostPathsLive", () => {
 describe("projectFolderRoots (the local node's extra roots)", () => {
   const ada = makeBot({ id: "bot_ada" as BotId, projectFolders: ["/srv/snip"] })
   const bo = makeBot({ id: "bot_bo" as BotId })
+  const cy = makeBot({ id: "bot_cy" as BotId, ownerProfileId: OTHER_PROFILE, projectFolders: ["/srv/cy"] })
+  const dee = makeBot({ id: "bot_dee" as BotId, ownerProfileId: LATER_PROFILE })
+  const profile = (id: OwnerProfileId): OwnerProfile => ({ id, name: id, createdAt: 0 })
+  const snapshot = (bots: ReadonlyArray<Bot>, sharedProjectFolders: ReadonlyArray<string>): KnownRosterStreamItem => ({
+    kind: "snapshot",
+    cursor,
+    bots,
+    conversations: [],
+    activities: [],
+    nodes: [],
+    sections: [],
+    settings: { ...DEFAULT_SETTINGS, sharedProjectFolders },
+  })
 
   test("none without a LiveHub", async () => {
     const roots = await Effect.runPromise(Effect.scoped(projectFolderRoots))
     expect(roots).toBeUndefined()
   })
 
-  test("shared ∪ per-bot from the roster snapshot, then live changes", async () => {
+  test("each bot gets its own profile's shared folders ∪ its own, kept current from every roster", async () => {
     const out = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const items = yield* Queue.unbounded<KnownRosterStreamItem>()
-          const cursor = { epoch: "r", sequence: 0 }
-          yield* Queue.offer(items, {
-            kind: "snapshot",
-            cursor,
-            bots: [ada, bo],
-            conversations: [],
-            activities: [],
-            nodes: [],
-            sections: [],
-            settings: { ...DEFAULT_SETTINGS, sharedProjectFolders: ["/srv/shared"] },
-          })
-          const hub = Layer.mock(LiveHub, { subscribeRoster: () => Stream.fromQueue(items) })
-          const roots = (yield* projectFolderRoots.pipe(Effect.provide(hub)))!
-          const initial = { ada: roots(ada.id), bo: roots(bo.id) }
-          yield* Queue.offer(items, {
+          const rosters = new Map<OwnerProfileId, Queue.Queue<KnownRosterStreamItem>>()
+          for (const id of [MAIN_PROFILE_ID, OTHER_PROFILE, LATER_PROFILE])
+            rosters.set(id, yield* Queue.unbounded<KnownRosterStreamItem>())
+          const roster = (id: OwnerProfileId) => rosters.get(id)!
+          const views = yield* Queue.unbounded<OwnerProfilesView>()
+          const first: OwnerProfilesView = {
+            profiles: [profile(MAIN_PROFILE_ID), profile(OTHER_PROFILE)],
+            activeId: MAIN_PROFILE_ID,
+          }
+          yield* Queue.offer(views, first)
+          yield* Queue.offer(roster(MAIN_PROFILE_ID), snapshot([ada, bo], ["/srv/shared"]))
+          yield* Queue.offer(roster(OTHER_PROFILE), snapshot([cy], ["/srv/other-shared"]))
+          const layer = Layer.mergeAll(
+            Layer.mock(LiveHub, { subscribeRoster: ({ profileId }) => Stream.fromQueue(roster(profileId!)) }),
+            Layer.mock(OwnerProfiles, { view: Effect.succeed(first), changes: Stream.fromQueue(views) }),
+          )
+          const roots = (yield* projectFolderRoots.pipe(Effect.provide(layer)))!
+          const initial = { ada: roots(ada.id), bo: roots(bo.id), cy: roots(cy.id) }
+          yield* Queue.offer(roster(MAIN_PROFILE_ID), {
             kind: "change",
             cursor,
             change: { type: "bot.upserted", bot: { ...bo, projectFolders: ["/srv/bo"] } },
           })
-          yield* Queue.offer(items, { kind: "change", cursor, change: { type: "bot.removed", botId: ada.id } })
-          yield* Queue.offer(items, {
+          yield* Queue.offer(roster(MAIN_PROFILE_ID), {
+            kind: "change",
+            cursor,
+            change: { type: "bot.removed", botId: ada.id },
+          })
+          yield* Queue.offer(roster(MAIN_PROFILE_ID), {
             kind: "change",
             cursor,
             change: { type: "settings.updated", settings: DEFAULT_SETTINGS },
           })
-          for (let i = 0; i < 100 && roots(bo.id).join() !== "/srv/bo"; i++) yield* Effect.yieldNow
-          return { initial, later: { ada: roots(ada.id), bo: roots(bo.id) } }
+          yield* Queue.offer(views, { ...first, profiles: [...first.profiles, profile(LATER_PROFILE)] })
+          yield* Queue.offer(roster(LATER_PROFILE), snapshot([dee], ["/srv/later"]))
+          for (let i = 0; i < 100 && (roots(bo.id).join() !== "/srv/bo" || roots(dee.id).length === 0); i++) {
+            yield* Effect.yieldNow
+          }
+          return { initial, later: { ada: roots(ada.id), bo: roots(bo.id), cy: roots(cy.id), dee: roots(dee.id) } }
         }),
       ),
     )
-    expect(out.initial).toEqual({ ada: ["/srv/shared", "/srv/snip"], bo: ["/srv/shared"] })
-    expect(out.later).toEqual({ ada: [], bo: ["/srv/bo"] })
+    expect(out.initial).toEqual({
+      ada: ["/srv/shared", "/srv/snip"],
+      bo: ["/srv/shared"],
+      cy: ["/srv/other-shared", "/srv/cy"],
+    })
+    expect(out.later).toEqual({ ada: [], bo: ["/srv/bo"], cy: ["/srv/other-shared", "/srv/cy"], dee: ["/srv/later"] })
   })
 })

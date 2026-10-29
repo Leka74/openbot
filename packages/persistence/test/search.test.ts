@@ -4,8 +4,9 @@
  * when the text version changes, and any query text never reaching SQLite as FTS syntax.
  */
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
-import { KnownTranscriptEntry, Task } from "@openbot/contracts"
+import { KnownTranscriptEntry, MAIN_PROFILE_ID, Task } from "@openbot/contracts"
 import {
+  BotRepo,
   ConversationRepo,
   EntryRepo,
   parseSearchQuery,
@@ -18,6 +19,7 @@ import {
   botId,
   conversationId,
   entryId,
+  makeBot,
   makeDirectConversation,
   makeEventEntry,
   makeMessageEntry,
@@ -129,6 +131,7 @@ describe("0004_message_search", () => {
     const out = await run(
       Effect.gen(function* () {
         const search = yield* SearchRepo
+        yield* (yield* BotRepo).upsert(makeBot({ id: A }))
         yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
         const before = { indexing: yield* search.indexing, docs: yield* count("search_docs") }
         const first = yield* search.ensure
@@ -142,7 +145,7 @@ describe("0004_message_search", () => {
           n: number
         }>`SELECT count(*) AS n FROM search_steps_fts WHERE search_steps_fts MATCH 'migration'`
         const page = yield* search.query({
-          scope: { kind: "owner" },
+          scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
           match: parseSearchQuery("migration ")!,
           kinds: ["message", "tool-call", "task"],
           sort: "oldest",
@@ -216,6 +219,8 @@ describe("0004_message_search", () => {
         const sql = yield* SqlClient.SqlClient
         const search = yield* SearchRepo
         const repo = yield* EntryRepo
+        yield* (yield* BotRepo).upsert(makeBot({ id: A }))
+        yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
         yield* search.ensure
         const id = (i: number) => entryId(`ent_${String(i).padStart(5, "0")}`)
         for (let i = 0; i < total; i++) {
@@ -253,7 +258,7 @@ describe("0004_message_search", () => {
         const report = yield* Fiber.join(rebuild)
         yield* integrity
         const egrets = yield* search.query({
-          scope: { kind: "owner" },
+          scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
           match: parseSearchQuery("egret")!,
           kinds: ["message"],
           sort: "oldest",
@@ -286,6 +291,7 @@ describe("0004_message_search", () => {
         const search = yield* SearchRepo
         const repo = yield* EntryRepo
         const tasks = yield* TaskRepo
+        yield* (yield* BotRepo).upsert(makeBot({ id: A }))
         yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
         yield* search.ensure
         const first = makeMessageEntry({
@@ -334,7 +340,7 @@ describe("0004_message_search", () => {
         const hits = (words: string) =>
           search
             .query({
-              scope: { kind: "owner" },
+              scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
               match: parseSearchQuery(words)!,
               kinds: ["message", "task"],
               sort: "oldest",
@@ -367,6 +373,7 @@ describe("0004_message_search", () => {
       Effect.gen(function* () {
         const search = yield* SearchRepo
         const repo = yield* EntryRepo
+        yield* (yield* BotRepo).upsert(makeBot({ id: A }))
         yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
         yield* search.ensure
         for (let i = 1; i <= total; i++) {
@@ -383,7 +390,7 @@ describe("0004_message_search", () => {
         let after: SearchCursor | undefined
         for (let pages = 0; pages < 100; pages++) {
           const page = yield* search.query({
-            scope: { kind: "owner" },
+            scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
             match: parseSearchQuery("heron")!,
             kinds: ["message"],
             sort: "relevance",
@@ -500,6 +507,7 @@ describe("0004_message_search", () => {
       Effect.gen(function* () {
         const repo = yield* EntryRepo
         const search = yield* SearchRepo
+        yield* (yield* BotRepo).upsert(makeBot({ id: A }))
         yield* (yield* ConversationRepo).upsert(makeDirectConversation({ id: dm, botId: A }))
         yield* repo.upsert(
           makeMessageEntry({
@@ -523,9 +531,15 @@ describe("0004_message_search", () => {
             })
             out.push(page.hits.length)
           }
-          yield* search.positions({ scope: { kind: "owner" }, conversationId: dm, match, kinds: ["message"], limit: 5 })
           yield* search.positions({
-            scope: { kind: "owner" },
+            scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
+            conversationId: dm,
+            match,
+            kinds: ["message"],
+            limit: 5,
+          })
+          yield* search.positions({
+            scope: { kind: "owner", profileId: MAIN_PROFILE_ID },
             conversationId: dm,
             substring: input,
             kinds: ["message"],

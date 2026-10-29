@@ -354,6 +354,9 @@ describe("a signed-out harness", () => {
     expect(out.failure!.message).toContain("(Failed to authenticate: OAuth session expired)")
     expect(out.errors).toHaveLength(1)
     expect(out.errors[0]!.title).toContain("is signed out")
+    // the account is every profile's: the alert names no Bot, so an inactive profile can't hold it
+    expect(out.errors[0]!.botId).toBeUndefined()
+    expect(out.errors[0]!.conversationId).toBeUndefined()
     expect(out.inputs.at(-1)).not.toContain("[Note:")
   })
 })

@@ -72,6 +72,7 @@ import {
 import { routeOwnerMessage } from "./GroupRouter.ts"
 import { ConversationStore, ConversationStoreLive } from "./internal/ConversationStore.ts"
 import { compact, conversationBotIds, orDie, required } from "./internal/util.ts"
+import { OwnerProfiles } from "../../ports/Profiles.ts"
 
 /** Attachments per message (Grok desktop: 6). */
 export const MAX_MESSAGE_ATTACHMENTS = 6
@@ -101,6 +102,7 @@ const makeOrchestrator = (options: RunnerOptions) =>
     const issuer = yield* McpBindingIssuer
     const ids = yield* IdGen
     const bots = yield* BotRepo
+    const ownerProfiles = yield* OwnerProfiles
     const conversations = yield* ConversationRepo
     const entries = yield* EntryRepo
     const turns = yield* TurnRepo
@@ -191,12 +193,19 @@ const makeOrchestrator = (options: RunnerOptions) =>
       signedOut: new Map<string, number>(),
     }
 
+    /** A Bot that still is, in a profile that is not being deleted. */
+    const getBot = (botId: BotId) =>
+      Effect.flatMap(required(bots.get(botId), "bot", botId), (bot) =>
+        Effect.as(ownerProfiles.usable(bot.ownerProfileId), bot),
+      )
+
     /** The bot's one runner (created on demand). */
     const runnerFor = (botId: BotId) =>
       runnerLock.withPermits(1)(
         Effect.gen(function* () {
           const existing = runners.get(botId)
           if (existing !== undefined) return existing
+          yield* getBot(botId)
           const runner = yield* makeRunner(runnerDeps, botId)
           runners.set(botId, runner)
           return runner
@@ -206,8 +215,6 @@ const makeOrchestrator = (options: RunnerOptions) =>
     const existingRunner = (botId: BotId) => Effect.sync(() => Option.fromNullishOr(runners.get(botId)))
 
     // ------------------------------------------------------------------ helpers
-
-    const getBot = (botId: BotId) => required(bots.get(botId), "bot", botId)
 
     const requireMember = (conversation: Conversation, botId: BotId) =>
       conversationBotIds(conversation).includes(botId)
@@ -863,6 +870,7 @@ export const makeOrchestratorLayer = (
   | CarryoverStore
   | SkillStore
   | NodeFiles
+  | OwnerProfiles
 > =>
   Layer.effect(Orchestrator, makeOrchestrator({ ...DEFAULT_RUNNER_OPTIONS, ...options })).pipe(
     Layer.provide(ConversationStoreLive),

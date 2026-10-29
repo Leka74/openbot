@@ -1,5 +1,13 @@
-import type { BotId, ConversationId, MemoryFactId, Millis, SkillName, TurnId } from "@openbot/contracts"
-import { AttachmentStore, CarryoverStore, MemoryStore, SkillStore } from "@openbot/core"
+import {
+  type BotId,
+  type ConversationId,
+  MAIN_PROFILE_ID,
+  type MemoryFactId,
+  type Millis,
+  type SkillName,
+  type TurnId,
+} from "@openbot/contracts"
+import { AttachmentStore, CarryoverStore, inProfile, MemoryStore, SkillStore } from "@openbot/core"
 import { afterAll, describe, expect, test } from "bun:test"
 import { Effect, Exit, Option, Schema, Stream } from "effect"
 import { existsSync } from "node:fs"
@@ -108,12 +116,12 @@ describe("SkillStore files (Claude plugin layout)", () => {
       Effect.gen(function* () {
         const store = yield* SkillStore
         yield* store.put(skill)
-        return [yield* store.list, store.root] as const
+        return [yield* store.list, yield* store.dir(skill.name)] as const
       }),
       testPersistence(dir),
     )
     expect(listed).toEqual([skill])
-    expect(root).toBe(join(dir, "skills-lib"))
+    expect(root).toBe(join(dir, "skills-lib", "skills", "triage"))
     expect(JSON.parse(await readFile(join(dir, "skills-lib", ".claude-plugin", "plugin.json"), "utf8"))).toEqual(
       pluginManifest,
     )
@@ -265,7 +273,7 @@ describe("SkillStore imports (skills.sh)", () => {
           parsed,
           installed,
           edited: Option.getOrThrow(yield* store.get(skill.name)),
-          dir: store.dir(skill.name),
+          dir: yield* store.dir(skill.name),
         }
       }),
       testPersistence(dir),
@@ -360,7 +368,7 @@ describe("AttachmentStore files", () => {
             mime: "application/octet-stream",
             chunks: Stream.concat(Stream.fromIterable(chunks), Stream.fail(new Broken())),
           }),
-        ).pipe(Effect.provide(testPersistence(dir))),
+        ).pipe(inProfile(MAIN_PROFILE_ID), Effect.provide(testPersistence(dir))),
       ),
     )
     expect(Exit.isFailure(failed)).toBe(true)

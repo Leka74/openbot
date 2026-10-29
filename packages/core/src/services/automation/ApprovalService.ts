@@ -86,6 +86,9 @@ import { ComputerPort } from "../../ports/Computer.ts"
 import { evaluateAutonomy, isInsideWorkspace, offerableFolder, outsideWorkDir } from "./autonomy.ts"
 import { describeRule, evaluateRules, type PolicySubject, suggestRule, surfaceOf } from "./policy.ts"
 import { oneLine, truncate } from "./text.ts"
+import { required } from "../conversation/internal/util.ts"
+import { inBotProfile } from "../profiles/lookup.ts"
+import { currentProfileId, inProfile } from "../../ports/Profiles.ts"
 
 /** Deny message for rule-blocked requests (§4.3.4). */
 export const BLOCKED_BY_RULES = "Blocked by your rules"
@@ -271,7 +274,7 @@ export const makeApprovalService = Effect.gen(function* () {
   const createRequest = (input: NewRequest) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
-      const { approvalExpiryMinutes } = yield* settings.get
+      const { approvalExpiryMinutes } = yield* inProfile(input.bot.ownerProfileId)(settings.get)
       const expiryMinutes = input.expiryMinutes ?? approvalExpiryMinutes
       const conversationId = input.originConversationId
       const requestId = yield* ids.requestId
@@ -489,7 +492,7 @@ export const makeApprovalService = Effect.gen(function* () {
     Effect.gen(function* () {
       const workspace = ctx.workspace
       if (workspace === undefined) return undefined
-      const { sharedProjectFolders } = yield* settings.get
+      const { sharedProjectFolders } = yield* inProfile(ctx.bot.ownerProfileId)(settings.get)
       const home = workspace.home ?? hostPaths?.home(workspace.nodeId)
       return {
         ...workspace,
@@ -528,7 +531,7 @@ export const makeApprovalService = Effect.gen(function* () {
   ): Effect.Effect<Outcome, NotFound> =>
     Effect.gen(function* () {
       const subject = policySubject(request)
-      const all = yield* rules.list({ botId: ctx.bot.id }).pipe(Effect.orDie)
+      const all = yield* rules.list({ profileId: ctx.bot.ownerProfileId, botId: ctx.bot.id }).pipe(Effect.orDie)
       const decision = evaluateRules(all, ctx.bot.id, subject)
       if (decision.action === "allow") {
         yield* autoDecided(ctx, request, "allowed", { rule: decision.rule })
@@ -807,7 +810,9 @@ export const makeApprovalService = Effect.gen(function* () {
       const claimed = yield* takePending(requestId)
       if (Option.isNone(claimed)) return
       const request = yield* getRequest(requestId)
-      const { approvalExpiryMinutes } = yield* settings.get
+      const { approvalExpiryMinutes } = yield* inBotProfile(request.botId)(settings.get).pipe(
+        Effect.provideService(BotRepo, bots),
+      )
       yield* finish(request, { status: "expired", statusReason: "timeout" })
       yield* deliverAsync(claimed.value, request, expiredText(request, approvalExpiryMinutes))
     }).pipe(
@@ -1121,8 +1126,10 @@ export const makeApprovalService = Effect.gen(function* () {
         surface: "other",
         match: request.subject.toolName === undefined ? {} : { toolName: request.subject.toolName },
       }
+      const bot = yield* Effect.orDie(required(bots.get(request.botId), "bot", request.botId))
       const rule: ApprovalRule = {
         id: yield* ids.ruleId,
+        ownerProfileId: bot.ownerProfileId,
         botId: request.botId,
         surface: suggested.surface,
         match: suggested.match,
@@ -1281,9 +1288,13 @@ export const makeApprovalService = Effect.gen(function* () {
     evaluateNode,
     respond,
     listPending: ({ conversationId }) =>
-      requests
-        .list({ statuses: ["pending"], ...(conversationId === undefined ? {} : { conversationId }) })
-        .pipe(Effect.orDie),
+      Effect.gen(function* () {
+        const profileBots = new Set((yield* bots.listIn(yield* currentProfileId).pipe(Effect.orDie)).map((b) => b.id))
+        const pending = yield* requests
+          .list({ statuses: ["pending"], ...(conversationId === undefined ? {} : { conversationId }) })
+          .pipe(Effect.orDie)
+        return pending.filter((request) => profileBots.has(request.botId))
+      }),
     askUser,
     requestApproval,
     requestTakeover,

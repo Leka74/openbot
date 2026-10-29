@@ -3,12 +3,22 @@
  *
  * `OpenCodeHarnessLive(config?)` registers the driver into `HarnessRegistry`. It needs `DataDir`
  * (OpenBot `OPENCODE_CONFIG_DIR`, server cwd, empty test home, skills library) and records the
- * spawned server in `ProcessLedger` when that port is provided. The server starts lazily on the
- * first probe / model list / session and is stopped with the layer.
+ * spawned server in `ProcessLedger` when that port is provided. Each owner profile has its own
+ * server, which lists only that profile's skills library (a server has one list for all its Bots,
+ * and a Bot's `skill` permission names skills, not folders). A server starts lazily on the first
+ * probe / model list / session of its profile and is stopped with the layer.
  */
-import type { HarnessCapabilities } from "@openbot/contracts"
-import { DataDir, HarnessError, HarnessRegistry, joinPath, ProcessLedger, type HarnessDriver } from "@openbot/core"
-import { Clock, Effect, Layer, Option, Scope } from "effect"
+import { type HarnessCapabilities, MAIN_PROFILE_ID, type OwnerProfileId } from "@openbot/contracts"
+import {
+  DataDir,
+  type DataDirShape,
+  HarnessError,
+  HarnessRegistry,
+  joinPath,
+  ProcessLedger,
+  type HarnessDriver,
+} from "@openbot/core"
+import { Clock, Duration, Effect, Layer, Option, RcMap, Scope } from "effect"
 import { mkdir } from "node:fs/promises"
 import { describeClientError } from "./client.ts"
 import { serverConfigContent, serverEnv } from "./config.ts"
@@ -34,10 +44,11 @@ export interface OpenCodeHarnessConfig {
   /** `opencode` binary (name on PATH or absolute path). Default: PATH, then the usual install dirs. */
   readonly binary?: string | undefined
   /**
-   * Replaces spawning `opencode serve` (tests: a scripted fake server; or an external server).
-   * Started lazily, stopped when the given scope closes.
+   * Replaces spawning `opencode serve` (tests: a scripted fake server; or an external server), given
+   * the skills folders the server would list. Started lazily, stopped when the given scope closes.
    */
-  readonly startTransport?: Effect.Effect<OpenCodeTransport, HarnessError, Scope.Scope> | undefined
+  readonly startTransport?:
+    ((server: ServerSkills) => Effect.Effect<OpenCodeTransport, HarnessError, Scope.Scope>) | undefined
   /** Use an empty `OPENCODE_TEST_HOME` so the user's `~/.claude` / `~/.agents` skills stay out. Default true. */
   readonly isolateHome?: boolean | undefined
   /** Extra environment for the server process. */
@@ -47,24 +58,36 @@ export interface OpenCodeHarnessConfig {
   readonly session?: SessionOptions | undefined
 }
 
+/** What a server lists as skills: its profile's library. */
+export interface ServerSkills {
+  readonly skillsDirs: ReadonlyArray<string>
+}
+
 /** Paths the adapter owns under the data root. */
-export const openCodePaths = (dataDir: {
-  readonly root: string
-  readonly opencodeConfig: string
-  readonly skillsLib: string
-}) => ({
+export const openCodePaths = (dataDir: Pick<DataDirShape, "root" | "opencodeConfig" | "profile">) => ({
   /** Server cwd and catalog location. */
   serverDir: joinPath(dataDir.root, "opencode"),
   /** Empty `OPENCODE_TEST_HOME`. */
   testHome: joinPath(dataDir.root, "opencode", "home"),
   configDir: dataDir.opencodeConfig,
-  skillsDir: joinPath(dataDir.skillsLib, "skills"),
+  /** The skills folder of a profile's library. */
+  skillsDir: (profileId: OwnerProfileId) => joinPath(dataDir.profile(profileId).skillsLib, "skills"),
 })
 
-/** Builds the driver over a host (exported for tests and alternative compositions). */
+/**
+ * Builds the driver over a host (exported for tests and alternative compositions). With `hostOf`, a
+ * Bot's sessions run on its profile's host; `host` serves probes and model lists.
+ */
 export const makeOpenCodeDriver = (
   host: OpenCodeHost,
-  options: { readonly directory: string; readonly binaryFound: boolean; readonly session?: SessionOptions | undefined },
+  options: {
+    readonly directory: string
+    readonly binaryFound: boolean
+    readonly session?: SessionOptions | undefined
+    readonly hostOf?: ((profileId: OwnerProfileId) => Effect.Effect<OpenCodeHost>) | undefined
+    /** Stops a deleted profile's host. */
+    readonly forgetHost?: ((profileId: OwnerProfileId) => Effect.Effect<void>) | undefined
+  },
 ): HarnessDriver => ({
   kind: "opencode",
   displayName: DISPLAY_NAME,
@@ -76,7 +99,11 @@ export const makeOpenCodeDriver = (
     binaryFound: options.binaryFound,
   }),
   listModels: listOpenCodeModels(host, options.directory),
-  openSession: (input) => openOpenCodeSession(host, input, options.session),
+  openSession: (input) =>
+    Effect.flatMap(options.hostOf?.(input.bot.ownerProfileId) ?? Effect.succeed(host), (profileHost) =>
+      openOpenCodeSession(profileHost, input, options.session),
+    ),
+  forgetOwnerProfile: options.forgetHost,
 })
 
 const randomPassword = (): string => {
@@ -107,58 +134,70 @@ export const makeOpenCodeDriverLive = (
     const paths = openCodePaths(dataDir)
     const binary = config.startTransport ? undefined : resolveOpenCodeBinary(config.binary)
 
-    const spawn: Effect.Effect<OpenCodeTransport, HarnessError, Scope.Scope> = Effect.gen(function* () {
-      if (binary === undefined) {
-        return yield* Effect.fail(
-          new HarnessError({
-            harness: "opencode",
-            code: "not-installed",
-            message: "The opencode CLI was not found on PATH.",
-          }),
-        )
-      }
-      yield* makeDir(paths.serverDir)
-      yield* makeDir(paths.configDir)
-      if (config.isolateHome !== false) yield* makeDir(paths.testHome)
-      const password = randomPassword()
-      return yield* spawnServer({
-        binary,
-        cwd: paths.serverDir,
-        password,
-        startTimeoutMs: config.startTimeoutMs,
-        env: serverEnv({
-          baseEnv: process.env,
+    const spawn = (server: ServerSkills): Effect.Effect<OpenCodeTransport, HarnessError, Scope.Scope> =>
+      Effect.gen(function* () {
+        if (binary === undefined) {
+          return yield* Effect.fail(
+            new HarnessError({
+              harness: "opencode",
+              code: "not-installed",
+              message: "The opencode CLI was not found on PATH.",
+            }),
+          )
+        }
+        yield* makeDir(paths.serverDir)
+        yield* makeDir(paths.configDir)
+        if (config.isolateHome !== false) yield* makeDir(paths.testHome)
+        const password = randomPassword()
+        return yield* spawnServer({
+          binary,
+          cwd: paths.serverDir,
           password,
-          configDir: paths.configDir,
-          testHome: config.isolateHome === false ? undefined : paths.testHome,
-          configContent: serverConfigContent({ skillsDirs: [paths.skillsDir] }),
-          extra: config.env,
-        }),
-        onSpawned: (pid) =>
-          Option.match(ledger, {
-            onNone: () => Effect.void,
-            onSome: (l) =>
-              Effect.flatMap(Clock.currentTimeMillis, (startedAt) =>
-                l.record({ pid, pgid: pid, kind: "opencode-serve", label: paths.serverDir, startedAt }),
-              ).pipe(Effect.catch((error) => Effect.logWarning(`ProcessLedger.record failed: ${error.message}`))),
+          startTimeoutMs: config.startTimeoutMs,
+          env: serverEnv({
+            baseEnv: process.env,
+            password,
+            configDir: paths.configDir,
+            testHome: config.isolateHome === false ? undefined : paths.testHome,
+            configContent: serverConfigContent(server),
+            extra: config.env,
           }),
-        onReaped: (pid) =>
-          Option.match(ledger, {
-            onNone: () => Effect.void,
-            onSome: (l) =>
-              l
-                .remove(pid)
-                .pipe(Effect.catch((error) => Effect.logWarning(`ProcessLedger.remove failed: ${error.message}`))),
-          }),
+          onSpawned: (pid) =>
+            Option.match(ledger, {
+              onNone: () => Effect.void,
+              onSome: (l) =>
+                Effect.flatMap(Clock.currentTimeMillis, (startedAt) =>
+                  l.record({ pid, pgid: pid, kind: "opencode-serve", label: paths.serverDir, startedAt }),
+                ).pipe(Effect.catch((error) => Effect.logWarning(`ProcessLedger.record failed: ${error.message}`))),
+            }),
+          onReaped: (pid) =>
+            Option.match(ledger, {
+              onNone: () => Effect.void,
+              onSome: (l) =>
+                l
+                  .remove(pid)
+                  .pipe(Effect.catch((error) => Effect.logWarning(`ProcessLedger.remove failed: ${error.message}`))),
+            }),
+        })
       })
-    })
 
-    const host = yield* makeHost({ ...config.host, start: config.startTransport ?? spawn })
+    const start = config.startTransport ?? spawn
+    const hosts = yield* RcMap.make({
+      lookup: (profileId: OwnerProfileId) =>
+        makeHost({ ...config.host, start: start({ skillsDirs: [paths.skillsDir(profileId)] }) }),
+      // a profile's server stays until the layer closes
+      idleTimeToLive: Duration.infinity,
+    })
+    const hostOf = (profileId: OwnerProfileId) => Effect.scoped(RcMap.get(hosts, profileId))
+    const host = yield* hostOf(MAIN_PROFILE_ID)
     if (config.startTransport) yield* makeDir(paths.serverDir).pipe(Effect.ignore)
     return makeOpenCodeDriver(host, {
       directory: paths.serverDir,
       binaryFound: config.startTransport !== undefined || binary !== undefined,
       session: config.session,
+      hostOf,
+      // the main profile's server also serves probes and model lists, and the main profile is never deleted
+      forgetHost: (profileId) => (profileId === MAIN_PROFILE_ID ? Effect.void : RcMap.invalidate(hosts, profileId)),
     })
   })
 
