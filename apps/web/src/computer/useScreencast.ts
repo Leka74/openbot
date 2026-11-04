@@ -11,6 +11,8 @@ import {
   type ScreencastFrameMeta,
 } from "./protocol.ts"
 
+import { useVisibleSurface } from "./useVisibleSurface.ts"
+
 export type ScreenPhase =
   /** Not connecting (disabled). */
   | "idle"
@@ -57,6 +59,8 @@ const initial: ScreencastState = {
 const backoffMs = (attempt: number) => Math.min(10_000, 500 * 2 ** Math.max(0, attempt - 1))
 
 export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTrouble }: UseScreencastOptions) {
+  const visible = useVisibleSurface(canvasRef, enabled)
+  const live = enabled && (mode === "control" || visible)
   const [state, setState] = useState<ScreencastState>(initial)
   const [generation, setGeneration] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
@@ -67,7 +71,7 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
   })
 
   useEffect(() => {
-    if (!enabled) return
+    if (!live) return
     let disposed = false
     let attempt = 0
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -76,6 +80,16 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
     let pending: { meta: ScreencastFrameMeta; image: Uint8Array } | undefined
     let drawing = false
     let painted = false
+    let paintTimer: ReturnType<typeof setTimeout> | undefined
+    let lastDecode = -Infinity
+    const frameInterval = mode === "control" ? 1000 / 15 : 200
+    const schedulePaint = () => {
+      if (disposed || drawing || paintTimer !== undefined || !pending) return
+      paintTimer = setTimeout(() => {
+        paintTimer = undefined
+        void paint()
+      }, Math.max(0, frameInterval - (performance.now() - lastDecode)))
+    }
 
     const patch = (p: Partial<ScreencastState>) => {
       if (!disposed) setState((s) => ({ ...s, ...p }))
@@ -85,7 +99,8 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
       if (drawing) return
       drawing = true
       try {
-        while (pending && !disposed) {
+        if (pending && !disposed) {
+          lastDecode = performance.now()
           const frame = pending
           pending = undefined
           const blob = new Blob([frame.image as Uint8Array<ArrayBuffer>], { type: frame.meta.mime })
@@ -93,12 +108,12 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
           try {
             bitmap = await createImageBitmap(blob)
           } catch {
-            continue
+            return
           }
           const canvas = canvasRef.current
           if (disposed || !canvas) {
             bitmap.close()
-            break
+            return
           }
           if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
             canvas.width = bitmap.width
@@ -127,6 +142,7 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
         }
       } finally {
         drawing = false
+        schedulePaint()
       }
     }
 
@@ -163,7 +179,7 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
           const frame = decodeScreencastFrame(e.data)
           if (!frame) return
           pending = frame
-          void paint()
+          schedulePaint()
         }
       }
       socket.onclose = (e: CloseEvent) => {
@@ -186,6 +202,8 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
     return () => {
       disposed = true
       clearTimeout(timer)
+      clearTimeout(paintTimer)
+      pending = undefined
       if (ws) {
         ws.onclose = null
         ws.onmessage = null
@@ -194,7 +212,7 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
       }
       if (socketRef.current === ws) socketRef.current = null
     }
-  }, [botId, enabled, mode, viewPath, canvasRef, generation])
+  }, [botId, live, mode, viewPath, canvasRef, generation])
 
   /** Send one input event (control sockets only; silently dropped otherwise). */
   const send = useCallback(
@@ -210,8 +228,8 @@ export function useScreencast({ botId, enabled, mode, viewPath, canvasRef, onTro
 
   // disabled: report idle (the last frame size and lease stay known)
   const shown = useMemo<ScreencastState>(
-    () => (enabled || state.phase === "idle" ? state : { ...state, phase: "idle" }),
-    [enabled, state],
+    () => (live || state.phase === "idle" ? state : { ...state, phase: "idle" }),
+    [live, state],
   )
   return { state: shown, send, reconnect, metaRef }
 }

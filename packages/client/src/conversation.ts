@@ -3,6 +3,7 @@
 // navigating back resumes from the cursor (replay) instead of re-downloading a snapshot
 // (t3code-architecture.md §4.3).
 import { Effect, Stream } from "effect"
+import { presentationIntervalMs } from "./presentation.ts"
 import {
   applyConversationStreamItem,
   type ConversationId,
@@ -50,6 +51,7 @@ export const conversationAtom = Atom.family((conversationId: ConversationId) =>
           const registry = yield* AtomRegistry.AtomRegistry
           const reactivity = yield* Reactivity.Reactivity
           return replicaStream({
+            publishIntervalMs: presentationIntervalMs,
             holder,
             open: (after) => client("conversations.subscribe", after ? { conversationId, after } : { conversationId }),
             reduce: applyConversationStreamItem,

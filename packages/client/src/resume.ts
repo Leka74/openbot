@@ -48,6 +48,8 @@ export interface ReplicaSpec<S, I, E> {
   readonly wait?: ((delayMs: number) => Effect.Effect<void>) | undefined
   /** Side effects per applied item (e.g. reactivity invalidation). Must not fail. */
   readonly onItem?: ((item: I, state: S) => Effect.Effect<void>) | undefined
+  /** Coalesce presentation only; every item still reduces state and runs onItem. */
+  readonly publishIntervalMs?: (() => number) | undefined
   /** Observability hook, called before every subscription attempt. */
   readonly onSubscribe?: ((after: StreamCursor | undefined) => void) | undefined
 }
@@ -62,12 +64,36 @@ export const replicaStream = <S, I, E>(spec: ReplicaSpec<S, I, E>): Stream.Strea
     (queue) =>
       Effect.gen(function* () {
         const { holder } = spec
-        const offer = (state: S) => {
+        let pending: S | undefined
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let lastPublished = -Infinity
+        const publish = (state: S) => {
+          lastPublished = Date.now()
           Queue.offerUnsafe(queue, state)
+        }
+        const offer = (state: S) => {
+          const interval = Math.max(0, spec.publishIntervalMs?.() ?? 0)
+          const remaining = interval - (Date.now() - lastPublished)
+          if (remaining <= 0) {
+            clearTimeout(timer)
+            timer = undefined
+            pending = undefined
+            publish(state)
+          } else {
+            pending = state
+            if (timer === undefined) timer = setTimeout(() => {
+              timer = undefined
+              const next = pending
+              pending = undefined
+              if (next !== undefined) publish(next)
+            }, remaining)
+          }
         }
         holder.emit = offer
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
+            clearTimeout(timer)
+            pending = undefined
             if (holder.emit === offer) holder.emit = undefined
             holder.state = spec.markStale(holder.state)
           }),
