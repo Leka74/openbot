@@ -17,6 +17,7 @@
  * | (env only) | `OPENBOT_SKILLS_SH_URL` | `https://skills.sh` (the skills catalog; tests point it at a fake) |
  * | (env only) | `OPENBOT_SLACK_API_URL` | `https://slack.com/api` (Slack's Web API; tests point it at a fake) |
  * | (env only) | `OPENBOT_HARK_URL` | `https://hark.ryan.ceo` (iPhone notifications; tests point it at a fake) |
+ * | (env only) | `OPENBOT_BOT_WAKE_DEBOUNCE_MS` | 45000 (background bot messages wake their recipient after this; e2e tests: 50) |
  * | (env only) | `OPENBOT_RESTART_GUARD` | on (`off` disables restartGuard.ts; set by main.ts, not `parseCommand`) |
  */
 import { KnownHarnessKinds } from "@openbot/contracts"
