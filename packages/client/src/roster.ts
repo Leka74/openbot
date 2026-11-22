@@ -3,6 +3,7 @@
 // sections, settings and recent notifications. `state.synchronized` is false while catching up or
 // reconnecting; `AsyncResult.waiting` is always true for a live stream, so use `synchronized`.
 import { Effect, Stream } from "effect"
+import { presentationIntervalMs } from "./presentation.ts"
 import {
   activeTasksOf,
   applyRosterStreamItem,
@@ -44,6 +45,7 @@ export const rosterAtom = OpenBotClient.runtime
         const registry = yield* AtomRegistry.AtomRegistry
         const reactivity = yield* Reactivity.Reactivity
         return replicaStream({
+          publishIntervalMs: presentationIntervalMs,
           holder,
           open: (after) => client("roster.subscribe", after ? { after } : {}),
           reduce: applyRosterStreamItem,

@@ -48,6 +48,13 @@ export interface ReplicaSpec<S, I, E> {
   readonly wait?: ((delayMs: number) => Effect.Effect<void>) | undefined
   /** Side effects per applied item (e.g. reactivity invalidation). Must not fail. */
   readonly onItem?: ((item: I, state: S) => Effect.Effect<void>) | undefined
+  /** Coalesce presentation only; every item still reduces state and runs onItem. */
+  readonly publishIntervalMs?: (() => number) | undefined
+  /**
+   * Items whose side effects change other views at once (e.g. settling an optimistic outbox item):
+   * their state is published immediately, so the two never disagree on screen.
+   */
+  readonly publishNow?: ((item: I) => boolean) | undefined
   /** Observability hook, called before every subscription attempt. */
   readonly onSubscribe?: ((after: StreamCursor | undefined) => void) | undefined
 }
@@ -62,13 +69,40 @@ export const replicaStream = <S, I, E>(spec: ReplicaSpec<S, I, E>): Stream.Strea
     (queue) =>
       Effect.gen(function* () {
         const { holder } = spec
-        const offer = (state: S) => {
+        let pending: S | undefined
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let lastPublished = -Infinity
+        const publish = (state: S) => {
+          lastPublished = Date.now()
           Queue.offerUnsafe(queue, state)
         }
-        holder.emit = offer
+        const offer = (state: S, now = false) => {
+          const interval = now ? 0 : Math.max(0, spec.publishIntervalMs?.() ?? 0)
+          const remaining = interval - (Date.now() - lastPublished)
+          if (remaining <= 0) {
+            clearTimeout(timer)
+            timer = undefined
+            pending = undefined
+            publish(state)
+          } else {
+            pending = state
+            if (timer === undefined)
+              timer = setTimeout(() => {
+                timer = undefined
+                const next = pending
+                pending = undefined
+                if (next !== undefined) publish(next)
+              }, remaining)
+          }
+        }
+        // local updates (history pages, optimistic tweaks) are the owner's own actions: shown at once
+        const emit = (state: S) => offer(state, true)
+        holder.emit = emit
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
-            if (holder.emit === offer) holder.emit = undefined
+            clearTimeout(timer)
+            pending = undefined
+            if (holder.emit === emit) holder.emit = undefined
             holder.state = spec.markStale(holder.state)
           }),
         )
@@ -88,7 +122,7 @@ export const replicaStream = <S, I, E>(spec: ReplicaSpec<S, I, E>): Stream.Strea
               holder.state = next
               if (spec.hasGap(next)) return Effect.fail(resubscribe)
               progressed = true
-              offer(next)
+              offer(next, spec.publishNow?.(item) ?? false)
               return spec.onItem ? spec.onItem(item, next) : Effect.void
             },
           ).pipe(Effect.exit)
