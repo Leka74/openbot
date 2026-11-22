@@ -881,6 +881,25 @@ describe("rpc", () => {
           const zipRes = yield* get({}, `${server.base}/api/attachments/${zip.id}`)
           expect(zipRes.headers.get("content-disposition")).toStartWith("attachment;")
           expect(zipRes.headers.get("content-security-policy")).toStartWith("sandbox;")
+          // HTML opens as a page, scripts on, but never as our origin (no allow-same-origin)
+          for (const [name, mime] of [
+            ["mockup.html", "text/html"],
+            ["mockup.htm", "application/octet-stream"],
+          ] as const) {
+            const page = yield* client["attachments.upload"]({
+              name,
+              mime,
+              bytesBase64: Buffer.from("<!doctype html><script>1</script>").toString("base64"),
+            })
+            const pageRes = yield* get({}, `${server.base}/api/attachments/${page.id}`)
+            expect(pageRes.headers.get("content-type")).toStartWith("text/html")
+            expect(pageRes.headers.get("content-disposition")).toStartWith("inline;")
+            const csp = pageRes.headers.get("content-security-policy") ?? ""
+            expect(csp).toStartWith("sandbox allow-scripts")
+            expect(csp).not.toContain("allow-same-origin")
+            const pageDl = yield* get({}, `${server.base}/api/attachments/${page.id}?download=1`)
+            expect(pageDl.headers.get("content-disposition")).toStartWith("attachment;")
+          }
           expect((yield* get({ cookie: "" }, url)).status).toBe(401)
         }),
       ),

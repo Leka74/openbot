@@ -143,6 +143,10 @@ export const previewKind = (a: Pick<Attachment, "mime" | "name">): PreviewKind |
   return undefined
 }
 
+/** HTML the server serves as a sandboxed page: the file card gets an Open (new tab) button, never a preview. */
+export const opensAsPage = (a: Pick<Attachment, "mime" | "name">): boolean =>
+  a.mime.trim().toLowerCase() === "text/html" || ["html", "htm"].includes(extensionOf(a.name))
+
 /** CSS aspect ratio for media with known dimensions (else the kind's default). */
 export const aspectRatioOf = (a: Pick<Attachment, "width" | "height">, fallback: string): string =>
   a.width !== undefined && a.height !== undefined && a.width > 0 && a.height > 0 ? `${a.width} / ${a.height}` : fallback

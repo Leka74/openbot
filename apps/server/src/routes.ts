@@ -452,6 +452,15 @@ export const AuthRoutes = routes(
 const INLINE_TYPES =
   /^(image\/(png|jpeg|gif|webp|avif|bmp|svg\+xml)|video\/[\w.+-]+|audio\/[\w.+-]+|application\/pdf|text\/plain)$/i
 const SAFE_MIME = /^[\w.+-]+\/[\w.+-]+$/
+/**
+ * HTML opens in its own tab (the chat's Open button) as an opaque-origin document: `sandbox` without
+ * `allow-same-origin`, so its scripts run but never with our cookies, storage or API. It may load
+ * anything else (CDN scripts, fonts, images), as a page opened from disk would.
+ */
+const HTML_CSP =
+  "sandbox allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads; " +
+  "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'none'"
+const isHtml = (mime: string, name: string): boolean => mime === "text/html" || /\.html?$/i.test(name)
 
 const contentDisposition = (kind: "inline" | "attachment", name: string): string => {
   const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, "_") || "file"
@@ -489,7 +498,8 @@ export const parseByteRange = (
  * `GET /api/attachments/:id` (and HEAD, which the router maps to GET): the owner's cookie + Origin;
  * the bytes stream from disk (`Bun.file`, never buffered); single byte ranges answer 206 (video
  * seeking, iOS Safari playback), unsatisfiable ones 416. Media, PDFs and plain text are `inline`,
- * everything else (and `?download=1`) an `attachment`. Never sniffed (`nosniff`); every type but PDF
+ * HTML is `inline` too, in an opaque-origin sandbox (HTML_CSP); everything else (and `?download=1`)
+ * an `attachment`. Never sniffed (`nosniff`); every type but PDF
  * runs in a CSP sandbox (Chrome's PDF viewer refuses sandboxed documents; a PDF cannot script our
  * origin anyway).
  */
@@ -513,19 +523,24 @@ export const AttachmentRoutes = routes(
         const file = Bun.file(record.value.path)
         if (!(yield* Effect.promise(() => file.exists()))) return refusal(404, "not found")
         const size = file.size
-        const mime = SAFE_MIME.test(record.value.mime) ? record.value.mime.toLowerCase() : "application/octet-stream"
+        const declared = SAFE_MIME.test(record.value.mime)
+          ? record.value.mime.toLowerCase()
+          : "application/octet-stream"
+        const html = isHtml(declared, record.value.name)
+        const mime = html ? "text/html; charset=utf-8" : declared
         const download = searchParamsOf(request).get("download") === "1"
         const headers: Record<string, string> = {
           "content-type": mime,
           "content-disposition": contentDisposition(
-            !download && INLINE_TYPES.test(mime) ? "inline" : "attachment",
+            !download && (html || INLINE_TYPES.test(mime)) ? "inline" : "attachment",
             record.value.name,
           ),
           "accept-ranges": "bytes",
           "x-content-type-options": "nosniff",
           // uploaded content never runs as our origin (SVG/HTML scripts, plugins)
-          "content-security-policy":
-            mime === "application/pdf"
+          "content-security-policy": html
+            ? HTML_CSP
+            : mime === "application/pdf"
               ? "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'self'"
               : "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
           "cache-control": "private, max-age=31536000, immutable",
