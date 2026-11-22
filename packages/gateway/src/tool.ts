@@ -40,6 +40,8 @@ export interface ToolAvailability {
   readonly slack?: boolean | undefined
   /** Settings › "Bots can search their chats" (default on). */
   readonly botSearch?: boolean | undefined
+  /** The brain has the owner's queue (`DecisionQueue`). */
+  readonly queue?: boolean | undefined
 }
 
 export interface ToolDef<A, R> {

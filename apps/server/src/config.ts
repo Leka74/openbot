@@ -16,6 +16,8 @@
  * | `--desktop-idle <minutes>` | `OPENBOT_DESKTOP_IDLE_MINUTES` | `10` (an unused bot desktop goes to sleep; `0` = never) |
  * | (env only) | `OPENBOT_SKILLS_SH_URL` | `https://skills.sh` (the skills catalog; tests point it at a fake) |
  * | (env only) | `OPENBOT_SLACK_API_URL` | `https://slack.com/api` (Slack's Web API; tests point it at a fake) |
+ * | (env only) | `OPENBOT_QUEUE` | off (`on`: the owner's queue, queue/live.ts) |
+ * | (env only) | `OPENBOT_QUEUE_URL` | unset (an external queue backend instead of the built-in one) |
  * | (env only) | `OPENBOT_HARK_URL` | `https://hark.ryan.ceo` (iPhone notifications; tests point it at a fake) |
  */
 import { KnownHarnessKinds } from "@openbot/contracts"

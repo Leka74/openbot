@@ -109,6 +109,7 @@ import { RpcHandlersLive } from "./rpc.ts"
 import { setShutdownPhase } from "./shutdown.ts"
 import { SkillsShLive } from "./skillsSh.ts"
 import { SlackConnectorLive } from "./slack/connector.ts"
+import { type QueueMode, QueueLive, queueModeFromEnv } from "./queue/live.ts"
 import { type SpeechToText, SpeechToTextLive } from "./stt/service.ts"
 import { VoiceCallsLive } from "./voice/service.ts"
 import { UpdatesLive, type UpdatesOptions } from "./updates.ts"
@@ -383,6 +384,8 @@ export interface ServerOptions {
   readonly voiceCalls?: { readonly dir: string; readonly sttDir: string } | undefined
   /** Updates from GitHub Releases (tests: a fake GitHub, no timer). */
   readonly updates?: Omit<UpdatesOptions, "dataDir"> | undefined
+  /** The owner's queue (tests); default from `OPENBOT_QUEUE` / `OPENBOT_QUEUE_URL`, `false` = none. */
+  readonly queue?: QueueMode | false | undefined
   readonly quiet?: boolean | undefined
 }
 
@@ -451,7 +454,18 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(BotServiceLive),
     )
     .pipe(
-      Layer.provideMerge(Layer.mergeAll(MessagingLive, RoutineSchedulerLive, SlackShortcutsLive, UiCardServiceLive)), // 10 (+ Slack's "Send to OpenBot", ui cards)
+      Layer.provideMerge(
+        Layer.mergeAll(
+          MessagingLive,
+          RoutineSchedulerLive,
+          SlackShortcutsLive,
+          UiCardServiceLive,
+          // the owner's queue (opt-in: OPENBOT_QUEUE=on, or OPENBOT_QUEUE_URL for an external backend)
+          QueueLive(
+            options?.queue === undefined ? queueModeFromEnv(process.env, config.dataDir) : options.queue || undefined,
+          ),
+        ),
+      ), // 10 (+ Slack's "Send to OpenBot", ui cards, the owner's queue)
       // voice calls (experiment): <data>/voice, and voice input's Parakeet + sherpa-onnx
       Layer.provideMerge(
         VoiceCallsLive(
