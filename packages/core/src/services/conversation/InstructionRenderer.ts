@@ -6,8 +6,9 @@
  *
  * The text is conversation-independent on purpose: a bot has ONE session for all of its
  * conversations (D5.0), and the hash only changes when the persona, the team, its groups, the memory
- * index or the placement or the project folders (or whether bots may search their chats) change, which is when a session must be reopened (Claude
- * snapshot semantics).
+ * index or the placement or the project folders (or whether bots may search their chats) change. Only
+ * `reopenHash` (persona, base, groups, placement) reopens a live session: roster, memory-index and
+ * Slack-status changes wait for the next open, so they don't rewrite the prompt cache each time.
  * Conversation context (origin tags, group catch-up, sender attribution) travels in the turn text.
  */
 import type { Bot, BotId, Conversation, SlackStatus } from "@openbot/contracts"
@@ -172,7 +173,8 @@ export const assembleInstructions = (sections: RenderedInstructions["sections"])
   if (sections.placement.trim() !== "") parts.push(`## Where you run\n${sections.placement.trim()}`)
   if (sections.slack !== undefined && sections.slack.trim() !== "") parts.push(`## Slack\n${sections.slack.trim()}`)
   const text = parts.join("\n\n")
-  return { text, sections, hash: hashText(text) }
+  const reopenText = [sections.base, sections.persona, sections.groups ?? "", sections.placement].join("\n\u0000\n")
+  return { text, sections, hash: hashText(text), reopenHash: hashText(reopenText) }
 }
 
 export const InstructionRendererLive: Layer.Layer<

@@ -90,8 +90,16 @@ export interface RenderedInstructions {
     /** How to use the owner's Slack while it is connected (D3.4); absent or empty: not connected. */
     readonly slack?: string | undefined
   }
-  /** Stable hash of `text`; a change means the session must be reopened (Claude snapshot semantics). */
+  /** Stable hash of `text`. */
   readonly hash: string
+  /**
+   * Hash of the parts whose change must reopen a live session: base, persona, groups, placement.
+   * The team roster, memory index and Slack status are left out: reopening rewrites the whole prompt
+   * cache, and those change often (every `remember`, every new or renamed bot). A live session keeps
+   * them as they were at open; the next open (idle eviction, restart) picks them up.
+   * Absent (fakes): `hash`.
+   */
+  readonly reopenHash?: string | undefined
 }
 
 export interface TurnAttachment {

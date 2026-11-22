@@ -85,6 +85,30 @@ describe("InstructionRenderer: groups", () => {
     )
   })
 
+  test("roster, memory and Slack changes keep the reopen hash; persona, groups and placement change it", () => {
+    const sections = {
+      base: renderBase(lead, placement(["bot"])),
+      persona: "Lead the work.",
+      team: "- @Alice",
+      memoryIndex: "- [Fact](fact.md)",
+      placement: "",
+    }
+    const before = assembleInstructions(sections)
+    const busy = assembleInstructions({
+      ...sections,
+      team: "- @Alice\n- @Bob",
+      memoryIndex: "- [Fact](fact.md)\n- [New](new.md)",
+      slack: "Slack is connected.",
+    })
+    expect(busy.hash).not.toBe(before.hash)
+    expect(busy.reopenHash).toBe(before.reopenHash)
+    expect(assembleInstructions({ ...sections, persona: "Lead it." }).reopenHash).not.toBe(before.reopenHash)
+    expect(assembleInstructions({ ...sections, groups: renderGroups(lead, [group], team) }).reopenHash).not.toBe(
+      before.reopenHash,
+    )
+    expect(assembleInstructions({ ...sections, placement: "/tmp" }).reopenHash).not.toBe(before.reopenHash)
+  })
+
   test('a "Your groups" section only when there are groups; the rule keeps group work in the group', () => {
     const sections = {
       base: renderBase(lead, placement(["bot"])),

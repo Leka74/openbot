@@ -294,6 +294,8 @@ interface OpenSession {
   readonly scope: Scope.Closeable
   readonly placement: ResolvedPlacement
   readonly instructionsHash: string
+  /** `RenderedInstructions.reopenHash` at open: what a live session is compared against. */
+  readonly reopenHash: string
   readonly signature: string
   readonly ingest: SessionIngest
   readonly closed: Deferred.Deferred<string>
@@ -640,6 +642,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
             scope,
             placement,
             instructionsHash: instructions.hash,
+            reopenHash: instructions.reopenHash ?? instructions.hash,
             signature: config.signature,
             ingest,
             closed,
@@ -710,7 +713,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
           const closed = yield* Deferred.isDone(current.closed)
           if (!closed && current.driver === driver && current.signature === config.signature) {
             const instructions = yield* deps.renderer.render({ bot, placement: current.placement })
-            if (instructions.hash === current.instructionsHash) return current
+            if ((instructions.reopenHash ?? instructions.hash) === current.reopenHash) return current
           }
           yield* dropSession(closed ? "closed" : "reconfigured")
         }
