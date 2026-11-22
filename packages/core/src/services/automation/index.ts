@@ -9,7 +9,8 @@
  *   ApprovalServiceLive     Layer<ApprovalService, never, ConversationService | SettingsService | Notifier |
  *                                 RequestRepo | ApprovalRuleRepo | BotRepo | IdGen>
  *   RoutineSchedulerLive    Layer<RoutineScheduler, never, Orchestrator | ConversationService | RoutineRepo | BotRepo | EntryRepo | IdGen>
- *                                 (optional SlackConnector: Slack-triggered routines)
+ *                                 (optional SlackConnector: Slack-triggered routines; optional RoutineGate:
+ *                                 a check before scheduled and catch-up runs)
  *   SlackServiceLive        Layer<SlackService, never, ConversationService | EntryRepo | BotRepo | Notifier | AttachmentStore> (optional SlackConnector)
  *   UiCardServiceLive       Layer<UiCardService, never, Orchestrator | ConversationService | EntryRepo | BotRepo | Notifier>
  *   SlackShortcutsLive      Layer<never, never, Orchestrator | SettingsService | BotRepo | ConversationService>

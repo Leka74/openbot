@@ -21,6 +21,14 @@
  *   against the enabled Slack routines (`slackTriggerMatches`). Messages for one routine within
  *   `SLACK_BATCH_MS` make one `event` run, which reads them after its prompt (`slackEventsText`);
  *   messages arriving while it runs wait and make the next run.
+ * - Gates (with a `RoutineGate` in the context; the server's is an executable file
+ *   `<data>/routine-gates/<routineId>`, run with no shell and no arguments in the owner's home, with
+ *   the brain's environment, for at most 60 s, its stdout up to 4 KB kept and its stderr dropped): a
+ *   scheduled or catch-up fire (never Run now, never a Slack `event` run) checks the routine's gate
+ *   first, outside the lock. Exit 0 runs it, the gate's output (when there is any) after the prompt
+ *   as `Gate output:`; exit 1 skips it quietly (`nextRunAt` advances as for a skipped fire: no run,
+ *   no event line, no delivery; logged at info); anything else (another code, a timeout, a spawn
+ *   error) runs it anyway, logged as a warning. A routine changed while its gate ran is left alone.
  */
 import type {
   Bot,
@@ -45,6 +53,7 @@ import {
   Orchestrator,
   RoutineScheduler,
 } from "../../ports/services.ts"
+import { RoutineGate, type RoutineGateResult } from "../../ports/RoutineGate.ts"
 import { SlackConnector, type SlackEvent } from "../../ports/Slack.ts"
 import { CATCH_UP_WINDOW_MS, describeTrigger, nextRunAfter, sameTrigger, validateTrigger } from "./schedule.ts"
 import { slackEventsText, slackTriggerMatches } from "./SlackService.ts"
@@ -97,6 +106,7 @@ export const makeRoutineScheduler = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator
   const ids = yield* IdGen
   const slack = Option.getOrUndefined(yield* Effect.serviceOption(SlackConnector))
+  const gate = Option.getOrUndefined(yield* Effect.serviceOption(RoutineGate))
 
   const lock = yield* Semaphore.make(1)
   const wake = yield* Queue.sliding<void>(1)
@@ -303,23 +313,54 @@ export const makeRoutineScheduler = Effect.gen(function* () {
       ),
     )
 
+  /** The routine's gate (none without a `RoutineGate`); its verdict is logged. */
+  const checkGate = (routineId: RoutineId): Effect.Effect<RoutineGateResult> =>
+    gate === undefined
+      ? Effect.succeed({ _tag: "none" })
+      : gate
+          .check(routineId)
+          .pipe(
+            Effect.tap((result) =>
+              result._tag === "skip"
+                ? Effect.logInfo(`RoutineScheduler: skipped ${routineId}, its gate found nothing to do`)
+                : result._tag === "error"
+                  ? Effect.logWarning(
+                      `RoutineScheduler: the gate of ${routineId} failed (${result.message}); running it`,
+                    )
+                  : Effect.void,
+            ),
+          )
+
   /**
    * Starts a run of `routine`. Scheduled fires advance `nextRunAt` (even when skipped); manual runs
    * leave the schedule alone. Returns none when a scheduled fire was skipped.
    */
   const fire = (routineId: RoutineId, firedBy: FiredBy, eventText?: string) =>
     Effect.gen(function* () {
+      // outside the lock: a gate may take up to a minute
+      const gated = firedBy === "schedule" || firedBy === "catch-up" ? yield* checkGate(routineId) : undefined
       const started = yield* lock.withPermits(1)(
         Effect.gen(function* () {
           const routine = yield* getRoutine(routineId)
           const now = yield* Clock.currentTimeMillis
           const scheduled = firedBy !== "manual"
+          // switched off or rescheduled while its gate ran: nothing is due any more
+          if (
+            gated !== undefined &&
+            gated._tag !== "none" &&
+            (!routine.enabled || routine.nextRunAt === undefined || routine.nextRunAt > now)
+          )
+            return Option.none()
           const advanced = !scheduled
             ? routine
             : routine.trigger.type === "once"
               ? // A one-time routine is done after its scheduled run: switch it off (the UI shows "Ran …").
                 { ...withNextRun(routine, undefined), enabled: false }
               : withNextRun(routine, nextRunAfter(routine.trigger, now, { anchor: now, ranOnce: false }))
+          if (gated?._tag === "skip") {
+            yield* repo.upsert(advanced).pipe(Effect.orDie)
+            return Option.none()
+          }
           if (running.has(routine.id)) {
             if (!scheduled) return yield* new Conflict({ reason: `"${routine.name}" is already running.` })
             yield* Effect.logInfo(`RoutineScheduler: skipped ${routine.id}, the previous run is still going`)
@@ -365,6 +406,8 @@ export const makeRoutineScheduler = Effect.gen(function* () {
       )
       if (Option.isNone(started)) return Option.none<RoutineRun>()
       const { bot, eventId, routine, run, triggerSummary } = started.value
+      const gateOutput = gated?._tag === "pass" ? gated.output.trim() : ""
+      const gateText = gateOutput === "" ? "" : `\n\nGate output:\n${gateOutput}`
       const receipt = yield* orchestrator
         .deliver({
           conversationId: run.conversationId,
@@ -378,7 +421,7 @@ export const makeRoutineScheduler = Effect.gen(function* () {
                 : run.firedBy === "event"
                   ? "it was triggered by what follows the instruction"
                   : "scheduled run"
-          }:\n${routine.prompt}${eventText === undefined ? "" : `\n\n${eventText}`}\n\n${ROUTINE_REPLY_NOTE}`,
+          }:\n${routine.prompt}${gateText}${eventText === undefined ? "" : `\n\n${eventText}`}\n\n${ROUTINE_REPLY_NOTE}`,
           // Wakes an idle bot; queues behind a running turn instead of steering into it.
           urgency: "urgent",
           mode: "queue",

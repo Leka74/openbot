@@ -109,6 +109,7 @@ import { RpcHandlersLive } from "./rpc.ts"
 import { setShutdownPhase } from "./shutdown.ts"
 import { SkillsShLive } from "./skillsSh.ts"
 import { SlackConnectorLive } from "./slack/connector.ts"
+import { RoutineGateLive } from "./routineGate.ts"
 import { type SpeechToText, SpeechToTextLive } from "./stt/service.ts"
 import { VoiceCallsLive } from "./voice/service.ts"
 import { UpdatesLive, type UpdatesOptions } from "./updates.ts"
@@ -482,8 +483,14 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(MemoryServiceLive),
       Layer.provideMerge(level2),
       Layer.provideMerge(LiveHubLive),
-      // the owner's Slack (D3.4), each profile's tokens in its slack.json
-      Layer.provideMerge(SlackConnectorLive({ file: (id) => dataDir.profile(id).slack, apiUrl: config.slackApiUrl })),
+      // the owner's Slack (D3.4), each profile's tokens in its slack.json; routine gates:
+      // <data>/routine-gates/<routineId>, run before scheduled and catch-up runs (routineGate.ts)
+      Layer.provideMerge(
+        Layer.merge(
+          SlackConnectorLive({ file: (id) => dataDir.profile(id).slack, apiUrl: config.slackApiUrl }),
+          RoutineGateLive({ dir: `${dataDir.root}/routine-gates` }),
+        ),
+      ),
       Layer.provideMerge(Layer.merge(OwnerProfilesLive, ProfileGuardLive)),
       Layer.provideMerge(foundation),
     )

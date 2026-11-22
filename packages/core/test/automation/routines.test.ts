@@ -7,6 +7,8 @@ import {
   ConversationRepo,
   EntryRepo,
   Orchestrator,
+  RoutineGate,
+  type RoutineGateResult,
   RoutineRepo,
   RoutineScheduler,
   userActor,
@@ -493,5 +495,119 @@ describe("routine runs with nothing to say", () => {
       RoutineSchedulerLive.pipe(Layer.provideMerge(seeded), Layer.provideMerge(baseLayer())),
     )
     expect(remaining.map(String)).toEqual(["ent_run_2", "ent_said", "ent_owner"])
+  })
+})
+
+describe("RoutineScheduler gates", () => {
+  /** A gate whose verdicts are taken in order (the last one repeats); `checked` counts its runs. */
+  const gated = (verdicts: ReadonlyArray<RoutineGateResult>) => {
+    const calls = { checked: 0 }
+    const gate = Layer.succeed(
+      RoutineGate,
+      RoutineGate.of({
+        check: () => Effect.sync(() => verdicts[Math.min(calls.checked++, verdicts.length - 1)]!),
+      }),
+    )
+    const scheduler = RoutineSchedulerLive.pipe(Layer.provide(gate))
+    return { calls, scheduler, layer: scheduler.pipe(Layer.provideMerge(baseLayer({ autoComplete: done }))) }
+  }
+
+  test("exit 0: the run goes ahead with the gate's output after the prompt (none when it printed nothing)", async () => {
+    const { calls, layer } = gated([
+      { _tag: "pass", output: "  3 new mails\n" },
+      { _tag: "pass", output: "" },
+    ])
+    const out = await runTest(
+      Effect.gen(function* () {
+        yield* seed
+        const routine = yield* (yield* RoutineScheduler).create(userActor, { botId: BOT_A.id, spec: hourly })
+        yield* advance("60 minutes")
+        yield* eventually(deliveryCount(1))
+        yield* eventually(Effect.map(runsOf(routine.id), (runs) => runs[0]?.status === "succeeded"))
+        yield* advance("60 minutes")
+        yield* eventually(deliveryCount(2))
+        return yield* deliveries
+      }),
+      layer,
+    )
+    expect(calls.checked).toBe(2)
+    expect(out[0]!.text).toContain("Check the inbox\n\nGate output:\n3 new mails\n\n")
+    expect(out[1]!.text).not.toContain("Gate output")
+  })
+
+  test("exit 1: the fire is skipped quietly and the schedule moves on; the next fire runs", async () => {
+    const { calls, layer } = gated([{ _tag: "skip" }, { _tag: "pass", output: "" }])
+    const out = await runTest(
+      Effect.gen(function* () {
+        yield* seed
+        const scheduler = yield* RoutineScheduler
+        const routine = yield* scheduler.create(userActor, { botId: BOT_A.id, spec: hourly })
+        const eventsBefore = (yield* routineEvents).length
+        yield* advance("60 minutes")
+        yield* eventually(Effect.sync(() => calls.checked === 1))
+        yield* eventually(Effect.map(scheduler.get(routine.id), (r) => r.nextRunAt === 120 * 60_000))
+        const skipped = {
+          deliveries: (yield* deliveries).length,
+          runs: yield* runsOf(routine.id),
+          routine: yield* scheduler.get(routine.id),
+          newEvents: (yield* routineEvents).length - eventsBefore,
+        }
+        yield* advance("60 minutes")
+        yield* eventually(deliveryCount(1))
+        return { skipped, runs: yield* runsOf(routine.id) }
+      }),
+      layer,
+    )
+    expect(out.skipped.deliveries).toBe(0)
+    expect(out.skipped.runs).toHaveLength(0)
+    expect(out.skipped.newEvents).toBe(0)
+    expect(out.skipped.routine.lastRunAt).toBeUndefined()
+    expect(out.runs).toHaveLength(1)
+    expect(out.runs[0]!.startedAt).toBe(120 * 60_000)
+  })
+
+  test("a broken gate (other exit, timeout, spawn error) fails open; Run now never checks it", async () => {
+    const { calls, layer } = gated([{ _tag: "error", message: "exited with code 2" }])
+    const out = await runTest(
+      Effect.gen(function* () {
+        yield* seed
+        const scheduler = yield* RoutineScheduler
+        const routine = yield* scheduler.create(userActor, { botId: BOT_A.id, spec: hourly })
+        yield* scheduler.runNow(routine.id)
+        yield* eventually(Effect.map(runsOf(routine.id), (runs) => runs[0]?.status === "succeeded"))
+        const afterManual = calls.checked
+        yield* advance("60 minutes")
+        yield* eventually(deliveryCount(2))
+        return { afterManual, deliveries: yield* deliveries }
+      }),
+      layer,
+    )
+    expect(out.afterManual).toBe(0)
+    expect(calls.checked).toBe(1)
+    expect(out.deliveries[1]!.text).toContain("scheduled run")
+    expect(out.deliveries[1]!.text).not.toContain("Gate output")
+  })
+
+  test("a missed run caught up at boot checks the gate too", async () => {
+    const now = 10 * 24 * 60 * 60_000
+    const { calls, scheduler } = gated([{ _tag: "skip" }])
+    const out = await runTest(
+      Effect.gen(function* () {
+        yield* seed
+        yield* setTime(now)
+        const repo = yield* RoutineRepo
+        const recent = makeRoutine({ id: routineId("rtn_recent"), botId: BOT_A.id, nextRunAt: now - 60 * 60_000 })
+        yield* repo.upsert(recent)
+        return yield* Effect.gen(function* () {
+          yield* eventually(Effect.sync(() => calls.checked === 1))
+          const scheduler = yield* RoutineScheduler
+          yield* eventually(Effect.map(scheduler.get(recent.id), (r) => r.nextRunAt === now + 60 * 60_000))
+          return { runs: yield* scheduler.runs(recent.id), deliveries: (yield* deliveries).length }
+        }).pipe(Effect.provide(scheduler))
+      }),
+      baseLayer({ autoComplete: done }),
+    )
+    expect(out.runs).toHaveLength(0)
+    expect(out.deliveries).toBe(0)
   })
 })
