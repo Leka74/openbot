@@ -18,7 +18,7 @@ import type { ContextUsage, HarnessEvent } from "@openbot/contracts"
 import type { HarnessSession, OpenSessionInput, TurnInput } from "@openbot/core"
 import { HarnessError } from "@openbot/core"
 import { Cause, Clock, Deferred, Effect, Exit, Option, Queue, Stream } from "effect"
-import { buildQueryOptions, mcpServersConfig } from "./config.ts"
+import { buildQueryOptions, mcpServersConfig, TOOL_OUTPUT_CAPS } from "./config.ts"
 import { type ClaudeUserMessage, commandMessage, type ReadFile, toUserMessage } from "./input.ts"
 import { ClaudeEventPipeline, type SettledCommand } from "./normalize.ts"
 import { type CanUseToolOptions, toHarnessRequest, toPermissionResult } from "./permissions.ts"
@@ -217,6 +217,7 @@ export const openClaudeSession = Effect.fn("ClaudeSession.open")(function* (
     session: input,
     ...(resumed ? { resume: sessionId } : { sessionId }),
     env: {
+      ...TOOL_OUTPUT_CAPS,
       ...deps.env,
       ...placement.env,
       ...(input.purpose === "task"

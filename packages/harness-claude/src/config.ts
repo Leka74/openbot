@@ -15,6 +15,7 @@
  *   off (`tools: []`).
  * - `permissionMode: "default"` is explicit (never `auto`, never bypass) and `canUseTool` bridges
  *   approvals. Gateway tools are pre-approved (`mcp__openbot__*`): the gateway asks itself.
+ * - Tool output is capped (`TOOL_OUTPUT_CAPS`) unless the brain's environment sets the caps itself.
  * - MCP servers are NOT passed here: `Options.mcpServers` would put headers on argv. They are
  *   registered with `setMcpServers` after start (see `mcpServersConfig`).
  */
@@ -31,7 +32,19 @@ export const DISALLOWED_NATIVE_TOOLS: ReadonlyArray<string> = [
   "ScheduleWakeup",
   "RemoteTrigger",
   "PushNotification",
+  // unused by bots, and their descriptions are a large part of the fixed prompt (Workflow ~2.5k tokens)
+  "Workflow",
+  "ReportFindings",
 ]
+
+/**
+ * Defaults for Claude's tool output caps (characters of Bash output, tokens of an MCP result): a
+ * large output stays in the context for the rest of the session. The brain's environment wins.
+ */
+export const TOOL_OUTPUT_CAPS: Readonly<Record<string, string>> = {
+  BASH_MAX_OUTPUT_LENGTH: "20000",
+  MAX_MCP_OUTPUT_TOKENS: "15000",
+}
 
 /** OpenBot gateway tools are approved by the gateway itself (interfaces §8.3, mcp-conformance R10). */
 export const PREAPPROVED_TOOLS: ReadonlyArray<string> = ["mcp__openbot__*"]
