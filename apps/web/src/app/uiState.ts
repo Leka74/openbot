@@ -55,6 +55,12 @@ export const searchViewAtom: Atom.Writable<SearchFilters | null> = Atom.make<Sea
   bootRoute.kind === "search" ? bootRoute.filters : null,
 ).pipe(Atom.keepAlive, Atom.withLabel("openbot/web/searchView"))
 
+/** The Ops view (`#/ops`): the harness at a glance, over the whole window like the computer view. */
+export const opsViewAtom: Atom.Writable<boolean> = Atom.make(bootRoute.kind === "ops").pipe(
+  Atom.keepAlive,
+  Atom.withLabel("openbot/web/opsView"),
+)
+
 /** The in-chat Find bar (Cmd/Ctrl+F) of one chat; `nonce` refocuses it when asked again. */
 export const findBarAtom: Atom.Writable<{ readonly conversationId: ConversationId; readonly nonce: number } | null> =
   Atom.make<{

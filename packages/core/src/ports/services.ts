@@ -46,6 +46,7 @@
  */
 import type {
   AlreadyAnswered,
+  StatsOverview,
   ApprovalRule,
   ApprovalRuleId,
   ApprovalRuleInput,
@@ -1169,6 +1170,11 @@ export class UsageService extends Context.Service<
     readonly byBot: (input: {
       readonly sinceMs?: Millis | undefined
     }) => Effect.Effect<ReadonlyArray<BotUsage>, never, CurrentProfile>
+    /** `stats.overview {sinceMs, bucketMs}` (the Ops view). */
+    readonly overview: (input: {
+      readonly sinceMs: Millis
+      readonly bucketMs: number
+    }) => Effect.Effect<StatsOverview, InvalidInput, CurrentProfile>
   }
 >()("openbot/core/UsageService") {}
 

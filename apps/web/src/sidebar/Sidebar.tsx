@@ -13,6 +13,7 @@ import {
   EyeOff,
   FolderInput,
   Info,
+  Gauge,
   Mail,
   MailOpen,
   Monitor,
@@ -647,9 +648,11 @@ export interface SidebarProps {
   readonly onToggleCompact: () => void
   readonly onSearch: () => void
   readonly onNewChat: () => void
+  /** Opens the Ops view (the harness at a glance). */
+  readonly onOps?: () => void
 }
 
-export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: SidebarProps): ReactNode {
+export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat, onOps }: SidebarProps): ReactNode {
   const roster = useRoster()
   const { conversationId, select } = useSelection()
   const dialogs = useDialogs()
@@ -702,6 +705,7 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
         isCurrent={isCurrent}
         openItem={openItem}
         onNewChat={onNewChat}
+        onOps={onOps}
         onToggleCompact={onToggleCompact}
         onContext={onContext}
         menu={menu}
@@ -744,6 +748,15 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
             onClick={onToggleCompact}
           />
           <span className="flex-1" />
+          {onOps && (
+            <IconButton
+              icon={Gauge}
+              label="Ops"
+              title="Ops: the harness at a glance"
+              variant="elevated"
+              onClick={onOps}
+            />
+          )}
           <IconButton
             icon={Search}
             label="Search"
@@ -982,6 +995,7 @@ function CompactSidebar({
   isCurrent,
   openItem,
   onNewChat,
+  onOps,
   onToggleCompact,
   onContext,
   menu,
@@ -991,6 +1005,7 @@ function CompactSidebar({
   readonly isCurrent: (item: SidebarItem) => boolean
   readonly openItem: (item: SidebarItem) => void
   readonly onNewChat: () => void
+  readonly onOps?: (() => void) | undefined
   readonly onToggleCompact: () => void
   readonly onContext: (item: SidebarItem) => (e: ReactMouseEvent) => void
   readonly menu: ContextTarget | undefined
@@ -1050,6 +1065,7 @@ function CompactSidebar({
       <div className="flex shrink-0 flex-col items-center gap-2 pt-2 pb-4">
         <DesktopUpdateButton compact />
         <IconButton icon={Plus} label="New chat" onClick={onNewChat} />
+        {onOps && <IconButton icon={Gauge} label="Ops" onClick={onOps} />}
         <IconButton icon={Blocks} label="Connect apps" onClick={() => connectApps.show()} />
         <OwnerMenu />
       </div>

@@ -3,7 +3,7 @@
  * `../../ports/services.ts`; apps/server composes these layers (docs/interfaces.md §2):
  *
  *   SettingsServiceLive     Layer<SettingsService, never, SettingsRepo | ApprovalRuleRepo | BotRepo | LiveHub | IdGen>
- *   UsageServiceLive        Layer<UsageService, never, UsageRepo>
+ *   UsageServiceLive        Layer<UsageService, never, UsageRepo | BotRepo | TurnRepo | TaskRepo>
  *   MemoryServiceLive       Layer<MemoryService, never, MemoryStore | BotRepo | ConversationService>
  *   SkillServiceLive        Layer<SkillService, never, SkillStore | ConversationService>
  *   ApprovalServiceLive     Layer<ApprovalService, never, ConversationService | SettingsService | Notifier |

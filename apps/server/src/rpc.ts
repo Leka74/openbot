@@ -481,6 +481,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
 
         // ---------------------------------------------------------------- usage
         "usage.byBot": ({ sinceMs }) => owner("usage.byBot", usage.byBot({ sinceMs })),
+        "stats.overview": ({ sinceMs, bucketMs }) => owner("stats.overview", usage.overview({ sinceMs, bucketMs })),
       }),
     )
   }),

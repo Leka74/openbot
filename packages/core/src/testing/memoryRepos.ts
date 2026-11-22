@@ -341,6 +341,8 @@ export const makeMemoryTurnRepo = () =>
       listActive: Effect.sync(() =>
         [...turns.values()].filter((t) => ACTIVE_TURN_STATUSES.includes(t.status)).sort(byStart),
       ),
+      listSince: (sinceMs) =>
+        Effect.sync(() => [...turns.values()].filter((t) => t.startedAt >= sinceMs).sort(byStart)),
       deleteByConversation: (conversationId) =>
         Effect.sync(() => {
           for (const [id, turn] of turns) if (turn.conversationId === conversationId) turns.delete(id)
