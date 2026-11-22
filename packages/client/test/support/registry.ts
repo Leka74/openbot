@@ -7,6 +7,7 @@ export const testConfig = (url: string, overrides?: Partial<ClientConfig>): Clie
   defaultClientConfig({
     url,
     pingInterval: "1 second",
+    pingTimeout: "1 second",
     openTimeout: "2 seconds",
     reconnect: { initialMs: 40, maxMs: 200, factor: 2, jitter: false },
     resubscribe: { initialMs: 40, maxMs: 200, factor: 2, jitter: false },

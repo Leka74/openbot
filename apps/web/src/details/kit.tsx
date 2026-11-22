@@ -57,10 +57,12 @@ export const errorText = (e: unknown): string => {
   if (typeof e === "string") return e
   if (typeof e === "object" && e !== null) {
     const r = e as Record<string, unknown>
+    // Before `message`: RpcClientError's message is Effect's raw "SocketReadError: An error occurred during Read".
+    if (r["_tag"] === "RpcClientError")
+      return "Lost the connection to OpenBot. It reconnects on its own; try again in a moment."
     if (typeof r["message"] === "string" && r["message"].length > 0) return r["message"]
     if (typeof r["reason"] === "string" && r["reason"].length > 0) return r["reason"]
     if (r["_tag"] === "NotFound") return `That ${String(r["entity"] ?? "item")} no longer exists`
-    if (r["_tag"] === "RpcClientError") return "Can't reach OpenBot. Check your connection."
     if (typeof r["_tag"] === "string") return r["_tag"]
   }
   return "Something went wrong"

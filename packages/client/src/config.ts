@@ -31,8 +31,15 @@ export const backoffDelayMs = (backoff: Backoff, attempt: number, random: () => 
 export interface ClientConfig {
   /** WebSocket URL of the brain's `/rpc` endpoint. Same origin by default (the session cookie rides along, D4.4). */
   readonly url: string
-  /** RPC ping interval; a silent socket is dropped after the same duration (effect4-platform.md §4.5). */
+  /** RPC ping interval (effect4-platform.md §4.5). */
   readonly pingInterval: Duration.Input
+  /**
+   * How long the socket may stay silent before it is dropped. Effect defaults this to `pingInterval`,
+   * so a hidden window whose timers are throttled, or a brain busy for more than one interval, failed
+   * every in-flight call with `SocketReadError: ping timeout`. Kept above Chrome's one-minute
+   * intensive throttling of hidden pages; real disconnects still surface through close events.
+   */
+  readonly pingTimeout: Duration.Input
   /** How long a WebSocket may take to open before the attempt counts as failed. */
   readonly openTimeout: Duration.Input
   /** Socket reconnect backoff (owned by the RPC protocol). */
@@ -58,6 +65,7 @@ export const defaultRpcUrl = (): string => {
 export const defaultClientConfig = (overrides?: Partial<ClientConfig>): ClientConfig => ({
   url: defaultRpcUrl(),
   pingInterval: "5 seconds",
+  pingTimeout: "75 seconds",
   openTimeout: "10 seconds",
   reconnect: { initialMs: 250, maxMs: 5_000, factor: 2, jitter: true },
   resubscribe: DEFAULT_BACKOFF,
