@@ -14,6 +14,10 @@
  *   (or everyone with `@everyone`) get a `bot-message` delivery.
  * - `handoff_task`: like `message_bot` (always urgent, same group rule), with a `handoff` event
  *   instead of "Messaged @Recipient" (no event in the group case: the post itself shows it).
+ *   A direct handoff is tracked (persisted as `brain.handoffs`, so restarts keep it): the delegator
+ *   gets a `handoff-check` delivery where it handed off when the recipient's turn for it fails or is
+ *   dropped, or when the recipient has not messaged it back within `HANDOFF_REPLY_DEADLINE_MS`. The
+ *   recipient's next `message_bot` / `handoff_task` to the delegator closes it.
  *
  * Every hop extends the sender's current causal chain (`Orchestrator.currentChain`). A chain longer
  * than `MAX_BOT_HOPS` is refused with a model-readable `InvalidInput` and a "Stopped: too many
@@ -33,10 +37,10 @@ import type {
 } from "@openbot/contracts"
 import type { Invocation } from "@openbot/node-protocol"
 import { HarnessUnavailable, InvalidInput, NotFound } from "@openbot/contracts"
-import { Effect, Layer, Option } from "effect"
+import { Clock, Duration, Effect, Layer, Option } from "effect"
 import { CoreIdPrefix, IdGen } from "../../ports/IdGen.ts"
 import { NodeFiles } from "../../ports/NodeFiles.ts"
-import { BotRepo, EntryRepo } from "../../ports/repos.ts"
+import { BotRepo, EntryRepo, SettingsRepo } from "../../ports/repos.ts"
 import { AttachmentStore } from "../../ports/stores.ts"
 import {
   type CausalChain,
@@ -66,6 +70,57 @@ const IDEMPOTENCY_KEPT = 1_000
 
 export const MESSAGING_DISABLED = "Bot-to-bot messaging is turned off in Settings."
 
+/** A handed-off task whose recipient has not messaged the delegator back by then is raised with it. */
+export const HANDOFF_REPLY_DEADLINE_MS = 45 * 60_000
+/** Where tracked handoffs are kept (a brain-internal settings key). */
+export const HANDOFFS_KEY = "brain.handoffs"
+/** Tracked handoffs kept at most (oldest dropped). */
+const HANDOFFS_KEPT = 200
+
+/** A `handoff_task` the recipient has not reported back on yet. */
+export interface TrackedHandoff {
+  readonly deliveryId: string
+  readonly fromBotId: BotId
+  readonly toBotId: BotId
+  readonly toName: string
+  /** Where the delegator handed it off: the check lands there. */
+  readonly conversationId: ConversationId
+  /** The task, shortened. */
+  readonly task: string
+  readonly at: number
+  readonly dueAt: number
+}
+
+const isTrackedHandoff = (value: unknown): value is TrackedHandoff => {
+  const h = value as Partial<TrackedHandoff> | null
+  return (
+    typeof h === "object" &&
+    h !== null &&
+    typeof h.deliveryId === "string" &&
+    typeof h.fromBotId === "string" &&
+    typeof h.toBotId === "string" &&
+    typeof h.toName === "string" &&
+    typeof h.conversationId === "string" &&
+    typeof h.task === "string" &&
+    typeof h.at === "number" &&
+    typeof h.dueAt === "number"
+  )
+}
+
+const shortTask = (task: string) => {
+  const line = task.split("\n")[0]!.trim()
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line
+}
+
+/** What the delegator reads (model-facing). */
+export const handoffCheckText = (
+  handoff: TrackedHandoff,
+  problem: { readonly kind: "failed"; readonly status: string } | { readonly kind: "silent"; readonly minutes: number },
+): string =>
+  problem.kind === "failed"
+    ? `[Handoff check] The task you handed off to @${handoff.toName} did not get done: their turn for it ${problem.status}. Task: "${handoff.task}". Hand it off again, give it to someone else or do it yourself, and tell whoever asked for it if it is late.`
+    : `[Handoff check] @${handoff.toName} has not reported back on the task you handed off ${problem.minutes} min ago: "${handoff.task}". Check its status with them (message_bot), re-assign it if it is stuck, and tell whoever asked for it if it is late. If it is already done, reply NO_REPLY.`
+
 /** One emoji grapheme (a flag, a ZWJ sequence or a skin-toned emoji count as one). */
 export const isSingleEmoji = (text: string): boolean => {
   if (text === "" || text.length > 32) return false
@@ -80,7 +135,15 @@ export const describeSendFailure = describeFileFailure
 export const MessagingLive: Layer.Layer<
   Messaging,
   never,
-  Orchestrator | ConversationService | SettingsService | BotRepo | EntryRepo | IdGen | NodeFiles | AttachmentStore
+  | Orchestrator
+  | ConversationService
+  | SettingsService
+  | BotRepo
+  | EntryRepo
+  | IdGen
+  | NodeFiles
+  | AttachmentStore
+  | SettingsRepo
 > = Layer.effect(
   Messaging,
   Effect.gen(function* () {
@@ -93,6 +156,83 @@ export const MessagingLive: Layer.Layer<
     const nodeFiles = yield* NodeFiles
     const attachmentStore = yield* AttachmentStore
     const sendLimits = yield* SendFileLimits
+    const settingsRepo = yield* SettingsRepo
+    const scope = yield* Effect.scope
+
+    // ------------------------------------------------------------------ handoff tracking
+
+    const handoffs = new Map<string, TrackedHandoff>()
+    const saveHandoffs = Effect.ignore(settingsRepo.set(HANDOFFS_KEY, [...handoffs.values()]))
+    /** Ends the tracking of one handoff; false when it was not tracked any more. */
+    const untrack = (deliveryId: string) =>
+      Effect.suspend(() => (handoffs.delete(deliveryId) ? Effect.as(saveHandoffs, true) : Effect.succeed(false)))
+    const raise = (handoff: TrackedHandoff, text: string) =>
+      Effect.gen(function* () {
+        if (!(yield* untrack(handoff.deliveryId))) return
+        yield* orchestrator
+          .deliver({
+            conversationId: handoff.conversationId,
+            botId: handoff.fromBotId,
+            kind: "handoff-check",
+            text,
+            urgency: "urgent",
+          })
+          .pipe(Effect.catch((error) => Effect.logWarning("Messaging: handoff check not delivered", error)))
+      })
+    /** Raises the handoff at its deadline, and at once when the recipient's turn for it fails. */
+    const watch = (handoff: TrackedHandoff, deliveryKnown: boolean) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis
+        yield* Effect.forkIn(
+          Effect.sleep(Duration.millis(Math.max(0, handoff.dueAt - now))).pipe(
+            Effect.andThen(
+              raise(
+                handoff,
+                handoffCheckText(handoff, {
+                  kind: "silent",
+                  minutes: Math.round((handoff.dueAt - handoff.at) / 60_000),
+                }),
+              ),
+            ),
+          ),
+          scope,
+          { startImmediately: true },
+        )
+        if (!deliveryKnown) return
+        yield* Effect.forkIn(
+          orchestrator.awaitDelivery(handoff.deliveryId).pipe(
+            Effect.flatMap((outcome) =>
+              // interrupted = a restart: the recipient is resumed; the deadline still applies
+              outcome.status === "failed" || outcome.status === "dropped"
+                ? raise(handoff, handoffCheckText(handoff, { kind: "failed", status: outcome.status }))
+                : Effect.void,
+            ),
+            Effect.catch(() => Effect.void),
+          ),
+          scope,
+          { startImmediately: true },
+        )
+      })
+    const track = (handoff: TrackedHandoff) =>
+      Effect.gen(function* () {
+        handoffs.set(handoff.deliveryId, handoff)
+        while (handoffs.size > HANDOFFS_KEPT) handoffs.delete(handoffs.keys().next().value!)
+        yield* saveHandoffs
+        yield* watch(handoff, true)
+      })
+    /** `from` messaged `to`: every handoff `to` gave `from` counts as reported back on. */
+    const repliedTo = (from: BotId, to: BotId) =>
+      Effect.forEach(
+        [...handoffs.values()].filter((h) => h.toBotId === from && h.fromBotId === to),
+        (h) => untrack(h.deliveryId),
+        { discard: true },
+      )
+    // the handoffs of earlier runs: only their deadline is left to watch
+    const stored = yield* Effect.orElseSucceed(settingsRepo.get(HANDOFFS_KEY), () => Option.none())
+    if (Option.isSome(stored) && Array.isArray(stored.value)) {
+      for (const handoff of stored.value.filter(isTrackedHandoff)) handoffs.set(handoff.deliveryId, handoff)
+      for (const handoff of handoffs.values()) yield* watch(handoff, false)
+    }
 
     // ------------------------------------------------------------------ idempotency
 
@@ -201,6 +341,7 @@ export const MessagingLive: Layer.Layer<
         if (recipient.id === sender.id) {
           return yield* new InvalidInput({ message: "You cannot message yourself. Use list_bots to find another Bot." })
         }
+        yield* repliedTo(sender.id, recipient.id)
         const deliveryId = yield* ids.next(CoreIdPrefix.delivery)
         const causalChain = yield* nextChain(ctx, deliveryId, ctx.claims.conversationId)
         const group = yield* sharedGroup(ctx, sender, recipient)
@@ -331,19 +472,38 @@ export const MessagingLive: Layer.Layer<
           message: `The task and context are longer than ${MAX_BOT_MESSAGE_CHARS} characters.`,
         })
       }
-      return yield* sendToBot("handoff_task", ctx, {
+      let recipientName = ""
+      const sent = yield* sendToBot("handoff_task", ctx, {
         to: input.to,
         text,
         urgency: "urgent",
-        event: (recipient, sender) => ({
-          type: "handoff",
-          fromBotId: sender.id,
-          toBotId: recipient.id,
-          toName: recipient.name,
-          task,
-          conversationId: recipient.directConversationId,
-        }),
+        event: (recipient, sender) => {
+          recipientName = recipient.name
+          return {
+            type: "handoff",
+            fromBotId: sender.id,
+            toBotId: recipient.id,
+            toName: recipient.name,
+            task,
+            conversationId: recipient.directConversationId,
+          }
+        },
       })
+      // direct handoffs only: in a group the team sees the work and its answer
+      if (sent.postedInGroup !== true && recipientName !== "" && !handoffs.has(sent.deliveryId)) {
+        const at = yield* Clock.currentTimeMillis
+        yield* track({
+          deliveryId: sent.deliveryId,
+          fromBotId: ctx.claims.botId,
+          toBotId: sent.recipientBotId,
+          toName: recipientName,
+          conversationId: ctx.claims.conversationId,
+          task: shortTask(task),
+          at,
+          dueAt: at + HANDOFF_REPLY_DEADLINE_MS,
+        })
+      }
+      return sent
     })
 
     // ------------------------------------------------------------------ groups (post_to_group)

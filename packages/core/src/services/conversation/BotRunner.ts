@@ -332,6 +332,7 @@ const triggerOf = (delivery: Delivery): Turn["trigger"] => {
     case "system-resume":
     case "task-result":
     case "introduction":
+    case "handoff-check":
       return "system"
   }
 }

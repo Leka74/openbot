@@ -14,6 +14,7 @@ import { BunRuntime } from "@effect/platform-bun"
 import { Cause, Deferred, Effect, Exit, Layer } from "effect"
 import { homedir } from "node:os"
 import { ConfigError, OPENBOT_VERSION, parseCommand, USAGE } from "./config.ts"
+import { restartGuardFromEnv } from "./restartGuard.ts"
 import { ServerLive } from "./server.ts"
 import { makeShutdownWatchdog, setShutdownPhase, shutdownTimeoutFromEnv } from "./shutdown.ts"
 
@@ -86,7 +87,9 @@ const main = async () => {
     })
   }
 
-  const program = Layer.launch(ServerLive(command.config)).pipe(
+  // restart storms and too-frequent drains (restartGuard.ts); OPENBOT_RESTART_GUARD=off turns it off
+  const config = { ...command.config, restartGuard: restartGuardFromEnv(process.env) }
+  const program = Layer.launch(ServerLive(config)).pipe(
     Effect.raceFirst(Deferred.await(stopSignal)),
     Effect.catchCause((cause) =>
       Cause.hasInterruptsOnly(cause)

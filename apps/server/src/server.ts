@@ -95,6 +95,7 @@ import { chmod, mkdir, unlink } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { WebAuth, WebAuthLayer } from "./auth.ts"
 import { DrainOnSignalLive } from "./drain.ts"
+import { recordBoot, stormHoldMs } from "./restartGuard.ts"
 import { OPENBOT_VERSION, ServerConfig, type ServerConfigShape } from "./config.ts"
 import {
   InternalAddressLive,
@@ -185,9 +186,32 @@ export const DataDirLockLive: Layer.Layer<never, StartupError, DataDir> = Layer.
 /** What boot recovery changed (published by `Orchestrator.recover` once the services are up). */
 export class BootReport extends Context.Service<BootReport, BootRecoveryReport>()("openbot/server/BootReport") {}
 
-export const BootReportLive: Layer.Layer<BootReport, StartupError, BootRecovery> = Layer.effect(
+/**
+ * In a restart storm (restartGuard.ts) boot recovery waits: a brain stopped again meanwhile has
+ * changed nothing, so the storm costs no restart budget and resumes nothing twice.
+ */
+const holdInRestartStorm = Effect.gen(function* () {
+  const config = yield* ServerConfig
+  const guard = config.restartGuard
+  if (guard === undefined) return
+  const now = Date.now()
+  const boots = yield* Effect.promise(() => recordBoot(config.dataDir, now))
+  const holdMs = stormHoldMs(boots, now, guard)
+  if (holdMs === 0) return
+  yield* Effect.logWarning("restart storm: waiting before resuming any work", {
+    bootsInWindow: boots.filter((t) => t > now - guard.stormWindowMs).length,
+    windowSeconds: Math.round(guard.stormWindowMs / 1000),
+    holdSeconds: Math.round(holdMs / 1000),
+  })
+  setShutdownPhase("waiting out a restart storm")
+  yield* Effect.sleep(holdMs)
+  setShutdownPhase("running")
+})
+
+export const BootReportLive: Layer.Layer<BootReport, StartupError, BootRecovery | ServerConfig> = Layer.effect(
   BootReport,
   Effect.gen(function* () {
+    yield* holdInRestartStorm
     const recovery = yield* BootRecovery
     const report = yield* recovery.run.pipe(
       Effect.mapError((error) => new StartupError({ message: `boot recovery failed: ${error.message}` })),

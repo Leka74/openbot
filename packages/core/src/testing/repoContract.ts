@@ -914,15 +914,33 @@ export const bootRecoveryContractCases: ReadonlyArray<BootRecoveryContractCase> 
       )
       yield* tasks.upsert(makeTask({ id: taskId("tsk_q"), status: "queued", createdAt: 2 }))
       yield* tasks.upsert(makeTask({ id: taskId("tsk_ok"), status: "succeeded", createdAt: 3 }))
+      // failed by an earlier boot that stopped before running it again or reporting it
+      yield* tasks.upsert(
+        makeTask({
+          id: taskId("tsk_left"),
+          status: "failed",
+          error: "interrupted by a restart",
+          awaitingRecovery: true,
+          createdAt: 4,
+        }),
+      )
+      yield* tasks.upsert(
+        makeTask({ id: taskId("tsk_told"), status: "failed", error: "interrupted by a restart", createdAt: 5 }),
+      )
       yield* tasks.putStep(taskId("tsk_run"), makeToolCallEntry({ id: entryId("ent_tstep"), status: "running" }))
 
       const report = yield* recovery.run
 
-      yield* equal(report.interruptedTasks.map((t) => t.id).sort(), ["tsk_q", "tsk_run"], "interrupted tasks")
+      yield* equal(
+        report.interruptedTasks.map((t) => t.id).sort(),
+        ["tsk_left", "tsk_q", "tsk_run"],
+        "interrupted tasks",
+      )
       const failedTask = yield* some(yield* tasks.get(taskId("tsk_run")), "task")
       yield* ok(
         failedTask.status === "failed" &&
           failedTask.error === "interrupted by a restart" &&
+          failedTask.awaitingRecovery === true &&
           failedTask.progress === undefined,
         "task failed",
       )
@@ -987,6 +1005,8 @@ export const bootRecoveryContractCases: ReadonlyArray<BootRecoveryContractCase> 
       yield* ok((yield* some(yield* tokens.lookup("h1"), "token")).revoked, "tokens revoked")
       yield* equal((yield* ledger.list).length, 0, "ledger cleared")
 
+      // nothing ran them again (`BackgroundTasks.recover`) in between: the tasks are reported once more,
+      // unchanged; everything else is idempotent
       const again = yield* recovery.run
       yield* equal(
         [
@@ -994,10 +1014,14 @@ export const bootRecoveryContractCases: ReadonlyArray<BootRecoveryContractCase> 
           again.expiredRequests.length,
           again.updatedEntries.length,
           again.interruptedRuns.length,
-          again.interruptedTasks.length,
         ],
-        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0],
         "idempotent",
+      )
+      yield* equal(
+        again.interruptedTasks.map((t) => t.id).sort(),
+        ["tsk_left", "tsk_q", "tsk_run"],
+        "tasks still awaiting recovery",
       )
     }),
   },

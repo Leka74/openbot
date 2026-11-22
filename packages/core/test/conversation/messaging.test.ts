@@ -5,6 +5,7 @@ import { TestClock } from "effect/testing"
 import { ConversationService, Messaging, Orchestrator, type ToolContext } from "../../src/ports/index.ts"
 import { BOT_DM_HINT } from "../../src/services/conversation/BotRunner.ts"
 import { HOP_LIMIT_MESSAGE, MESSAGING_DISABLED, MessagingLive } from "../../src/services/conversation/index.ts"
+import { HANDOFF_REPLY_DEADLINE_MS } from "../../src/services/conversation/Messaging.ts"
 import {
   botId,
   conversationId,
@@ -616,5 +617,68 @@ describe("post_to_group and handoff_task", () => {
       task: "Write the release notes",
       conversationId: out.bob.directConversationId,
     })
+  })
+})
+
+describe("handoff tracking", () => {
+  /** Ada hands a task to Bob; Bob answers in his chat and, when `reply`, messages Ada back. */
+  const run = (reply: boolean) =>
+    runTest(
+      Effect.gen(function* () {
+        const driver = yield* TestDriver
+        const messaging = yield* Messaging
+        const ada = yield* createBot("Ada")
+        const bob = yield* createBot("Bob")
+        yield* driver.setBehavior(ada.id, (turn) =>
+          Effect.gen(function* () {
+            yield* turn.say(`${turn.turnId}/m`, "Noted.")
+            yield* turn.complete()
+          }),
+        )
+        yield* driver.setBehavior(bob.id, (turn) =>
+          Effect.gen(function* () {
+            if (reply && turn.input.text.includes("Task handed off to you")) {
+              yield* Effect.orDie(
+                messaging.messageBot(turn.tool, {
+                  to: "Ada",
+                  text: "Done: train times compared.",
+                  urgency: "background",
+                }),
+              )
+            }
+            yield* turn.say(`${turn.turnId}/m`, "On it.")
+            yield* turn.complete()
+          }),
+        )
+        yield* messaging.handoffTask(toolFor(ada, ada.directConversationId), { to: "Bob", task: "Compare train times" })
+        yield* settled(bob.directConversationId)
+        if (reply) {
+          yield* passBotWakeDebounce
+          yield* settled(ada.directConversationId)
+        }
+        const before = (yield* driver.turns).filter((t) => t.input.text.includes("[Handoff check]")).length
+        yield* TestClock.adjust(`${HANDOFF_REPLY_DEADLINE_MS + 60_000} millis`)
+        yield* settled(ada.directConversationId)
+        return {
+          before,
+          checks: (yield* driver.turns).filter((t) => t.input.text.includes("[Handoff check]")),
+          ada,
+        }
+      }),
+      appLayer(),
+    )
+
+  test("a recipient silent past the deadline wakes the delegator where it handed off", async () => {
+    const out = await run(false)
+    expect(out.before).toBe(0)
+    expect(out.checks).toHaveLength(1)
+    expect(out.checks[0]!.input.text).toContain(
+      '@Bob has not reported back on the task you handed off 45 min ago: "Compare train times"',
+    )
+  })
+
+  test("a message back from the recipient closes it: no check", async () => {
+    const out = await run(true)
+    expect(out.checks).toHaveLength(0)
   })
 })
