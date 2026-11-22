@@ -24,8 +24,8 @@ export const VOICE_MANIFEST: VoiceManifest = {
     label: "Kokoro",
     archive: {
       url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
-      sha256: "c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298",
-      bytes: 349_906_910,
+      sha256: "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4",
+      bytes: 349_886_476,
     },
     model: "model.onnx",
     voices: "voices.bin",
