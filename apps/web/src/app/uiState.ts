@@ -55,6 +55,12 @@ export const searchViewAtom: Atom.Writable<SearchFilters | null> = Atom.make<Sea
   bootRoute.kind === "search" ? bootRoute.filters : null,
 ).pipe(Atom.keepAlive, Atom.withLabel("openbot/web/searchView"))
 
+/** The decision queue (`#/queue`) in the chat column. */
+export const queueViewAtom: Atom.Writable<boolean> = Atom.make<boolean>(bootRoute.kind === "queue").pipe(
+  Atom.keepAlive,
+  Atom.withLabel("openbot/web/queueView"),
+)
+
 /** The in-chat Find bar (Cmd/Ctrl+F) of one chat; `nonce` refocuses it when asked again. */
 export const findBarAtom: Atom.Writable<{ readonly conversationId: ConversationId; readonly nonce: number } | null> =
   Atom.make<{
@@ -183,12 +189,14 @@ export const useSelection = () => {
   const [home, setHome] = useAtom(phoneHomeAtom)
   const setJump = useAtomSet(jumpTargetAtom)
   const [search, setSearch] = useAtom(searchViewAtom)
+  const [queue, setQueue] = useAtom(queueViewAtom)
   const bots = useAtomValue(botsAtom)
   const select = useCallback(
     (id: ConversationId | null, options?: SelectOptions) => {
       if (conversationId && conversationId !== id) setPrevious(conversationId)
       set(id)
       if (search !== null) setSearch(null)
+      if (queue) setQueue(false)
       const entryId = id === null ? undefined : options?.entryId
       if (id !== null && entryId !== undefined) {
         setJump({
@@ -202,17 +210,29 @@ export const useSelection = () => {
       if (home) setHome(false)
       showHash(id ? chatHash(id, entryId) : "#/new", home)
     },
-    [conversationId, set, setPrevious, home, setHome, setJump, search, setSearch],
+    [conversationId, set, setPrevious, home, setHome, setJump, search, setSearch, queue, setQueue],
   )
   /** Shows the Search view with `filters` (the selected chat stays selected under it). */
   const openSearch = useCallback(
     (filters: SearchFilters) => {
       setSearch(filters)
+      setQueue(false)
       if (home) setHome(false)
       showHash(searchHash(filters), home)
     },
-    [setSearch, home, setHome],
+    [setSearch, setQueue, home, setHome],
   )
+  /** Shows the decision queue in the chat column (the selected chat stays selected under it). */
+  const openQueue = useCallback(() => {
+    setQueue(true)
+    setSearch(null)
+    if (home) setHome(false)
+    showHash("#/queue", home)
+  }, [setQueue, setSearch, home, setHome])
+  const closeQueue = useCallback(() => {
+    setQueue(false)
+    showHash(conversationId ? chatHash(conversationId) : "#/new", home)
+  }, [setQueue, conversationId, home])
   /** Leaves the Search view for the selected chat (or New chat). */
   const closeSearch = useCallback(() => {
     setSearch(null)
@@ -226,7 +246,7 @@ export const useSelection = () => {
     },
     [bots, select],
   )
-  return { conversationId, select, selectBot, search, openSearch, closeSearch }
+  return { conversationId, select, selectBot, search, openSearch, closeSearch, queue, openQueue, closeQueue }
 }
 
 /**

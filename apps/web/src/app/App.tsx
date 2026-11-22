@@ -12,6 +12,7 @@ import { ChatView } from "../chat/ChatView.tsx"
 import { NewChatView } from "../chat/NewChat.tsx"
 import { SearchPalette } from "../palette/SearchPalette.tsx"
 import { SearchView } from "../search/SearchView.tsx"
+import { QueueView, useQueueEnabled } from "../queue/QueueView.tsx"
 import { Sidebar } from "../sidebar/Sidebar.tsx"
 import { AppShell } from "./AppShell.tsx"
 import { AwayDialog } from "./AwayDialog.tsx"
@@ -103,7 +104,8 @@ export function App(): ReactNode {
   const info = useSessionInfo()
   const profiles = useAtomValue(profilesAtom)
   const activeProfileId = useAtomValue(activeProfileIdAtom)
-  const { conversationId, select, search, openSearch, closeSearch } = useSelection()
+  const { conversationId, select, search, openSearch, closeSearch, queue, openQueue, closeQueue } = useSelection()
+  const queueEnabled = useQueueEnabled()
   const [findBar, setFindBar] = useAtom(findBarAtom)
   const nav = usePhoneNav()
   const details = useDetailsPane()
@@ -161,7 +163,10 @@ export function App(): ReactNode {
     if (booted.current || !roster.loaded) return
     booted.current = true
     const deepLink =
-      (conversationId !== null && roster.state.conversations.has(conversationId)) || isNewChatHash() || search !== null
+      (conversationId !== null && roster.state.conversations.has(conversationId)) ||
+      isNewChatHash() ||
+      search !== null ||
+      queue
     if (isPhoneNow()) {
       if (deepLink && !nav.home) {
         const hash = location.hash
@@ -180,7 +185,7 @@ export function App(): ReactNode {
       .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0]
     const target = firstPinned?.directConversationId ?? recent?.id
     if (target) select(target)
-  }, [roster.loaded, roster.bots, roster.state.conversations, conversationId, select, nav, search])
+  }, [roster.loaded, roster.bots, roster.state.conversations, conversationId, select, nav, search, queue])
 
   // A Bot created before its roster upsert arrived: open its chat as soon as it shows up.
   useEffect(() => {
@@ -222,6 +227,7 @@ export function App(): ReactNode {
       const route = parseRoute(location.hash)
       if (route.kind === "chat") return select(route.conversationId, { entryId: route.entryId, openExchange: true })
       if (route.kind === "search") return openSearch(route.filters)
+      if (route.kind === "queue") return openQueue()
       if (isPhoneNow() && route.kind !== "new") return nav.setHome(true)
       select(null)
     }
@@ -232,12 +238,12 @@ export function App(): ReactNode {
       if (location.hash !== bootHash) on()
     }
     return () => window.removeEventListener("hashchange", on)
-  }, [select, openSearch, nav])
+  }, [select, openSearch, openQueue, nav])
 
   // Keyboard shortcuts: Cmd/Ctrl+K search, Cmd/Ctrl+F find in the open chat, Cmd/Ctrl+N new chat,
   // Cmd/Ctrl+B compact sidebar, Cmd/Ctrl+, settings, Esc closes the top-most surface (dialogs handle
   // their own Esc first).
-  const chatOnScreen = conversationId !== null && search === null && !(phone && nav.home)
+  const chatOnScreen = conversationId !== null && search === null && !queue && !(phone && nav.home)
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
@@ -275,6 +281,7 @@ export function App(): ReactNode {
         if (computer.botId) computer.close()
         else if (findBar !== null && findBar.conversationId === conversationId && chatOnScreen) setFindBar(null)
         else if (search !== null) closeSearch()
+        else if (queue) closeQueue()
         else if (details.open) details.hide()
         else if (conversationId === null && previous) select(previous)
       }
@@ -297,6 +304,8 @@ export function App(): ReactNode {
     setFindBar,
     search,
     closeSearch,
+    queue,
+    closeQueue,
   ])
 
   // Phone sheets own a history entry: Back / swipe-back closes them (nav.ts).
@@ -357,12 +366,15 @@ export function App(): ReactNode {
             compact={c}
             onToggleCompact={toggleCompact}
             onSearch={() => dialogs.show({ kind: "search" })}
+            onQueue={queueEnabled ? openQueue : undefined}
             onNewChat={() => select(null)}
           />
         )}
         chat={
           <>
-            {search !== null ? (
+            {queue ? (
+              <QueueView onBack={phone ? nav.back : undefined} />
+            ) : search !== null ? (
               <SearchView filters={search} onClose={phone ? nav.back : closeSearch} />
             ) : conversationId ? (
               <ChatView key={conversationId} conversationId={conversationId} />
@@ -373,7 +385,7 @@ export function App(): ReactNode {
           </>
         }
         details={
-          details.open && conversationId && search === null ? (
+          details.open && conversationId && search === null && !queue ? (
             <Suspense fallback={<PaneLoading />}>
               <DetailsPane
                 key={conversationId}

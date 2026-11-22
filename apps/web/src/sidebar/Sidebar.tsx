@@ -17,6 +17,7 @@ import {
   MailOpen,
   Monitor,
   Moon,
+  ListChecks,
   PanelLeft,
   Pin,
   PinOff,
@@ -646,10 +647,12 @@ export interface SidebarProps {
   readonly compact: boolean
   readonly onToggleCompact: () => void
   readonly onSearch: () => void
+  /** Opens the decision queue; undefined when the brain has none. */
+  readonly onQueue?: (() => void) | undefined
   readonly onNewChat: () => void
 }
 
-export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: SidebarProps): ReactNode {
+export function Sidebar({ compact, onToggleCompact, onSearch, onQueue, onNewChat }: SidebarProps): ReactNode {
   const roster = useRoster()
   const { conversationId, select } = useSelection()
   const dialogs = useDialogs()
@@ -702,6 +705,7 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
         isCurrent={isCurrent}
         openItem={openItem}
         onNewChat={onNewChat}
+        onQueue={onQueue}
         onToggleCompact={onToggleCompact}
         onContext={onContext}
         menu={menu}
@@ -731,6 +735,7 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
             <OwnerMenu />
           </div>
           <span className="flex-1" />
+          {onQueue && <IconButton icon={ListChecks} label="Queue" size={44} variant="elevated" onClick={onQueue} />}
           <IconButton icon={Search} label="Search" size={44} variant="elevated" onClick={onSearch} />
           <IconButton icon={Plus} label="New chat" size={44} variant="elevated" onClick={onNewChat} />
         </div>
@@ -744,6 +749,7 @@ export function Sidebar({ compact, onToggleCompact, onSearch, onNewChat }: Sideb
             onClick={onToggleCompact}
           />
           <span className="flex-1" />
+          {onQueue && <IconButton icon={ListChecks} label="Queue" title="Queue" variant="elevated" onClick={onQueue} />}
           <IconButton
             icon={Search}
             label="Search"
@@ -982,6 +988,7 @@ function CompactSidebar({
   isCurrent,
   openItem,
   onNewChat,
+  onQueue,
   onToggleCompact,
   onContext,
   menu,
@@ -991,6 +998,7 @@ function CompactSidebar({
   readonly isCurrent: (item: SidebarItem) => boolean
   readonly openItem: (item: SidebarItem) => void
   readonly onNewChat: () => void
+  readonly onQueue?: (() => void) | undefined
   readonly onToggleCompact: () => void
   readonly onContext: (item: SidebarItem) => (e: ReactMouseEvent) => void
   readonly menu: ContextTarget | undefined
@@ -1049,6 +1057,7 @@ function CompactSidebar({
       </div>
       <div className="flex shrink-0 flex-col items-center gap-2 pt-2 pb-4">
         <DesktopUpdateButton compact />
+        {onQueue && <IconButton icon={ListChecks} label="Queue" onClick={onQueue} />}
         <IconButton icon={Plus} label="New chat" onClick={onNewChat} />
         <IconButton icon={Blocks} label="Connect apps" onClick={() => connectApps.show()} />
         <OwnerMenu />

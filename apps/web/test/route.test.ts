@@ -8,6 +8,14 @@ import { chatHash, parseRoute, parseSearch, routeHash, searchHash } from "../src
 const cnv = "cnv_01ABC" as ConversationId
 const ent = "ent_01XYZ" as EntryId
 
+describe("queue route", () => {
+  test("#/queue is the decision queue and round-trips", () => {
+    expect(parseRoute("#/queue")).toEqual({ kind: "queue" })
+    expect(routeHash({ kind: "queue" })).toBe("#/queue")
+    expect(parseRoute("#/queuex").kind).toBe("other")
+  })
+})
+
 describe("chat routes", () => {
   test("a chat, and a chat at one entry", () => {
     expect(parseRoute("#/c/cnv_01ABC")).toEqual({ kind: "chat", conversationId: cnv })
