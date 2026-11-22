@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { HarnessEvent, KnownConversationStreamItem, KnownRosterStreamItem, TurnId } from "@openbot/contracts"
-import { Effect, Option } from "effect"
+import { Deferred, Effect, Option } from "effect"
 import { TestClock } from "effect/testing"
 import { BotRepo, ConversationService, LiveHub, Orchestrator, sessionKeyOf } from "../../src/ports/index.ts"
 import { NotifierFake, runTest, UsageServiceFake } from "../../src/testing/index.ts"
@@ -565,6 +565,66 @@ describe("idle compaction", () => {
   test("a small context, or the setting off, is left alone", async () => {
     expect((await idleFor(11, { minTokens: 5_000 })).compactions).toBe(0)
     expect((await idleFor(11, { minTokens: 1_000, enabled: false })).compactions).toBe(0)
+  })
+})
+
+describe("busy compaction", () => {
+  /**
+   * A first turn (context 1 100 tokens) held until a second message has queued behind it; records
+   * how many compactions had run when each turn started.
+   */
+  const backToBack = (options: {
+    readonly minTokens: number
+    readonly enabled?: boolean
+    readonly firstFails?: boolean
+  }) =>
+    runTest(
+      Effect.gen(function* () {
+        const driver = yield* TestDriver
+        const bot = yield* createBot("Ada")
+        const dm = bot.directConversationId
+        const release = yield* Deferred.make<void>()
+        const atStart: Array<number> = []
+        yield* driver.setBehavior(bot.id, (turn) =>
+          Effect.gen(function* () {
+            atStart.push(yield* driver.compactions)
+            if (turn.input.text !== "one") return yield* turn.complete()
+            yield* Deferred.await(release)
+            yield* options.firstFails === true ? turn.fail("boom", "it broke") : turn.complete()
+          }),
+        )
+        yield* send(dm, "one")
+        yield* eventually(
+          Effect.map(driver.turns, (t) => t.length === 1),
+          "first turn",
+        )
+        yield* send(dm, "two")
+        yield* Deferred.succeed(release, undefined)
+        yield* settled(dm, 2)
+        return { atStart, compactions: yield* driver.compactions, entries: yield* transcript(dm) }
+      }),
+      appLayer({
+        capabilities: { compact: true },
+        runner: { busyCompactMinTokens: options.minTokens, idleCompactMinTokens: 1_000_000 },
+        ...(options.enabled === false ? { settings: { compactIdleBots: false } } : {}),
+      }),
+    )
+
+  test("a large context is compacted right after the turn, before the queued message runs", async () => {
+    const out = await backToBack({ minTokens: 1_000 })
+    // after the first turn (1 100 tokens) only: compaction leaves 500, the second turn ends at 600
+    expect(out.atStart).toEqual([0, 1])
+    expect(out.compactions).toBe(1)
+    expect(eventsOf(out.entries).filter((e) => e.type === "session-changed" && e.action === "compacted")).toHaveLength(
+      1,
+    )
+  })
+
+  test("a small context, the setting off, or a failed turn is left alone", async () => {
+    expect((await backToBack({ minTokens: 5_000 })).compactions).toBe(0)
+    expect((await backToBack({ minTokens: 1_000, enabled: false })).compactions).toBe(0)
+    // (the second turn, which completes, compacts after it)
+    expect((await backToBack({ minTokens: 1_000, firstFails: true })).atStart).toEqual([0, 0])
   })
 })
 

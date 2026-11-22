@@ -18,6 +18,7 @@ import type {
   TurnId,
 } from "@openbot/contracts"
 import { Cause, Context, Deferred, Effect, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import {
   CallPresence,
   BotService,
@@ -39,6 +40,7 @@ import {
   type BackgroundTasksOptions,
   BotServiceLive,
   ConversationServiceLive,
+  DEFAULT_RUNNER_OPTIONS,
   InstructionRendererLive,
   LiveHubLive,
   makeBackgroundTasksLayer,
@@ -500,6 +502,9 @@ export const eventsOf = (entries: ReadonlyArray<TranscriptEntry>) =>
 /** Turns of a conversation, oldest first. */
 export const turnsOf = (conversationId: ConversationId) =>
   Effect.flatMap(TurnRepo, (repo) => Effect.orDie(repo.listByConversation(conversationId, 1_000)))
+
+/** Lets queued background bot messages wake their recipient: `botWakeDebounce` passes. */
+export const passBotWakeDebounce = TestClock.adjust(DEFAULT_RUNNER_OPTIONS.botWakeDebounce)
 
 /** Waits until every turn of the conversation is terminal (and at least `min` exist). */
 export const settled = (conversationId: ConversationId, min = 1) =>

@@ -75,6 +75,8 @@ export const startServer = async (options?: {
         localNode: TEST_LOCAL_NODE,
         // no GitHub from tests
         updates: { schedule: false, fetch: async () => new Response("offline", { status: 503 }) },
+        // background bot messages wake their recipient quickly (production: 45 s)
+        runner: { botWakeDebounce: "50 millis" },
         ...options?.server,
       }),
       scope,

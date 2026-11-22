@@ -8,7 +8,18 @@ import { Effect, Layer, Ref } from "effect"
 import { AttachmentService, ConversationService, inProfile, Messaging, SendFileLimits } from "../../src/ports/index.ts"
 import { BOT_DM_HINT } from "../../src/services/conversation/BotRunner.ts"
 import { NodeFilesFake, runTest } from "../../src/testing/index.ts"
-import { appLayer, createBot, eventsOf, messagesOf, send, settled, TestDriver, transcript, turnsOf } from "./helpers.ts"
+import {
+  appLayer,
+  createBot,
+  eventsOf,
+  messagesOf,
+  passBotWakeDebounce,
+  send,
+  settled,
+  TestDriver,
+  transcript,
+  turnsOf,
+} from "./helpers.ts"
 
 const workspaceOf = (botId: string) => `/openbot-test/bots/${botId}/workspace`
 const sha = (bytes: Uint8Array | undefined) =>
@@ -55,6 +66,7 @@ describe("bot → bot files", () => {
         )
         yield* send(ada.directConversationId, "Send Bob the diagram")
         yield* settled(ada.directConversationId)
+        yield* passBotWakeDebounce
         yield* settled(bob.directConversationId)
         const handles = yield* driver.turns
         const bobTurn = handles.find((h) => h.bot.id === bob.id)!
@@ -139,6 +151,8 @@ describe("bot → bot files", () => {
           }).pipe(Effect.orDie, inProfile(MAIN_PROFILE_ID)),
         )
         yield* send(group, "@Ada share the revenue CSV with Bob")
+        yield* settled(group)
+        yield* passBotWakeDebounce
         yield* settled(group, 2)
         const handles = yield* driver.turns
         const bobTurn = handles.find((h) => h.bot.id === bob.id)!

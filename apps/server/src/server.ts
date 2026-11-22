@@ -59,6 +59,7 @@ import {
   InstructionRendererLive,
   LiveHubLive,
   makeDataDir,
+  makeOrchestratorLayer,
   MAX_SENT_FILES,
   MemoryServiceLive,
   MessagingLive,
@@ -69,6 +70,7 @@ import {
   ProfileGuardLive,
   ProfileRemovalLive,
   RoutineSchedulerLive,
+  type RunnerOptions,
   SearchRepo,
   SearchServiceLive,
   SendFileLimits,
@@ -384,6 +386,8 @@ export interface ServerOptions {
   readonly voiceCalls?: { readonly dir: string; readonly sttDir: string } | undefined
   /** Updates from GitHub Releases (tests: a fake GitHub, no timer). */
   readonly updates?: Omit<UpdatesOptions, "dataDir"> | undefined
+  /** Bot runner timings (tests: a short `botWakeDebounce`); default `DEFAULT_RUNNER_OPTIONS`. */
+  readonly runner?: Partial<RunnerOptions> | undefined
   readonly quiet?: boolean | undefined
 }
 
@@ -473,7 +477,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(HarnessProfilesLayer(options?.profiles)), // 8b: added accounts (profiles.ts)
       Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
       Layer.provideMerge(RecoveredLive), // 7
-      Layer.provideMerge(OrchestratorLive), // 6
+      Layer.provideMerge(options?.runner === undefined ? OrchestratorLive : makeOrchestratorLayer(options.runner)), // 6
       Layer.provideMerge(BackgroundTasksLive), // 5b (D5.7)
       Layer.provideMerge(InstructionRendererLive),
       Layer.provideMerge(ApprovalServiceLive),

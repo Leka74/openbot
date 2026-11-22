@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { ConversationId } from "@openbot/contracts"
 import { Deferred, Effect, Exit, Layer, Ref } from "effect"
-import { ConversationService, Messaging, type ToolContext } from "../../src/ports/index.ts"
+import { TestClock } from "effect/testing"
+import { ConversationService, Messaging, Orchestrator, type ToolContext } from "../../src/ports/index.ts"
 import { BOT_DM_HINT } from "../../src/services/conversation/BotRunner.ts"
 import { HOP_LIMIT_MESSAGE, MESSAGING_DISABLED, MessagingLive } from "../../src/services/conversation/index.ts"
 import {
@@ -22,6 +23,7 @@ import {
   eventsOf,
   eventually,
   messagesOf,
+  passBotWakeDebounce,
   send,
   settled,
   TestDriver,
@@ -32,6 +34,10 @@ import {
 const toolFor = (bot: { readonly id: string }, conversation: ConversationId, callId?: string): ToolContext => ({
   claims: makeClaims({ botId: bot.id as never, conversationId: conversation }),
   ...(callId === undefined ? {} : { callId }),
+})
+
+const yieldMany = Effect.gen(function* () {
+  for (let i = 0; i < 200; i++) yield* Effect.yieldNow
 })
 
 describe("message_bot (D5.2)", () => {
@@ -97,7 +103,49 @@ describe("message_bot (D5.2)", () => {
     expect(messagesOf(out.adaEntries).some((m) => m.text === "Reply from Bob")).toBe(false)
   })
 
-  test("background: an idle recipient wakes immediately with attribution", async () => {
+  test("background: an idle recipient wakes after botWakeDebounce, with everything that arrived meanwhile in one turn", async () => {
+    const out = await runTest(
+      Effect.gen(function* () {
+        const driver = yield* TestDriver
+        const messaging = yield* Messaging
+        const orchestrator = yield* Orchestrator
+        const ada = yield* createBot("Ada")
+        const bob = yield* createBot("Bob")
+        const cy = yield* createBot("Cy")
+        yield* messaging.messageBot(toolFor(ada, ada.directConversationId), {
+          to: "Bob",
+          text: "FYI: the report is in the shared folder.",
+          urgency: "background",
+        })
+        yield* TestClock.adjust("30 seconds")
+        yield* yieldMany
+        // measured from the first queued message: this one does not push the wake-up back
+        const receipt = yield* orchestrator.deliver({
+          conversationId: bob.directConversationId,
+          botId: bob.id,
+          kind: "bot-message",
+          text: "Mine is done too.",
+          fromBotId: cy.id,
+          urgency: "background",
+        })
+        yield* TestClock.adjust("14 seconds")
+        yield* yieldMany
+        const early = (yield* driver.turns).length
+        yield* TestClock.adjust("1 second")
+        yield* settled(bob.directConversationId)
+        return { receipt, early, handles: yield* driver.turns, after: yield* turnsOf(bob.directConversationId) }
+      }),
+      appLayer(),
+    )
+    expect(out.receipt.disposition).toBe("batched")
+    expect(out.early).toBe(0)
+    expect(out.after).toHaveLength(1)
+    expect(out.handles).toHaveLength(1)
+    expect(out.handles[0]!.input.text).toContain("[Direct message from @Ada]: FYI: the report is in the shared folder.")
+    expect(out.handles[0]!.input.text).toContain("Mine is done too.")
+  })
+
+  test("background: an owner message during the debounce wakes the bot at once and takes the waiting message along", async () => {
     const out = await runTest(
       Effect.gen(function* () {
         const driver = yield* TestDriver
@@ -109,19 +157,23 @@ describe("message_bot (D5.2)", () => {
           text: "FYI: the report is in the shared folder.",
           urgency: "background",
         })
+        yield* TestClock.adjust("5 seconds")
+        yield* send(bob.directConversationId, "Anything new?")
         yield* settled(bob.directConversationId)
+        // nothing is left to wake the bot later
+        yield* passBotWakeDebounce
+        yield* yieldMany
         return { handles: yield* driver.turns, after: yield* turnsOf(bob.directConversationId) }
       }),
       appLayer(),
     )
-    expect(out.after).toHaveLength(1)
+    expect(out.after.map((t) => t.trigger)).toEqual(["user"])
     expect(out.handles).toHaveLength(1)
-    expect(out.handles[0]!.input.text).toBe(
-      `${BOT_DM_HINT}\n[Direct message from @Ada]: FYI: the report is in the shared folder.`,
-    )
+    expect(out.handles[0]!.input.text).toContain("FYI: the report is in the shared folder.")
+    expect(out.handles[0]!.input.text).toContain("Anything new?")
   })
 
-  test("background: a busy recipient is not interrupted; the message runs as soon as its turn ends", async () => {
+  test("background: a busy recipient is not interrupted; the message runs after its turn, once the debounce has passed", async () => {
     const out = await runTest(
       Effect.gen(function* () {
         const driver = yield* TestDriver
@@ -147,16 +199,21 @@ describe("message_bot (D5.2)", () => {
         })
         const whileBusy = (yield* driver.turns).length
         yield* Deferred.succeed(release, undefined)
+        yield* settled(bob.directConversationId)
+        yield* yieldMany
+        const afterTurn = (yield* driver.turns).length
+        yield* passBotWakeDebounce
         yield* eventually(
           Effect.map(driver.turns, (all) => all.length === 2),
           "follow-up turn",
         )
         yield* settled(bob.directConversationId)
-        return { whileBusy, handles: yield* driver.turns }
+        return { whileBusy, afterTurn, handles: yield* driver.turns }
       }),
       appLayer(),
     )
     expect(out.whileBusy).toBe(1)
+    expect(out.afterTurn).toBe(1)
     expect(out.handles).toHaveLength(2)
     expect(out.handles[1]!.input.text).toBe(`${BOT_DM_HINT}\n[Direct message from @Ada]: Done with mine.`)
   })
@@ -384,6 +441,7 @@ describe("post_to_group and handoff_task", () => {
         )
         yield* send(group.id, "@Lead kick off the tick project")
         yield* settled(group.id, 3)
+        yield* passBotWakeDebounce
         yield* settled(chief.directConversationId)
         return {
           lead,

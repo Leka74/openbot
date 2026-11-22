@@ -98,7 +98,7 @@ const messageBot = defineTool({
     urgency: p.optional(
       p.literals(
         ["background", "urgent"],
-        "background (default): wakes the recipient now if it is idle, otherwise right after its current turn. urgent: the recipient reads it as soon as possible (folded into its current turn when it is working in the same chat, else right after it). Bots never cut each other off.",
+        "background (default): wakes an idle recipient within about a minute, batched with other updates for it into one turn (a busy one reads it after its current turn). urgent: the recipient reads it as soon as possible (folded into its current turn when it is working in the same chat, else right after it). Bots never cut each other off.",
       ),
       "background",
     ),

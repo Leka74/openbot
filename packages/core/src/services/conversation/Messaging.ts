@@ -3,7 +3,8 @@
  *
  * - `message_bot`: a bot-authored message (`toBotId`) in the RECIPIENT's direct conversation, a
  *   "Messaged @Recipient" event in the sender's current conversation, and a `bot-message` delivery
- *   (`urgent` wakes the recipient now; `background` waits for its next turn).
+ *   (`urgent` wakes the recipient now; `background` waits for its next turn, or wakes an idle recipient
+ *   after the runner's `botWakeDebounce`, batched).
  *   When the sender works in a GROUP the recipient is also a member of, the message stays in that
  *   group: during the sender's group turn nothing is posted separately — the recipient is noted and
  *   woken by the sender's reply (which addresses it; no near-identical double posts), or the text is
