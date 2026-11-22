@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Queue</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <header>
+      <div class="title">Queue <span id="count"></span></div>
+      <div id="burn"></div>
+      <div class="spacer"></div>
+      <div id="status"></div>
+      <button id="cmdk" class="ghost" title="Command palette">Commands <kbd id="cmdk-key">⌘K</kbd></button>
+    </header>
+    <nav id="splits"></nav>
+    <div id="searchbar" hidden>
+      <input id="search" placeholder="Search the queue" autocomplete="off" spellcheck="false" />
+    </div>
+    <main>
+      <section id="list" aria-label="Queue"></section>
+      <section id="detail" aria-label="Item"></section>
+    </main>
+    <footer id="hints"></footer>
+    <div id="modal" hidden></div>
+    <div id="toast" hidden></div>
+    <script src="app.js"></script>
+  </body>
+</html>
