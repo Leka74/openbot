@@ -896,3 +896,410 @@
   font-weight: 600;
   letter-spacing: 0.06em;
 }
+
+/* ------------------------------------------------------------------ view tabs */
+.ops-tabs {
+  margin-left: 8px;
+}
+@media (max-width: 760px) {
+  .ops-tabs {
+    margin-left: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ map */
+.ops-map {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, #182029 0%, var(--ops-bg) 70%);
+  touch-action: none;
+  user-select: none;
+}
+.ops-map-svg {
+  display: block;
+  cursor: grab;
+}
+.ops-map-grabbing {
+  cursor: grabbing;
+}
+.ops-map-gridline {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.035);
+  stroke-width: 1;
+}
+.ops-map-orbit {
+  fill: none;
+  stroke: var(--ops-line);
+  stroke-dasharray: 2 6;
+}
+.ops-map-edge path {
+  fill: none;
+  stroke: var(--ops-line-2);
+  stroke-width: 1.2;
+  transition:
+    opacity 0.25s,
+    stroke 0.4s;
+}
+.ops-map-edge-leaf path {
+  stroke-dasharray: 3 4;
+}
+.ops-map-edge-group path {
+  stroke: color-mix(in srgb, var(--ops-violet) 45%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+}
+.ops-map-edge.ops-map-live path {
+  stroke: var(--tone);
+  stroke-width: 1.8;
+  stroke-dasharray: 6 6;
+  animation: ops-map-flow 0.9s linear infinite;
+}
+.ops-map-edge-group.ops-map-live path {
+  stroke: var(--ops-primary);
+  stroke-width: 1.4;
+  stroke-dasharray: 2 6;
+}
+@keyframes ops-map-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+.ops-map-particle {
+  fill: var(--tone);
+  filter: drop-shadow(0 0 4px var(--tone));
+}
+.ops-map-dim {
+  opacity: 0.18;
+}
+
+.ops-map-node {
+  cursor: pointer;
+  transition:
+    transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.25s;
+  transform-box: view-box;
+}
+.ops-map-title {
+  fill: var(--ops-text);
+  font:
+    600 13px -apple-system,
+    BlinkMacSystemFont,
+    "Inter",
+    sans-serif;
+  paint-order: stroke;
+  stroke: var(--ops-bg);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.ops-map-sub {
+  fill: var(--ops-dim);
+  font: 10.5px var(--ops-mono);
+  paint-order: stroke;
+  stroke: var(--ops-bg);
+  stroke-width: 3px;
+}
+.ops-map-activity {
+  fill: var(--tone);
+  font: 11px var(--ops-mono);
+  paint-order: stroke;
+  stroke: var(--ops-bg);
+  stroke-width: 3px;
+}
+.ops-map-root-shape {
+  fill: var(--ops-panel);
+  stroke: var(--ops-primary);
+  stroke-width: 2;
+}
+.ops-map-root-core {
+  fill: var(--ops-primary);
+}
+.ops-map-live .ops-map-root-core {
+  animation: ops-map-beat 1.6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes ops-map-beat {
+  50% {
+    opacity: 0.45;
+  }
+}
+.ops-map-halo {
+  opacity: 0.6;
+}
+.ops-map-chip {
+  fill: var(--ops-panel-2);
+  stroke: var(--ops-line-2);
+}
+.ops-map-section.ops-map-live .ops-map-chip {
+  stroke: var(--ops-primary);
+}
+.ops-map-chip-text {
+  fill: var(--ops-muted);
+  font: 600 11px var(--ops-mono);
+  letter-spacing: 0.1em;
+}
+.ops-map-bot-ring {
+  fill: var(--ops-panel);
+  stroke: var(--tone);
+  stroke-width: 2.5;
+}
+.ops-map-bot.ops-tone-none .ops-map-bot-ring {
+  stroke: var(--ops-line-2);
+}
+.ops-map-bot-core {
+  fill: color-mix(in srgb, var(--tone) 18%, var(--ops-panel-2));
+}
+.ops-map-initials {
+  fill: var(--ops-text);
+  font: 600 12px var(--ops-mono);
+  letter-spacing: 0.04em;
+}
+.ops-map-spin {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 1.5;
+  stroke-dasharray: 8 10;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ops-map-spin 3s linear infinite;
+}
+@keyframes ops-map-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ops-map-ripple {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 2;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ops-map-ripple 2s ease-out infinite;
+}
+@keyframes ops-map-ripple {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+.ops-map-leaf {
+  fill: color-mix(in srgb, var(--tone) 22%, var(--ops-panel));
+  stroke: var(--tone);
+  stroke-width: 1.4;
+}
+.ops-map-glyph {
+  fill: var(--tone);
+  font: 11px var(--ops-mono);
+}
+.ops-map-leaf-title {
+  fill: var(--ops-text);
+  font:
+    12px -apple-system,
+    BlinkMacSystemFont,
+    "Inter",
+    sans-serif;
+  paint-order: stroke;
+  stroke: var(--ops-bg);
+  stroke-width: 4px;
+}
+.ops-map-task.ops-map-live .ops-map-leaf,
+.ops-map-request .ops-map-leaf {
+  animation: ops-map-beat 1.4s ease-in-out infinite;
+}
+.ops-map-node:hover .ops-map-bot-ring,
+.ops-map-node:hover .ops-map-leaf,
+.ops-map-node:hover .ops-map-chip {
+  stroke-width: 3;
+}
+.ops-map-selected .ops-map-bot-ring,
+.ops-map-selected .ops-map-leaf,
+.ops-map-selected .ops-map-chip,
+.ops-map-selected .ops-map-root-shape {
+  stroke: #fff;
+  stroke-width: 3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ops-map-spin,
+  .ops-map-ripple,
+  .ops-map-edge.ops-map-live path,
+  .ops-map-root-core,
+  .ops-map-leaf {
+    animation: none !important;
+  }
+  .ops-map-particle {
+    display: none;
+  }
+}
+
+/* map chrome */
+.ops-map-controls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ops-root .ops-map-controls .ops-button {
+  min-width: 28px;
+  justify-content: center;
+}
+.ops-map-zoom {
+  margin-left: 6px;
+  font: 11px var(--ops-mono);
+  color: var(--ops-dim);
+}
+.ops-map-legend {
+  position: absolute;
+  left: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  max-width: calc(100% - 230px);
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--ops-black) 85%, transparent);
+  border: 1px solid var(--ops-line);
+  border-radius: 3px;
+  font: 10px var(--ops-mono);
+  letter-spacing: 0.06em;
+  color: var(--ops-muted);
+  pointer-events: none;
+}
+.ops-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ops-map-legend-chord {
+  display: inline-block;
+  width: 16px;
+  border-top: 2px dotted var(--ops-violet);
+}
+.ops-map-mini {
+  overflow: hidden;
+  position: absolute;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--ops-black) 90%, transparent);
+  border: 1px solid var(--ops-line-2);
+  border-radius: 3px;
+  cursor: crosshair;
+}
+.ops-map-mini-edge {
+  stroke: var(--ops-line-2);
+  stroke-width: 0.6;
+}
+.ops-map-mini-node {
+  fill: var(--tone);
+}
+.ops-map-mini-view {
+  fill: rgba(76, 144, 240, 0.08);
+  stroke: var(--ops-primary);
+  stroke-width: 1;
+}
+.ops-map-inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 290px;
+  max-height: calc(100% - 24px - 140px);
+  overflow: auto;
+  padding: 12px;
+  background: var(--ops-panel);
+  border: 1px solid var(--ops-line-2);
+  border-radius: 3px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  scrollbar-width: thin;
+}
+.ops-map-inspector header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ops-map-inspector h3 {
+  margin: 10px 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.ops-map-inspector p {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.ops-map-inspector dl {
+  margin: 8px 0 12px;
+  border-top: 1px solid var(--ops-line);
+}
+.ops-map-inspector dl > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--ops-line);
+  font-size: 12px;
+}
+.ops-map-inspector dt {
+  font: 600 10px var(--ops-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ops-dim);
+  padding-top: 2px;
+}
+.ops-map-inspector dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ops-map-actions {
+  display: flex;
+  gap: 6px;
+}
+.ops-root .ops-button-primary {
+  background: var(--ops-primary);
+  border-color: var(--ops-primary);
+  color: #fff;
+}
+.ops-root .ops-button-primary:hover {
+  background: #2d72d2;
+  color: #fff;
+}
+.ops-map-links {
+  display: flex;
+  flex-direction: column;
+}
+.ops-root .ops-map-link {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--ops-line);
+}
+.ops-root .ops-map-link:hover {
+  background: rgba(76, 144, 240, 0.08);
+}
+@media (max-width: 760px) {
+  .ops-map-inspector {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: 8px;
+    width: auto;
+    max-height: 55%;
+  }
+  .ops-map-legend {
+    display: none;
+  }
+  .ops-map-mini {
+    top: 8px;
+    bottom: auto;
+    right: 8px;
+  }
+}

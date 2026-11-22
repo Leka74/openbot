@@ -20,6 +20,7 @@ import type {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { useRoster } from "../app/data.ts"
 import { formatTokens, formatUsd, harnessName, useQuery } from "../details/kit.tsx"
+import { OpsMap } from "./OpsMap.tsx"
 
 export interface OpsViewProps {
   readonly onClose: () => void
@@ -33,6 +34,15 @@ const PERIODS: Record<Period, { readonly bucketMs: number; readonly buckets: num
   "24h": { bucketMs: HOUR, buckets: 24, label: "24H" },
   "7d": { bucketMs: 6 * HOUR, buckets: 28, label: "7D" },
   "30d": { bucketMs: DAY, buckets: 30, label: "30D" },
+}
+type OpsTab = "console" | "map"
+const TAB_KEY = "openbot.ops.tab"
+const readTab = (): OpsTab => {
+  try {
+    return localStorage.getItem(TAB_KEY) === "map" ? "map" : "console"
+  } catch {
+    return "console"
+  }
 }
 const STATS_POLL_MS = 30_000
 const LIST_POLL_MS = 15_000
@@ -316,6 +326,15 @@ export function OpsView({ onClose, onOpenChat }: OpsViewProps): ReactNode {
   const roster = useRoster()
   const now = useNow(1000)
   const [period, setPeriod] = useState<Period>("24h")
+  const [view, setViewState] = useState<OpsTab>(readTab)
+  const setView = (tab: OpsTab) => {
+    setViewState(tab)
+    try {
+      localStorage.setItem(TAB_KEY, tab)
+    } catch {
+      // private window: the tab is just not remembered
+    }
+  }
   const { bucketMs, buckets: bucketCount } = PERIODS[period]
   // the last bucket is the current one; the key only changes at a bucket boundary
   const since = Math.floor(now / bucketMs) * bucketMs - (bucketCount - 1) * bucketMs
@@ -424,7 +443,14 @@ export function OpsView({ onClose, onOpenChat }: OpsViewProps): ReactNode {
           <span className="ops-brand-mark" aria-hidden />
           <span>OPENBOT</span>
           <span className="ops-sep">/</span>
-          <span className="ops-brand-sub">OPS CONSOLE</span>
+          <span className="ops-brand-sub">OPS</span>
+        </div>
+        <div className="ops-segmented ops-tabs" role="tablist" aria-label="View">
+          {(["console", "map"] as const).map((tab) => (
+            <button key={tab} role="tab" aria-selected={tab === view} onClick={() => setView(tab)}>
+              {tab === "console" ? "▤ CONSOLE" : "◎ MAP"}
+            </button>
+          ))}
         </div>
         <div className="ops-nav-mid">
           <span className={`ops-live ${roster.loaded ? "" : "ops-live-off"}`}>
@@ -464,385 +490,406 @@ export function OpsView({ onClose, onOpenChat }: OpsViewProps): ReactNode {
         </div>
       </nav>
 
-      <div className="ops-scroll">
-        {/* ------------------------------------------------------------ KPIs */}
-        <div className="ops-kpis">
-          <Kpi
-            label="Bots active"
-            value={
-              <>
-                {busy}
-                <small>/{bots.length}</small>
-              </>
-            }
-            tone={busy > 0 ? "primary" : "none"}
-            sub={`${counts.working} working · ${counts.thinking} thinking`}
-          />
-          <Kpi
-            label="Needs you"
-            value={pendingCount + counts.error}
-            tone={pendingCount + counts.error > 0 ? "warning" : "none"}
-            sub={`${pendingCount} approvals · ${counts.error} errors`}
-          />
-          <Kpi
-            label="Background tasks"
-            value={running.length}
-            tone={running.length > 0 ? "violet" : "none"}
-            sub={`${queued.length} queued · ${totals.tasks} in ${PERIODS[period].label}`}
-            spark={s?.buckets.map((b) => b.tasks)}
-          />
-          <Kpi
-            label={`Turns · ${PERIODS[period].label}`}
-            value={totals.turns.toLocaleString()}
-            sub={
-              <>
-                p50 {s?.turnP50Ms === undefined ? "—" : span(s.turnP50Ms)} · p90{" "}
-                {s?.turnP90Ms === undefined ? "—" : span(s.turnP90Ms)}
-              </>
-            }
-            spark={s?.buckets.map((b) => b.turns)}
-          />
-          <Kpi
-            label="Failure rate"
-            value={`${failRate.toFixed(1)}%`}
-            tone={failRate >= 10 ? "danger" : failRate >= 3 ? "warning" : "success"}
-            sub={`${totals.failed} failed turns`}
-            spark={s?.buckets.map((b) => b.turnsFailed)}
-          />
-          <Kpi
-            label={`Spend · ${PERIODS[period].label}`}
-            value={formatUsd(totals.cost)}
-            tone="warning"
-            sub={`${formatTokens(totals.tokens)} tokens`}
-            spark={s?.buckets.map((b) => b.costUsd)}
-          />
-          <Kpi
-            label="Computers"
-            value={
-              <>
-                {nodesOnline}
-                <small>/{nodes.length}</small>
-              </>
-            }
-            tone={nodes.length > 0 && nodesOnline < nodes.length ? "warning" : "success"}
-            sub={`${routineRows.filter((r) => r.enabled).length} routines on · ${routinesRunning} running`}
-          />
-        </div>
+      {view === "map" ? (
+        <OpsMap
+          bots={bots}
+          sections={[...state.sections.values()]}
+          activityOf={activityOf}
+          tasks={tasks}
+          pending={pending}
+          routines={routineRows}
+          groups={[...state.conversations.values()].filter((c) => c.kind === "group")}
+          statsByBot={statsByBot}
+          chatOf={(id) => directChat.get(id)?.id}
+          now={now}
+          onOpenChat={onOpenChat}
+        />
+      ) : (
+        <div className="ops-scroll">
+          {/* ------------------------------------------------------------ KPIs */}
+          <div className="ops-kpis">
+            <Kpi
+              label="Bots active"
+              value={
+                <>
+                  {busy}
+                  <small>/{bots.length}</small>
+                </>
+              }
+              tone={busy > 0 ? "primary" : "none"}
+              sub={`${counts.working} working · ${counts.thinking} thinking`}
+            />
+            <Kpi
+              label="Needs you"
+              value={pendingCount + counts.error}
+              tone={pendingCount + counts.error > 0 ? "warning" : "none"}
+              sub={`${pendingCount} approvals · ${counts.error} errors`}
+            />
+            <Kpi
+              label="Background tasks"
+              value={running.length}
+              tone={running.length > 0 ? "violet" : "none"}
+              sub={`${queued.length} queued · ${totals.tasks} in ${PERIODS[period].label}`}
+              spark={s?.buckets.map((b) => b.tasks)}
+            />
+            <Kpi
+              label={`Turns · ${PERIODS[period].label}`}
+              value={totals.turns.toLocaleString()}
+              sub={
+                <>
+                  p50 {s?.turnP50Ms === undefined ? "—" : span(s.turnP50Ms)} · p90{" "}
+                  {s?.turnP90Ms === undefined ? "—" : span(s.turnP90Ms)}
+                </>
+              }
+              spark={s?.buckets.map((b) => b.turns)}
+            />
+            <Kpi
+              label="Failure rate"
+              value={`${failRate.toFixed(1)}%`}
+              tone={failRate >= 10 ? "danger" : failRate >= 3 ? "warning" : "success"}
+              sub={`${totals.failed} failed turns`}
+              spark={s?.buckets.map((b) => b.turnsFailed)}
+            />
+            <Kpi
+              label={`Spend · ${PERIODS[period].label}`}
+              value={formatUsd(totals.cost)}
+              tone="warning"
+              sub={`${formatTokens(totals.tokens)} tokens`}
+              spark={s?.buckets.map((b) => b.costUsd)}
+            />
+            <Kpi
+              label="Computers"
+              value={
+                <>
+                  {nodesOnline}
+                  <small>/{nodes.length}</small>
+                </>
+              }
+              tone={nodes.length > 0 && nodesOnline < nodes.length ? "warning" : "success"}
+              sub={`${routineRows.filter((r) => r.enabled).length} routines on · ${routinesRunning} running`}
+            />
+          </div>
 
-        <div className="ops-grid">
-          {/* ------------------------------------------------------------ throughput */}
-          <Panel
-            title="Throughput"
-            className="ops-span-8"
-            meta={
-              <>
-                {stats.error !== undefined && <Tag tone="danger">{stats.error}</Tag>}
-                <span>
-                  {PERIODS[period].label} · {bucketMs >= DAY ? "1D" : `${bucketMs / HOUR}H`} BUCKETS
-                </span>
-              </>
-            }
-          >
-            {stats.loading ? <Empty>Loading…</Empty> : <Throughput stats={s} period={period} />}
-          </Panel>
+          <div className="ops-grid">
+            {/* ------------------------------------------------------------ throughput */}
+            <Panel
+              title="Throughput"
+              className="ops-span-8"
+              meta={
+                <>
+                  {stats.error !== undefined && <Tag tone="danger">{stats.error}</Tag>}
+                  <span>
+                    {PERIODS[period].label} · {bucketMs >= DAY ? "1D" : `${bucketMs / HOUR}H`} BUCKETS
+                  </span>
+                </>
+              }
+            >
+              {stats.loading ? <Empty>Loading…</Empty> : <Throughput stats={s} period={period} />}
+            </Panel>
 
-          {/* ------------------------------------------------------------ fleet */}
-          <Panel title="Fleet status" className="ops-span-4" meta={<span>{bots.length} BOTS</span>}>
-            <div className="ops-stack">
-              {STATE_ORDER.map((st) => (
-                <div
-                  key={st}
-                  className={`ops-fill-${STATE_TONE[st]}`}
-                  style={{ flexGrow: counts[st] }}
-                  title={`${st}: ${counts[st]}`}
-                />
-              ))}
-            </div>
-            <div className="ops-fleet-legend">
-              {STATE_ORDER.map((st) => (
-                <div key={st} className={counts[st] === 0 ? "ops-dim" : undefined}>
-                  <Dot tone={STATE_TONE[st]} pulse={st === "working" && counts[st] > 0} />
-                  <span>{st.toUpperCase()}</span>
-                  <b>{counts[st]}</b>
-                </div>
-              ))}
-            </div>
-            <div className="ops-subhead">SECTIONS</div>
-            <div className="ops-sections">
-              {[...state.sections.values()]
-                .sort((a, b) => a.order - b.order)
-                .map((sec) => {
-                  const members = bots.filter((b) => b.sectionId === sec.id)
-                  const active = members.filter((b) => stateOf(b.id) !== "idle" && stateOf(b.id) !== "offline").length
+            {/* ------------------------------------------------------------ fleet */}
+            <Panel title="Fleet status" className="ops-span-4" meta={<span>{bots.length} BOTS</span>}>
+              <div className="ops-stack">
+                {STATE_ORDER.map((st) => (
+                  <div
+                    key={st}
+                    className={`ops-fill-${STATE_TONE[st]}`}
+                    style={{ flexGrow: counts[st] }}
+                    title={`${st}: ${counts[st]}`}
+                  />
+                ))}
+              </div>
+              <div className="ops-fleet-legend">
+                {STATE_ORDER.map((st) => (
+                  <div key={st} className={counts[st] === 0 ? "ops-dim" : undefined}>
+                    <Dot tone={STATE_TONE[st]} pulse={st === "working" && counts[st] > 0} />
+                    <span>{st.toUpperCase()}</span>
+                    <b>{counts[st]}</b>
+                  </div>
+                ))}
+              </div>
+              <div className="ops-subhead">SECTIONS</div>
+              <div className="ops-sections">
+                {[...state.sections.values()]
+                  .sort((a, b) => a.order - b.order)
+                  .map((sec) => {
+                    const members = bots.filter((b) => b.sectionId === sec.id)
+                    const active = members.filter((b) => stateOf(b.id) !== "idle" && stateOf(b.id) !== "offline").length
+                    return (
+                      <div key={sec.id} className="ops-section-row">
+                        <span className="ops-ellipsis">{sec.name}</span>
+                        <Progress value={pct(active, members.length)} tone={active > 0 ? "primary" : "muted"} />
+                        <span className="ops-mono ops-right">
+                          {active}/{members.length}
+                        </span>
+                      </div>
+                    )
+                  })}
+              </div>
+            </Panel>
+
+            {/* ------------------------------------------------------------ bots */}
+            <Panel title="Bots" className="ops-span-8 ops-tall" meta={<span>CLICK A ROW TO OPEN ITS CHAT</span>}>
+              <div className="ops-table-wrap">
+                <table className="ops-table">
+                  <thead>
+                    <tr>
+                      <th>STATUS</th>
+                      <th>BOT</th>
+                      <th>SECTION</th>
+                      <th>HARNESS · MODEL</th>
+                      <th>CURRENT</th>
+                      <th className="ops-right">FOR</th>
+                      <th className="ops-right">TASKS</th>
+                      <th className="ops-right">TURNS</th>
+                      <th className="ops-right">FAIL</th>
+                      <th className="ops-right">P50</th>
+                      <th className="ops-right">SPEND</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {botRows.map((bot) => {
+                      const act = activityOf(bot.id)
+                      const st = stateOf(bot.id)
+                      const row = statsByBot.get(bot.id)
+                      const chat = directChat.get(bot.id)?.id ?? act?.conversationId
+                      const t = activeTasksOf(bot.id)
+                      return (
+                        <tr
+                          key={bot.id}
+                          className={chat === undefined ? undefined : "ops-clickable"}
+                          onClick={() => open(chat)}
+                        >
+                          <td>
+                            <Tag tone={STATE_TONE[st]} minimal={st === "idle"}>
+                              {st.toUpperCase()}
+                            </Tag>
+                          </td>
+                          <td className="ops-strong ops-ellipsis">{bot.label ?? bot.name}</td>
+                          <td className="ops-muted ops-ellipsis">{sectionName(bot.sectionId)}</td>
+                          <td className="ops-mono ops-muted ops-ellipsis">
+                            {harnessName(bot.harness.kind)}
+                            {bot.harness.model ? ` · ${bot.harness.model}` : ""}
+                          </td>
+                          <td className="ops-ellipsis ops-current">
+                            {st === "idle" ? <span className="ops-dim">—</span> : (act?.label ?? st)}
+                          </td>
+                          <td className="ops-mono ops-right">{act && st !== "idle" ? span(now - act.since) : ""}</td>
+                          <td className="ops-mono ops-right">
+                            {t > 0 ? <span className="ops-text-violet">{t}</span> : <span className="ops-dim">0</span>}
+                          </td>
+                          <td className="ops-mono ops-right">{row?.turns ?? 0}</td>
+                          <td
+                            className={`ops-mono ops-right ${row && row.turnsFailed > 0 ? "ops-text-danger" : "ops-dim"}`}
+                          >
+                            {row?.turnsFailed ?? 0}
+                          </td>
+                          <td className="ops-mono ops-right ops-muted">
+                            {row?.turnP50Ms === undefined ? "—" : span(row.turnP50Ms)}
+                          </td>
+                          <td className="ops-mono ops-right ops-spend">
+                            <span
+                              className="ops-spend-bar"
+                              style={{ width: `${pct(row?.costUsd ?? 0, maxBotCost)}%` }}
+                            />
+                            <span>{formatUsd(row?.costUsd ?? 0)}</span>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {botRows.length === 0 && (
+                      <tr>
+                        <td colSpan={11}>
+                          <Empty>{roster.loaded ? "No bots yet." : "Connecting to the brain…"}</Empty>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+
+            {/* ------------------------------------------------------------ tasks */}
+            <Panel
+              title="Task pipeline"
+              className="ops-span-4 ops-tall"
+              meta={
+                <>
+                  <Tag tone="violet">{running.length} RUNNING</Tag>
+                  <Tag tone="none">{queued.length} QUEUED</Tag>
+                </>
+              }
+            >
+              <div className="ops-list">
+                {[...running, ...queued].map((t) => (
+                  <TaskRow key={t.id} task={t} now={now} bot={botName(t.botId)} onOpen={() => open(t.conversationId)} />
+                ))}
+                {running.length + queued.length === 0 && <Empty>Nothing running in the background.</Empty>}
+                {finished.length > 0 && <div className="ops-subhead">RECENTLY FINISHED</div>}
+                {finished.map((t) => (
+                  <TaskRow key={t.id} task={t} now={now} bot={botName(t.botId)} onOpen={() => open(t.conversationId)} />
+                ))}
+              </div>
+            </Panel>
+
+            {/* ------------------------------------------------------------ approvals */}
+            <Panel
+              title="Waiting on you"
+              className="ops-span-4"
+              meta={
+                pendingCount > 0 ? <Tag tone="warning">{pendingCount} PENDING</Tag> : <Tag tone="success">CLEAR</Tag>
+              }
+            >
+              <div className="ops-list">
+                {pending.map((r) => (
+                  <button key={r.id} className="ops-item" onClick={() => open(r.conversationId)}>
+                    <div className="ops-item-top">
+                      <Tag tone={r.blocking ? "warning" : "none"}>{r.kind.replace("-", " ").toUpperCase()}</Tag>
+                      <span className="ops-muted ops-ellipsis">{botName(r.botId)}</span>
+                      <span className="ops-mono ops-dim ops-push">{span(now - r.createdAt)} ago</span>
+                    </div>
+                    <div className="ops-item-title ops-ellipsis">{r.title}</div>
+                    {r.expiresAt !== undefined && (
+                      <Progress value={pct(now - r.createdAt, r.expiresAt - r.createdAt)} tone="warning" />
+                    )}
+                  </button>
+                ))}
+                {pending.length === 0 && <Empty>No approvals or questions waiting.</Empty>}
+              </div>
+            </Panel>
+
+            {/* ------------------------------------------------------------ routines */}
+            <Panel
+              title="Routines"
+              className="ops-span-4"
+              meta={<span>{routineRows.filter((r) => r.enabled).length} ENABLED</span>}
+            >
+              <div className="ops-list">
+                {routineRows.slice(0, 12).map((r) => {
+                  const prog =
+                    r.enabled && r.lastRunAt !== undefined && r.nextRunAt !== undefined && r.nextRunAt > r.lastRunAt
+                      ? pct(now - r.lastRunAt, r.nextRunAt - r.lastRunAt)
+                      : undefined
+                  const tone: Tone =
+                    r.lastRunStatus === "failed"
+                      ? "danger"
+                      : r.lastRunStatus === "running"
+                        ? "primary"
+                        : r.lastRunStatus === "succeeded"
+                          ? "success"
+                          : "none"
                   return (
-                    <div key={sec.id} className="ops-section-row">
-                      <span className="ops-ellipsis">{sec.name}</span>
-                      <Progress value={pct(active, members.length)} tone={active > 0 ? "primary" : "muted"} />
-                      <span className="ops-mono ops-right">
-                        {active}/{members.length}
-                      </span>
+                    <div key={r.id} className={`ops-routine ${r.enabled ? "" : "ops-dim"}`}>
+                      <div className="ops-item-top">
+                        <Dot tone={tone} pulse={r.lastRunStatus === "running"} />
+                        <span className="ops-strong ops-ellipsis">{r.name}</span>
+                        <span className="ops-mono ops-dim ops-push">
+                          {!r.enabled
+                            ? "OFF"
+                            : r.lastRunStatus === "running"
+                              ? "RUNNING"
+                              : r.nextRunAt !== undefined
+                                ? `in ${span(r.nextRunAt - now)}`
+                                : "—"}
+                        </span>
+                      </div>
+                      <div className="ops-item-sub">
+                        <span className="ops-ellipsis">{botName(r.botId)}</span>
+                        <span className="ops-mono">{triggerText(r)}</span>
+                      </div>
+                      {prog !== undefined && <Progress value={prog} tone={tone === "none" ? "muted" : tone} />}
                     </div>
                   )
                 })}
-            </div>
-          </Panel>
+                {routineRows.length === 0 && <Empty>{routines.loading ? "Loading…" : "No routines."}</Empty>}
+              </div>
+            </Panel>
 
-          {/* ------------------------------------------------------------ bots */}
-          <Panel title="Bots" className="ops-span-8 ops-tall" meta={<span>CLICK A ROW TO OPEN ITS CHAT</span>}>
-            <div className="ops-table-wrap">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th>STATUS</th>
-                    <th>BOT</th>
-                    <th>SECTION</th>
-                    <th>HARNESS · MODEL</th>
-                    <th>CURRENT</th>
-                    <th className="ops-right">FOR</th>
-                    <th className="ops-right">TASKS</th>
-                    <th className="ops-right">TURNS</th>
-                    <th className="ops-right">FAIL</th>
-                    <th className="ops-right">P50</th>
-                    <th className="ops-right">SPEND</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {botRows.map((bot) => {
-                    const act = activityOf(bot.id)
-                    const st = stateOf(bot.id)
-                    const row = statsByBot.get(bot.id)
-                    const chat = directChat.get(bot.id)?.id ?? act?.conversationId
-                    const t = activeTasksOf(bot.id)
-                    return (
-                      <tr
-                        key={bot.id}
-                        className={chat === undefined ? undefined : "ops-clickable"}
-                        onClick={() => open(chat)}
-                      >
-                        <td>
-                          <Tag tone={STATE_TONE[st]} minimal={st === "idle"}>
-                            {st.toUpperCase()}
-                          </Tag>
-                        </td>
-                        <td className="ops-strong ops-ellipsis">{bot.label ?? bot.name}</td>
-                        <td className="ops-muted ops-ellipsis">{sectionName(bot.sectionId)}</td>
-                        <td className="ops-mono ops-muted ops-ellipsis">
-                          {harnessName(bot.harness.kind)}
-                          {bot.harness.model ? ` · ${bot.harness.model}` : ""}
-                        </td>
-                        <td className="ops-ellipsis ops-current">
-                          {st === "idle" ? <span className="ops-dim">—</span> : (act?.label ?? st)}
-                        </td>
-                        <td className="ops-mono ops-right">{act && st !== "idle" ? span(now - act.since) : ""}</td>
-                        <td className="ops-mono ops-right">
-                          {t > 0 ? <span className="ops-text-violet">{t}</span> : <span className="ops-dim">0</span>}
-                        </td>
-                        <td className="ops-mono ops-right">{row?.turns ?? 0}</td>
-                        <td
-                          className={`ops-mono ops-right ${row && row.turnsFailed > 0 ? "ops-text-danger" : "ops-dim"}`}
-                        >
-                          {row?.turnsFailed ?? 0}
-                        </td>
-                        <td className="ops-mono ops-right ops-muted">
-                          {row?.turnP50Ms === undefined ? "—" : span(row.turnP50Ms)}
-                        </td>
-                        <td className="ops-mono ops-right ops-spend">
-                          <span className="ops-spend-bar" style={{ width: `${pct(row?.costUsd ?? 0, maxBotCost)}%` }} />
-                          <span>{formatUsd(row?.costUsd ?? 0)}</span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {botRows.length === 0 && (
-                    <tr>
-                      <td colSpan={11}>
-                        <Empty>{roster.loaded ? "No bots yet." : "Connecting to the brain…"}</Empty>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
-
-          {/* ------------------------------------------------------------ tasks */}
-          <Panel
-            title="Task pipeline"
-            className="ops-span-4 ops-tall"
-            meta={
-              <>
-                <Tag tone="violet">{running.length} RUNNING</Tag>
-                <Tag tone="none">{queued.length} QUEUED</Tag>
-              </>
-            }
-          >
-            <div className="ops-list">
-              {[...running, ...queued].map((t) => (
-                <TaskRow key={t.id} task={t} now={now} bot={botName(t.botId)} onOpen={() => open(t.conversationId)} />
+            {/* ------------------------------------------------------------ infrastructure */}
+            <Panel title="Infrastructure" className="ops-span-4">
+              <div className="ops-subhead ops-subhead-first">COMPUTERS</div>
+              {nodes.map((n) => (
+                <div key={n.id} className="ops-kv">
+                  <Dot tone={n.status === "online" ? "success" : n.status === "degraded" ? "warning" : "danger"} />
+                  <span className="ops-strong ops-ellipsis">{n.label}</span>
+                  <span className="ops-muted ops-ellipsis">{n.platform}</span>
+                  <span className="ops-mono ops-dim ops-push">{n.version ?? ""}</span>
+                </div>
               ))}
-              {running.length + queued.length === 0 && <Empty>Nothing running in the background.</Empty>}
-              {finished.length > 0 && <div className="ops-subhead">RECENTLY FINISHED</div>}
-              {finished.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} bot={botName(t.botId)} onOpen={() => open(t.conversationId)} />
-              ))}
-            </div>
-          </Panel>
-
-          {/* ------------------------------------------------------------ approvals */}
-          <Panel
-            title="Waiting on you"
-            className="ops-span-4"
-            meta={pendingCount > 0 ? <Tag tone="warning">{pendingCount} PENDING</Tag> : <Tag tone="success">CLEAR</Tag>}
-          >
-            <div className="ops-list">
-              {pending.map((r) => (
-                <button key={r.id} className="ops-item" onClick={() => open(r.conversationId)}>
-                  <div className="ops-item-top">
-                    <Tag tone={r.blocking ? "warning" : "none"}>{r.kind.replace("-", " ").toUpperCase()}</Tag>
-                    <span className="ops-muted ops-ellipsis">{botName(r.botId)}</span>
-                    <span className="ops-mono ops-dim ops-push">{span(now - r.createdAt)} ago</span>
-                  </div>
-                  <div className="ops-item-title ops-ellipsis">{r.title}</div>
-                  {r.expiresAt !== undefined && (
-                    <Progress value={pct(now - r.createdAt, r.expiresAt - r.createdAt)} tone="warning" />
-                  )}
-                </button>
-              ))}
-              {pending.length === 0 && <Empty>No approvals or questions waiting.</Empty>}
-            </div>
-          </Panel>
-
-          {/* ------------------------------------------------------------ routines */}
-          <Panel
-            title="Routines"
-            className="ops-span-4"
-            meta={<span>{routineRows.filter((r) => r.enabled).length} ENABLED</span>}
-          >
-            <div className="ops-list">
-              {routineRows.slice(0, 12).map((r) => {
-                const prog =
-                  r.enabled && r.lastRunAt !== undefined && r.nextRunAt !== undefined && r.nextRunAt > r.lastRunAt
-                    ? pct(now - r.lastRunAt, r.nextRunAt - r.lastRunAt)
-                    : undefined
-                const tone: Tone =
-                  r.lastRunStatus === "failed"
-                    ? "danger"
-                    : r.lastRunStatus === "running"
-                      ? "primary"
-                      : r.lastRunStatus === "succeeded"
-                        ? "success"
-                        : "none"
+              {nodes.length === 0 && <Empty>No computers.</Empty>}
+              <div className="ops-subhead">HARNESSES</div>
+              {harnessRows.map((h) => {
+                const ok = h.installed && h.auth.state === "signed-in" && h.problems.length === 0
                 return (
-                  <div key={r.id} className={`ops-routine ${r.enabled ? "" : "ops-dim"}`}>
-                    <div className="ops-item-top">
-                      <Dot tone={tone} pulse={r.lastRunStatus === "running"} />
-                      <span className="ops-strong ops-ellipsis">{r.name}</span>
-                      <span className="ops-mono ops-dim ops-push">
-                        {!r.enabled
-                          ? "OFF"
-                          : r.lastRunStatus === "running"
-                            ? "RUNNING"
-                            : r.nextRunAt !== undefined
-                              ? `in ${span(r.nextRunAt - now)}`
-                              : "—"}
-                      </span>
-                    </div>
-                    <div className="ops-item-sub">
-                      <span className="ops-ellipsis">{botName(r.botId)}</span>
-                      <span className="ops-mono">{triggerText(r)}</span>
-                    </div>
-                    {prog !== undefined && <Progress value={prog} tone={tone === "none" ? "muted" : tone} />}
+                  <div key={`${h.kind}:${h.profileId ?? ""}`} className="ops-kv" title={h.problems.join("\n")}>
+                    <Dot
+                      tone={
+                        !h.installed ? "muted" : ok ? "success" : h.auth.state === "signed-out" ? "danger" : "warning"
+                      }
+                    />
+                    <span className="ops-strong ops-ellipsis">
+                      {harnessName(h.kind, h)}
+                      {h.profileLabel ? ` · ${h.profileLabel}` : ""}
+                    </span>
+                    <span className="ops-muted ops-ellipsis">
+                      {!h.installed
+                        ? "not installed"
+                        : h.auth.state === "signed-in"
+                          ? (h.account?.plan ?? "signed in")
+                          : h.auth.state}
+                    </span>
+                    <span className="ops-mono ops-dim ops-push">
+                      {h.problems.length > 0 ? (
+                        <span className="ops-text-warning">{h.problems.length} issue(s)</span>
+                      ) : (
+                        (h.version ?? "")
+                      )}
+                    </span>
                   </div>
                 )
               })}
-              {routineRows.length === 0 && <Empty>{routines.loading ? "Loading…" : "No routines."}</Empty>}
-            </div>
-          </Panel>
+              {harnessRows.length === 0 && <Empty>{harnesses.loading ? "Checking…" : "No harnesses."}</Empty>}
+            </Panel>
 
-          {/* ------------------------------------------------------------ infrastructure */}
-          <Panel title="Infrastructure" className="ops-span-4">
-            <div className="ops-subhead ops-subhead-first">COMPUTERS</div>
-            {nodes.map((n) => (
-              <div key={n.id} className="ops-kv">
-                <Dot tone={n.status === "online" ? "success" : n.status === "degraded" ? "warning" : "danger"} />
-                <span className="ops-strong ops-ellipsis">{n.label}</span>
-                <span className="ops-muted ops-ellipsis">{n.platform}</span>
-                <span className="ops-mono ops-dim ops-push">{n.version ?? ""}</span>
-              </div>
-            ))}
-            {nodes.length === 0 && <Empty>No computers.</Empty>}
-            <div className="ops-subhead">HARNESSES</div>
-            {harnessRows.map((h) => {
-              const ok = h.installed && h.auth.state === "signed-in" && h.problems.length === 0
-              return (
-                <div key={`${h.kind}:${h.profileId ?? ""}`} className="ops-kv" title={h.problems.join("\n")}>
-                  <Dot
-                    tone={
-                      !h.installed ? "muted" : ok ? "success" : h.auth.state === "signed-out" ? "danger" : "warning"
-                    }
-                  />
-                  <span className="ops-strong ops-ellipsis">
-                    {harnessName(h.kind, h)}
-                    {h.profileLabel ? ` · ${h.profileLabel}` : ""}
-                  </span>
-                  <span className="ops-muted ops-ellipsis">
-                    {!h.installed
-                      ? "not installed"
-                      : h.auth.state === "signed-in"
-                        ? (h.account?.plan ?? "signed in")
-                        : h.auth.state}
-                  </span>
-                  <span className="ops-mono ops-dim ops-push">
-                    {h.problems.length > 0 ? (
-                      <span className="ops-text-warning">{h.problems.length} issue(s)</span>
-                    ) : (
-                      (h.version ?? "")
-                    )}
-                  </span>
+            {/* ------------------------------------------------------------ spend by model */}
+            <Panel title="Spend by model" className="ops-span-4" meta={<span>{PERIODS[period].label}</span>}>
+              {models.map((m) => (
+                <div key={`${m.harness ?? ""}/${m.model}`} className="ops-model">
+                  <div className="ops-item-top">
+                    <span className="ops-mono ops-ellipsis">{m.model}</span>
+                    <span className="ops-dim">{m.harness ? harnessName(m.harness) : ""}</span>
+                    <span className="ops-mono ops-push">{formatUsd(m.costUsd)}</span>
+                  </div>
+                  <Progress value={pct(m.costUsd, maxModelCost)} tone="warning" />
+                  <div className="ops-item-sub">
+                    <span>{formatTokens(m.tokens)} tokens</span>
+                    <span className="ops-mono">{pct(m.costUsd, totals.cost).toFixed(0)}%</span>
+                  </div>
                 </div>
-              )
-            })}
-            {harnessRows.length === 0 && <Empty>{harnesses.loading ? "Checking…" : "No harnesses."}</Empty>}
-          </Panel>
-
-          {/* ------------------------------------------------------------ spend by model */}
-          <Panel title="Spend by model" className="ops-span-4" meta={<span>{PERIODS[period].label}</span>}>
-            {models.map((m) => (
-              <div key={`${m.harness ?? ""}/${m.model}`} className="ops-model">
-                <div className="ops-item-top">
-                  <span className="ops-mono ops-ellipsis">{m.model}</span>
-                  <span className="ops-dim">{m.harness ? harnessName(m.harness) : ""}</span>
-                  <span className="ops-mono ops-push">{formatUsd(m.costUsd)}</span>
-                </div>
-                <Progress value={pct(m.costUsd, maxModelCost)} tone="warning" />
-                <div className="ops-item-sub">
-                  <span>{formatTokens(m.tokens)} tokens</span>
-                  <span className="ops-mono">{pct(m.costUsd, totals.cost).toFixed(0)}%</span>
-                </div>
-              </div>
-            ))}
-            {models.length === 0 && <Empty>No usage recorded in this period.</Empty>}
-          </Panel>
-
-          {/* ------------------------------------------------------------ event log */}
-          <Panel title="Event log" className="ops-span-8" meta={<span>LAST {events.length}</span>}>
-            <div className="ops-log">
-              {events.map((e) => (
-                <button key={e.id} className="ops-log-row" onClick={() => open(e.conversationId)}>
-                  <span className="ops-dim">{clock(e.at)}</span>
-                  <span className={`ops-log-kind ops-text-${eventTone(e.kind)}`}>{e.kind.toUpperCase()}</span>
-                  <span className="ops-muted ops-ellipsis">{botName(e.botId)}</span>
-                  <span className="ops-ellipsis">
-                    {e.title}
-                    {e.body ? <span className="ops-dim"> — {e.body}</span> : null}
-                  </span>
-                </button>
               ))}
-              {events.length === 0 && <Empty>No events yet.</Empty>}
-            </div>
-          </Panel>
+              {models.length === 0 && <Empty>No usage recorded in this period.</Empty>}
+            </Panel>
+
+            {/* ------------------------------------------------------------ event log */}
+            <Panel title="Event log" className="ops-span-8" meta={<span>LAST {events.length}</span>}>
+              <div className="ops-log">
+                {events.map((e) => (
+                  <button key={e.id} className="ops-log-row" onClick={() => open(e.conversationId)}>
+                    <span className="ops-dim">{clock(e.at)}</span>
+                    <span className={`ops-log-kind ops-text-${eventTone(e.kind)}`}>{e.kind.toUpperCase()}</span>
+                    <span className="ops-muted ops-ellipsis">{botName(e.botId)}</span>
+                    <span className="ops-ellipsis">
+                      {e.title}
+                      {e.body ? <span className="ops-dim"> — {e.body}</span> : null}
+                    </span>
+                  </button>
+                ))}
+                {events.length === 0 && <Empty>No events yet.</Empty>}
+              </div>
+            </Panel>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
