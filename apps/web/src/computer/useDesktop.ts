@@ -2,9 +2,10 @@
 // by noVNC's RFB client into a caller-owned element. Watching = `mode=view` + `viewOnly`; control =
 // `mode=control` (the brain refuses it without the lease) with input and keyboard focus. Reconnects
 // with backoff; React state changes only on phase changes, never per frame. A page in the background
-// for a minute stops watching (an unwatched screen can go to sleep) and reconnects when it shows.
+// stops watching immediately (an unwatched screen can sleep), as does an offscreen/unfocused view.
 //
 // noVNC is loaded on first use (dynamic import) so the app shell never pays for it.
+import { useVisibleSurface } from "./useVisibleSurface.ts"
 import type RFB from "@novnc/novnc"
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react"
 import {
@@ -48,33 +49,6 @@ export const loadRfb = (): Promise<RfbClass> => {
     },
   )
   return rfbModule
-}
-
-/** How long a hidden page keeps watching before it lets go of the screen. */
-const HIDDEN_GRACE_MS = 60_000
-
-/** False once the page has been hidden for `graceMs`; true again as soon as it shows. */
-const usePageShown = (graceMs: number): boolean => {
-  const [shown, setShown] = useState(true)
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const hideLater = () => {
-      clearTimeout(timer)
-      timer = setTimeout(() => setShown(false), graceMs)
-    }
-    const onChange = () => {
-      if (document.visibilityState === "hidden") return hideLater()
-      clearTimeout(timer)
-      setShown(true)
-    }
-    if (document.visibilityState === "hidden") hideLater()
-    document.addEventListener("visibilitychange", onChange)
-    return () => {
-      clearTimeout(timer)
-      document.removeEventListener("visibilitychange", onChange)
-    }
-  }, [graceMs])
-  return shown
 }
 
 export interface UseDesktopOptions {
@@ -122,7 +96,7 @@ export function useDesktop({
   const rfbRef = useRef<RFB | undefined>(undefined)
   const troubleRef = useRef(onTrouble)
   const leaseLostRef = useRef(onLeaseLost)
-  const shown = usePageShown(HIDDEN_GRACE_MS)
+  const shown = useVisibleSurface(targetRef, enabled)
   // in control the owner holds the screen anyway: keep the socket
   const live = enabled && (shown || mode === "control")
   useLayoutEffect(() => {
