@@ -78,6 +78,7 @@ describe("params", () => {
       [
         "message_bot",
         "post_to_group",
+        "create_group",
         "react",
         "handoff_task",
         "list_bots",
