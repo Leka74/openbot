@@ -24,6 +24,7 @@
  */
 import { NodeInternalRoutes, NodePublicRoutes, ViewerRoutes } from "@openbot/brain-nodes"
 import { DesktopRoutes } from "./desktop.ts"
+import { QueueRoutes } from "./queue/live.ts"
 import { type AttachmentId, type BotId, OpenBotRpcs } from "@openbot/contracts"
 import { AttachmentStore, BotRepo, DataDir, LiveHub, Notifier, OwnerProfiles, SignInRequests } from "@openbot/core"
 import { McpGateway } from "@openbot/gateway"
@@ -717,6 +718,7 @@ export const PublicRoutes = Layer.mergeAll(
   VoiceRoute,
   NodePublicRoutes,
   DesktopRoutes,
+  QueueRoutes,
 )
 
 /** `/mcp/:botId` → `McpGateway.handle` (the gateway checks the bearer; cookies are ignored). */

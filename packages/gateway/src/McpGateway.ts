@@ -38,6 +38,7 @@ import {
   NodeDirectory,
   Orchestrator,
   sessionKeyOf,
+  DecisionQueue,
   SettingsService,
   SlackConnector,
   type ToolContext,
@@ -63,6 +64,7 @@ import { BrowserToolkit } from "./toolkits/browser.ts"
 import { ComputerToolkit } from "./toolkits/computer.ts"
 import { NodeToolkit, type NodeToolkitServices } from "./toolkits/node.ts"
 import { SearchToolkit, type SearchToolkitServices } from "./toolkits/search.ts"
+import { QueueToolkit } from "./toolkits/queue.ts"
 import { SlackToolkit } from "./toolkits/slack.ts"
 import { TaskToolkit, type TaskToolkitServices } from "./toolkits/tasks.ts"
 import { UiToolkit, type UiToolkitServices } from "./toolkits/ui.ts"
@@ -94,6 +96,7 @@ export const DefaultToolkits: ReadonlyArray<AnyTool<GatewayToolServices>> = [
   ...BrowserToolkit,
   ...ComputerToolkit,
   ...SlackToolkit,
+  ...QueueToolkit,
 ]
 
 export interface McpGatewayOptions<R = GatewayToolServices> {
@@ -450,11 +453,12 @@ export const makeMcpGateway = <R = GatewayToolServices>(
       hostNode: NodeSummary | undefined,
       slack: boolean,
       botSearch: boolean,
+      queue: boolean,
     ): ReadonlyMap<string, AnyTool<R>> => {
       const map = new Map<string, AnyTool<R>>()
       for (const tool of tools) {
         if (!claims.toolsets.includes(tool.toolset)) continue
-        if (tool.available !== undefined && !tool.available({ claims, hostNode, slack, botSearch })) continue
+        if (tool.available !== undefined && !tool.available({ claims, hostNode, slack, botSearch, queue })) continue
         if (!map.has(tool.name)) map.set(tool.name, tool)
       }
       return map
@@ -505,7 +509,8 @@ export const makeMcpGateway = <R = GatewayToolServices>(
           ),
         ),
       )
-      const sessionTools = toolListFor(auth.claims, hostNode, slack, botSearch)
+      const queue = await run(Effect.map(Effect.serviceOption(DecisionQueue), Option.isSome))
+      const sessionTools = toolListFor(auth.claims, hostNode, slack, botSearch, queue)
       const server = new Server(serverInfo, { capabilities: { tools: {} }, instructions })
       const session: GatewaySession = {
         id: undefined,

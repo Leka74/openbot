@@ -311,6 +311,7 @@ const triggerOf = (delivery: Delivery): Turn["trigger"] => {
     case "system-resume":
     case "task-result":
     case "introduction":
+    case "queue-decision":
       return "system"
   }
 }

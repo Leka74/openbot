@@ -4,6 +4,7 @@
 // - `#/new`: the new-chat view;
 // - `#/search?q=…&bot=…&chat=…&from=…&date=…&type=…&sort=…`: the Search view, its filters in the
 //   URL so reload and Back restore them (defaults are left out);
+// - `#/queue`: the decision queue;
 // - anything else (`#/`, settings, computer and device pages read at boot) is "other".
 import type { BotId, ConversationId, EntryId, SearchSender } from "@openbot/contracts"
 import {
@@ -20,6 +21,7 @@ export type Route =
   | { readonly kind: "chat"; readonly conversationId: ConversationId; readonly entryId?: EntryId | undefined }
   | { readonly kind: "new" }
   | { readonly kind: "search"; readonly filters: SearchFilters }
+  | { readonly kind: "queue" }
   | { readonly kind: "other" }
 
 const ID = /^[^/?#]+$/
@@ -103,6 +105,7 @@ export const parseRoute = (hash: string): Route => {
     }
   }
   if (/^#\/new\b/.test(hash)) return { kind: "new" }
+  if (/^#\/queue\/?$/.test(hash)) return { kind: "queue" }
   const search = /^#\/search\/?(?:\?(.*))?$/.exec(hash)
   if (search) return { kind: "search", filters: parseSearch(search[1] ?? "") }
   return { kind: "other" }
@@ -117,6 +120,8 @@ export const routeHash = (route: Route): string => {
       return chatHash(route.conversationId, route.entryId)
     case "new":
       return "#/new"
+    case "queue":
+      return "#/queue"
     case "search":
       return searchHash(route.filters)
     case "other":

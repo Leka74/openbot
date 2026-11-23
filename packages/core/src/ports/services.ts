@@ -177,7 +177,15 @@ export const botActor = (tool: ToolContext): Actor => ({ kind: "bot", tool })
  * they need, like Grok's "New Bot"); nothing of it is shown but the Bot's own reply and question card.
  * `system-resume`: after a restart cut a bot off mid-turn, it continues there (`Orchestrator.resume`).
  */
-export type DeliveryKind = "user-message" | "bot-message" | "routine" | "system-resume" | "task-result" | "introduction"
+export type DeliveryKind =
+  | "user-message"
+  | "bot-message"
+  | "routine"
+  | "system-resume"
+  | "task-result"
+  | "introduction"
+  /** The owner decided an item the bot put in their queue (`DecisionQueue`). */
+  | "queue-decision"
 export type DeliveryUrgency = "urgent" | "background"
 /** `messages.send` mode (`contracts.SendMode`): auto = steer when supported and busy, else queue. */
 export type DeliveryMode = SendMode

@@ -130,6 +130,7 @@ describe("params", () => {
         "slack_read",
         "slack_find",
         "slack_draft",
+        "add_to_queue",
       ].sort(),
     )
   })
