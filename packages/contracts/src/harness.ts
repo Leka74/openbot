@@ -74,8 +74,12 @@ export const HarnessStatus = Schema.Struct({
   configDir: Schema.optionalKey(Schema.String),
   /** The signed-in account, when the probe reports one. */
   account: Schema.optionalKey(HarnessAccount),
+  signInFromApp: Schema.optionalKey(Schema.Boolean),
 })
 export type HarnessStatus = typeof HarnessStatus.Type
+
+export const HarnessSignInStart = Schema.Struct({ url: Schema.String })
+export type HarnessSignInStart = typeof HarnessSignInStart.Type
 
 // ---------------------------------------------------------------------------- profiles (accounts)
 /**

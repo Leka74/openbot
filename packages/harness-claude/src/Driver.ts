@@ -25,6 +25,7 @@ import { PROBE_TIMEOUT_MS, runProbe } from "./probe.ts"
 import { type ClaudeProfile, profileEnv } from "./profile.ts"
 import { type ClaudeQueryFunction, defaultQuery } from "./sdk.ts"
 import { HARNESS, ledgerHooks, openClaudeSession, type SessionDeps } from "./Session.ts"
+import { bundledClaudeExecutable, startClaudeSignIn } from "./signIn.ts"
 
 /** Declared, never faked (D2): what this driver actually implements. */
 export const CLAUDE_CAPABILITIES: HarnessCapabilities = {
@@ -183,6 +184,18 @@ export const makeClaudeDriver = (config: ClaudeHarnessConfig, deps: DriverDeps):
         }
         return openClaudeSession(input, sessionDeps)
       },
+      signIn: Effect.suspend(() => {
+        const signInExecutable = executable ?? bundledClaudeExecutable()
+        return signInExecutable === undefined
+          ? Effect.fail(
+              new HarnessError({
+                harness: HARNESS,
+                code: "not-installed",
+                message: "The Claude Code CLI was not found.",
+              }),
+            )
+          : startClaudeSignIn({ executable: signInExecutable, env })
+      }),
     }
     return driver
   })

@@ -54,6 +54,7 @@ import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
 import { Hark } from "./hark.ts"
 import { Ntfy } from "./ntfy.ts"
 import { HarnessProfiles } from "./profiles.ts"
+import { HarnessSignIns } from "./signIns.ts"
 import { SpeechToText } from "./stt/service.ts"
 import { VoiceCalls } from "./voice/service.ts"
 import { Updates } from "./updates.ts"
@@ -168,6 +169,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
     const usage = yield* UsageService
     const harnesses = yield* HarnessRegistry
     const profiles = yield* HarnessProfiles
+    const signIns = yield* HarnessSignIns
     const nodes = yield* NodeDirectory
     const nodeAdmin = yield* NodeAdmin
     const computer = yield* ComputerPort
@@ -382,6 +384,12 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
         "harnesses.addProfile": (input) => owner("harnesses.addProfile", profiles.add(input)),
         "harnesses.removeProfile": ({ profileId }) => owner("harnesses.removeProfile", profiles.remove(profileId)),
         "harnesses.discover": ({ kind }) => owner("harnesses.discover", profiles.discover(kind)),
+        "harnesses.startSignIn": ({ kind, profileId }) =>
+          owner("harnesses.startSignIn", signIns.start(kind, profileId)),
+        "harnesses.completeSignIn": ({ kind, profileId, code }) =>
+          owner("harnesses.completeSignIn", signIns.complete(kind, profileId, code)),
+        "harnesses.cancelSignIn": ({ kind, profileId }) =>
+          owner("harnesses.cancelSignIn", signIns.cancel(kind, profileId)),
 
         // ---------------------------------------------------------------- nodes
         "nodes.list": () => owner("nodes.list", nodes.list),

@@ -373,6 +373,7 @@ export const HarnessProfilesLayer = (
                   id === undefined ? defaultConfigDirOf(driver.kind, env, home) : (profile?.configDir ?? s.configDir)
                 return {
                   ...s,
+                  ...(driver.signIn !== undefined ? { signInFromApp: true } : {}),
                   profileId: id ?? DEFAULT_HARNESS_PROFILE_ID,
                   profileLabel: id === undefined ? "Default" : (profile?.label ?? s.profileLabel ?? id),
                   ...(dir !== undefined ? { configDir: dir } : {}),
