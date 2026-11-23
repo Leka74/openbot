@@ -2,11 +2,12 @@
 // install / version, models and capabilities, and one row per ACCOUNT (harness profile: a login /
 // config dir on the brain machine, e.g. ~/.claude-2) with its status and account email. "Add account"
 // offers the config dirs the brain found plus a path field; accounts no bot uses can be removed.
-// Sign-in happens in a terminal on the brain machine; OpenBot never handles harness credentials.
+// A harness that supports it signs in from here: the brain runs its login command and passes on the
+// one-time code from the sign-in page. Otherwise sign-in happens in a terminal on the brain machine.
 import { harnessDiscoverAtom, harnessModelsAtom, harnessStatusAtom } from "@openbot/client"
 import type { HarnessCapabilities, HarnessStatus } from "@openbot/contracts"
 import { Icon, IconButton, PillButton, TextField, cn } from "@openbot/ui"
-import { ChevronDown, Plus, RefreshCw, Trash2 } from "lucide-react"
+import { ChevronDown, ExternalLink, LogIn, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import {
   CommandBlock,
@@ -207,6 +208,8 @@ function AccountRow({
   const isDefault = profileId === "default"
   const [confirm, setConfirm] = useState(false)
   const remove = useCommand("harnesses.removeProfile", profileId)
+  const [signingInAgain, setSigningInAgain] = useState(false)
+  const signedIn = status.auth.state === "signed-in"
   const signIn = signInCommand(status)
   const nick = accountNickname(status)
   const name =
@@ -229,6 +232,15 @@ function AccountRow({
       control={
         <span className="flex shrink-0 items-center gap-1.5">
           {showPill && <HarnessStatusPill status={status} />}
+          {status.signInFromApp && signedIn && !signingInAgain && (
+            <IconButton
+              icon={LogIn}
+              label="Sign in again"
+              size={28}
+              iconSize="sm"
+              onClick={() => setSigningInAgain(true)}
+            />
+          )}
           {!isDefault && (
             <IconButton icon={Trash2} label="Remove account" size={28} iconSize="sm" onClick={() => setConfirm(true)} />
           )}
@@ -244,7 +256,18 @@ function AccountRow({
           ))}
         </div>
       )}
-      {status.installed && status.auth.state !== "signed-in" && signIn && (
+      {status.installed && status.signInFromApp && (!signedIn || signingInAgain) && (
+        <SignInHere
+          status={status}
+          terminalCommand={signIn}
+          onFinished={() => {
+            setSigningInAgain(false)
+            onRefresh()
+          }}
+          onCancel={signingInAgain ? () => setSigningInAgain(false) : undefined}
+        />
+      )}
+      {status.installed && !status.signInFromApp && !signedIn && signIn && (
         <div className="flex flex-col gap-2">
           <span className="text-sm text-fg-secondary">
             Run this in a terminal on the server with your own account, then check again. OpenBot never sees your
@@ -276,6 +299,130 @@ function AccountRow({
         }}
       />
     </SettingsRow>
+  )
+}
+
+function SignInHere({
+  status,
+  terminalCommand,
+  onFinished,
+  onCancel,
+}: {
+  readonly status: HarnessStatus
+  readonly terminalCommand: string | undefined
+  readonly onFinished: () => void
+  readonly onCancel: (() => void) | undefined
+}): ReactNode {
+  const profileId = statusProfileId(status)
+  const account = { kind: status.kind, profileId }
+  const commandKey = `${status.kind}/${profileId}`
+  const start = useCommand("harnesses.startSignIn", commandKey)
+  const finish = useCommand("harnesses.completeSignIn", commandKey)
+  const cancel = useCommand("harnesses.cancelSignIn", commandKey)
+  const [signInUrl, setSignInUrl] = useState<string | undefined>(undefined)
+  const [code, setCode] = useState("")
+  const name = harnessName(status.kind, status)
+
+  const begin = async () => {
+    finish.clearError()
+    setCode("")
+    const started = await start.run(account)
+    if (started.ok) setSignInUrl(started.value.url)
+  }
+  const submit = async () => {
+    const finished = await finish.run({ ...account, code: code.trim() })
+    setSignInUrl(undefined)
+    setCode("")
+    if (finished.ok) onFinished()
+  }
+  const stop = () => {
+    if (signInUrl !== undefined) void cancel.run(account)
+    setSignInUrl(undefined)
+    start.clearError()
+    finish.clearError()
+    onCancel?.()
+  }
+
+  if (signInUrl === undefined) {
+    return (
+      <div className="flex flex-col gap-2" data-testid={`sign-in-${status.kind}-${profileId}`}>
+        <span className="text-sm text-fg-secondary">
+          Sign in with your browser. OpenBot runs the {name} login on the server and gives it the one-time code from the
+          sign-in page. OpenBot never sees your password or tokens.
+        </span>
+        {(start.error ?? finish.error) && <ErrorLine className="px-0">{start.error ?? finish.error}</ErrorLine>}
+        <div className="flex justify-end gap-2">
+          {onCancel && (
+            <PillButton size="md" variant="secondary" onClick={stop}>
+              Cancel
+            </PillButton>
+          )}
+          <PillButton
+            size="md"
+            variant="primary"
+            leadingIcon={LogIn}
+            loading={start.pending}
+            onClick={() => void begin()}
+          >
+            {finish.error ? "Start again" : "Sign in"}
+          </PillButton>
+        </div>
+        {terminalCommand && (
+          <details className="text-sm text-fg-secondary">
+            <summary className="cursor-pointer">Or sign in from a terminal on the server</summary>
+            <div className="pt-2">
+              <CommandBlock command={terminalCommand} />
+            </div>
+          </details>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-3"
+      data-testid={`sign-in-${status.kind}-${profileId}`}
+      onSubmit={(e) => {
+        e.preventDefault()
+        void submit()
+      }}
+    >
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm text-fg">1. Open the sign-in page and approve.</span>
+        <span className="text-xs text-fg-secondary">
+          If your browser is signed in to a different {name} account, open the page in a private window.
+        </span>
+        <div>
+          <PillButton
+            size="md"
+            variant="secondary"
+            leadingIcon={ExternalLink}
+            onClick={() => window.open(signInUrl, "_blank", "noopener,noreferrer")}
+          >
+            Open the sign-in page
+          </PillButton>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <TextField
+          label="2. Paste the code that the page shows"
+          placeholder="Code"
+          value={code}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setCode(e.target.value)}
+          wrapperClassName="min-w-[240px] flex-1"
+          className="font-mono text-sm"
+        />
+        <PillButton size="md" variant="secondary" onClick={stop}>
+          Cancel
+        </PillButton>
+        <PillButton type="submit" size="md" variant="primary" loading={finish.pending} disabled={code.trim() === ""}>
+          Finish sign-in
+        </PillButton>
+      </div>
+    </form>
   )
 }
 

@@ -162,6 +162,7 @@ export const seed = (brain: MockBrain, now = Date.now()) => {
       configDir: "/home/alex/.claude",
       problems: [],
       checkedAt: now,
+      signInFromApp: true,
     },
     {
       kind: "claude",
@@ -175,6 +176,7 @@ export const seed = (brain: MockBrain, now = Date.now()) => {
       configDir: "/home/alex/.claude-2",
       problems: [],
       checkedAt: now,
+      signInFromApp: true,
     },
     {
       kind: "codex",

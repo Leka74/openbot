@@ -104,6 +104,7 @@ import {
   PublicListenerLive,
 } from "./listeners.ts"
 import { HarnessProfilesLayer, type ProfileOptions } from "./profiles.ts"
+import { HarnessSignInsLayer } from "./signIns.ts"
 import { InternalRoutes, PublicRoutes } from "./routes.ts"
 import { RpcHandlersLive } from "./rpc.ts"
 import { setShutdownPhase } from "./shutdown.ts"
@@ -469,7 +470,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
         }),
       ),
       Layer.provideMerge(LocalNodeDaemonLive(options?.localNode)), // 9
-      Layer.provideMerge(HarnessProfilesLayer(options?.profiles)), // 8b: added accounts (profiles.ts)
+      Layer.provideMerge(Layer.merge(HarnessProfilesLayer(options?.profiles), HarnessSignInsLayer())), // 8b: added accounts (profiles.ts)
       Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
       Layer.provideMerge(RecoveredLive), // 7
       Layer.provideMerge(OrchestratorLive), // 6

@@ -2111,6 +2111,21 @@ export class MockBrain {
           ]
           return { id, kind, label: label || configDir, configDir, createdAt: this.now() }
         })(),
+      "harnesses.startSignIn": ({ kind, profileId }) =>
+        Effect.succeed({
+          url: `https://claude.com/cai/oauth/authorize?code=true&mock=${kind}-${profileId ?? "default"}`,
+        }),
+      "harnesses.completeSignIn": ({ kind, profileId, code }) =>
+        sync(() => {
+          if (!code.includes("#"))
+            throw new InvalidInput({ message: "Claude refused the code (Request failed with status code 400)." })
+          this.harnesses = this.harnesses.map((h) =>
+            h.kind === kind && (h.profileId ?? "default") === (profileId ?? "default")
+              ? { ...h, auth: { state: "signed-in", label: h.account?.email ?? "signed in" }, problems: [] }
+              : h,
+          )
+        })(),
+      "harnesses.cancelSignIn": () => Effect.void,
       "harnesses.removeProfile": ({ profileId }) =>
         sync(() => {
           if (profileId === "default") throw new Forbidden({ reason: "The default account cannot be removed." })

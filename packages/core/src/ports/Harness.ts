@@ -185,6 +185,12 @@ export interface HarnessDriver {
   readonly openSession: (input: OpenSessionInput) => Effect.Effect<HarnessSession, HarnessError, Scope.Scope>
   /** Stops what the driver keeps for a deleted owner profile (its server); absent = nothing kept. */
   readonly forgetOwnerProfile?: ((profileId: OwnerProfileId) => Effect.Effect<void>) | undefined
+  readonly signIn?: Effect.Effect<HarnessSignIn, HarnessError, Scope.Scope> | undefined
+}
+
+export interface HarnessSignIn {
+  readonly url: string
+  readonly complete: (code: string) => Effect.Effect<void, HarnessError>
 }
 
 export interface HarnessRegistryShape {

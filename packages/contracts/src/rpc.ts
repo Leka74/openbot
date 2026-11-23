@@ -43,7 +43,7 @@ import {
   RoutineTriggerInput,
   Section,
 } from "./domain.ts"
-import { HarnessProfile, HarnessProfileCandidate, HarnessStatus, ModelInfo } from "./harness.ts"
+import { HarnessProfile, HarnessProfileCandidate, HarnessSignInStart, HarnessStatus, ModelInfo } from "./harness.ts"
 import { BotMemory, MemoryFact, MemoryFactId, MemoryFactInput } from "./memory.ts"
 import { ApprovalRule, ApprovalRuleInput, BotAutonomy, ProjectFolders } from "./policy.ts"
 import { UiValues } from "./card.ts"
@@ -568,6 +568,19 @@ export class OpenBotRpcs extends RpcGroup.make(
   Rpc.make("harnesses.discover", {
     payload: { kind: HarnessKindName },
     success: Schema.Array(HarnessProfileCandidate),
+    error: errors(),
+  }),
+  Rpc.make("harnesses.startSignIn", {
+    payload: { kind: HarnessKindName, profileId: Schema.optionalKey(Schema.String) },
+    success: HarnessSignInStart,
+    error: errors(HarnessUnavailable),
+  }),
+  Rpc.make("harnesses.completeSignIn", {
+    payload: { kind: HarnessKindName, profileId: Schema.optionalKey(Schema.String), code: NonEmptyString },
+    error: errors(InvalidInput),
+  }),
+  Rpc.make("harnesses.cancelSignIn", {
+    payload: { kind: HarnessKindName, profileId: Schema.optionalKey(Schema.String) },
     error: errors(),
   }),
 

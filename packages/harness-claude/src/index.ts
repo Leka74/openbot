@@ -28,4 +28,5 @@ export {
   readClaudeAccount,
 } from "./profile.ts"
 export type { ClaudeQueryFunction, ClaudeQueryHandle, ClaudeQueryParams } from "./sdk.ts"
+export { bundledClaudeExecutable, type ClaudeSignInInput, startClaudeSignIn } from "./signIn.ts"
 export { openClaudeSession, type SessionDeps } from "./Session.ts"
