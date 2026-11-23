@@ -150,6 +150,7 @@ const V1_RPCS = [
   "ntfy.setSends",
   "ntfy.setQuietAtComputer",
   "usage.byBot",
+  "stats.overview",
 ] as const satisfies ReadonlyArray<OpenBotRpcTag>
 
 describe("OpenBotRpcs", () => {

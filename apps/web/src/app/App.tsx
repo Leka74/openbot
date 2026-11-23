@@ -25,9 +25,10 @@ import { useBackDismiss } from "./nav.ts"
 import { useDesktopPresence, useSystemNotifications } from "./notifications.ts"
 import { useFollowActiveProfile } from "./profiles.ts"
 import { useReloadOnUpdate } from "./reloadOnUpdate.ts"
-import { parseRoute } from "./route.ts"
+import { chatHash, OPS_HASH, parseRoute } from "./route.ts"
 
 import { CallBar } from "../voice/CallBar.tsx"
+const OpsView = lazy(() => import("../ops/OpsView.tsx").then((m) => ({ default: m.OpsView })))
 const ConnectAppsDialog = lazy(() =>
   import("../connections/ConnectAppsDialog.tsx").then((m) => ({ default: m.ConnectAppsDialog })),
 )
@@ -35,6 +36,7 @@ import {
   bootHash,
   findBarAtom,
   isNewChatHash,
+  opsViewAtom,
   previousConversationAtom,
   useComputerView,
   useDetailsPane,
@@ -110,6 +112,7 @@ export function App(): ReactNode {
   const settings = useSettingsDialog()
   const connectApps = useConnectApps()
   const computer = useComputerView()
+  const [ops, setOps] = useAtom(opsViewAtom)
   const dialogs = useDialogs()
   /** The desktop app's code waiting to be allowed (`#/connect-device?code=…`). */
   const [connectCode, setConnectCode] = useState<string | undefined>()
@@ -220,6 +223,8 @@ export function App(): ReactNode {
   useEffect(() => {
     const on = () => {
       const route = parseRoute(location.hash)
+      setOps(route.kind === "ops")
+      if (route.kind === "ops") return
       if (route.kind === "chat") return select(route.conversationId, { entryId: route.entryId, openExchange: true })
       if (route.kind === "search") return openSearch(route.filters)
       if (isPhoneNow() && route.kind !== "new") return nav.setHome(true)
@@ -232,7 +237,7 @@ export function App(): ReactNode {
       if (location.hash !== bootHash) on()
     }
     return () => window.removeEventListener("hashchange", on)
-  }, [select, openSearch, nav])
+  }, [select, openSearch, nav, setOps])
 
   // Keyboard shortcuts: Cmd/Ctrl+K search, Cmd/Ctrl+F find in the open chat, Cmd/Ctrl+N new chat,
   // Cmd/Ctrl+B compact sidebar, Cmd/Ctrl+, settings, Esc closes the top-most surface (dialogs handle
@@ -358,6 +363,9 @@ export function App(): ReactNode {
             onToggleCompact={toggleCompact}
             onSearch={() => dialogs.show({ kind: "search" })}
             onNewChat={() => select(null)}
+            onOps={() => {
+              location.hash = OPS_HASH
+            }}
           />
         )}
         chat={
@@ -386,7 +394,19 @@ export function App(): ReactNode {
           ) : null
         }
         overlay={
-          computer.botId ? (
+          ops ? (
+            <Suspense fallback={<PaneLoading className="bg-[#111418]" />}>
+              <OpsView
+                onClose={() => {
+                  location.hash = conversationId ? chatHash(conversationId) : "#/new"
+                }}
+                onOpenChat={(id) => {
+                  setOps(false)
+                  select(id)
+                }}
+              />
+            </Suspense>
+          ) : computer.botId ? (
             <Suspense fallback={<PaneLoading className="bg-[rgba(20,20,20,.95)]" />}>
               <ComputerView key={computer.botId} botId={computer.botId} onClose={computer.close} />
             </Suspense>

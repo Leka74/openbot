@@ -707,6 +707,7 @@ export class UsageServiceFake extends Context.Service<
               lastAt: t.lastAt,
             }))
           }),
+        overview: ({ sinceMs, bucketMs }) => Effect.succeed({ sinceMs, bucketMs, buckets: [], byBot: [], byModel: [] }),
       })
       return Context.make(UsageService, service).pipe(
         Context.add(UsageServiceFake, UsageServiceFake.of({ recorded: Ref.get(recorded) })),

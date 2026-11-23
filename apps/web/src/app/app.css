@@ -1,5 +1,6 @@
 /* OpenBot web app stylesheet: the ui design system + app-only utilities. Linked from index.html. */
 @import "@openbot/ui/styles.css";
+@import "../ops/ops.css";
 
 /* Scan the app sources (shell, chat, cards, palettes and W2.3's panes) for class names. */
 @source "../";

@@ -14,6 +14,7 @@ import { BunRuntime } from "@effect/platform-bun"
 import { Cause, Deferred, Effect, Exit, Layer } from "effect"
 import { homedir } from "node:os"
 import { ConfigError, OPENBOT_VERSION, parseCommand, USAGE } from "./config.ts"
+import { restartGuardFromEnv } from "./restartGuard.ts"
 import { ServerLive } from "./server.ts"
 import { makeShutdownWatchdog, setShutdownPhase, shutdownTimeoutFromEnv } from "./shutdown.ts"
 
@@ -86,7 +87,15 @@ const main = async () => {
     })
   }
 
-  const program = Layer.launch(ServerLive(command.config)).pipe(
+  // restart storms and too-frequent drains (restartGuard.ts); OPENBOT_RESTART_GUARD=off turns it off
+  const config = { ...command.config, restartGuard: restartGuardFromEnv(process.env) }
+  // OPENBOT_BOT_WAKE_DEBOUNCE_MS: how long background bot messages wait before they wake their recipient
+  const debounceMs = Number(process.env["OPENBOT_BOT_WAKE_DEBOUNCE_MS"] ?? "")
+  const runner =
+    process.env["OPENBOT_BOT_WAKE_DEBOUNCE_MS"] !== undefined && Number.isInteger(debounceMs) && debounceMs >= 0
+      ? { botWakeDebounce: `${debounceMs} millis` as const }
+      : undefined
+  const program = Layer.launch(ServerLive(config, runner === undefined ? undefined : { runner })).pipe(
     Effect.raceFirst(Deferred.await(stopSignal)),
     Effect.catchCause((cause) =>
       Cause.hasInterruptsOnly(cause)

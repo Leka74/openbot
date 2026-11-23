@@ -46,6 +46,7 @@
  */
 import type {
   AlreadyAnswered,
+  StatsOverview,
   ApprovalRule,
   ApprovalRuleId,
   ApprovalRuleInput,
@@ -176,8 +177,11 @@ export const botActor = (tool: ToolContext): Actor => ({ kind: "bot", tool })
  * `introduction`: the hidden first turn of a Bot the owner just created (it greets them and asks what
  * they need, like Grok's "New Bot"); nothing of it is shown but the Bot's own reply and question card.
  * `system-resume`: after a restart cut a bot off mid-turn, it continues there (`Orchestrator.resume`).
+ * `handoff-check`: a task the bot handed off (`handoff_task`) failed on the recipient's side, or the
+ * recipient has not reported back by the deadline (Messaging); it lands where the bot handed it off.
  */
-export type DeliveryKind = "user-message" | "bot-message" | "routine" | "system-resume" | "task-result" | "introduction"
+export type DeliveryKind =
+  "user-message" | "bot-message" | "routine" | "system-resume" | "task-result" | "introduction" | "handoff-check"
 export type DeliveryUrgency = "urgent" | "background"
 /** `messages.send` mode (`contracts.SendMode`): auto = steer when supported and busy, else queue. */
 export type DeliveryMode = SendMode
@@ -1169,6 +1173,11 @@ export class UsageService extends Context.Service<
     readonly byBot: (input: {
       readonly sinceMs?: Millis | undefined
     }) => Effect.Effect<ReadonlyArray<BotUsage>, never, CurrentProfile>
+    /** `stats.overview {sinceMs, bucketMs}` (the Ops view). */
+    readonly overview: (input: {
+      readonly sinceMs: Millis
+      readonly bucketMs: number
+    }) => Effect.Effect<StatsOverview, InvalidInput, CurrentProfile>
   }
 >()("openbot/core/UsageService") {}
 

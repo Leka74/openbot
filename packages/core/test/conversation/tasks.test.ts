@@ -600,9 +600,59 @@ describe("background tasks", () => {
 
     const tooMany = await afterRestart({ restarts: MAX_TASK_RESTARTS })
     expect(tooMany.task).toMatchObject({ status: "failed", error: "interrupted by a restart" })
+    expect(tooMany.task.awaitingRecovery).toBeUndefined()
     expect(tooMany.handles.at(-1)!.input.text).toBe(
       '[Result of "Nightly audit"]\nIt could not be finished: interrupted by a restart.',
     )
+  })
+
+  test("a brain stopped between boot recovery and `recover` does not lose the task: the next boot runs it", async () => {
+    const out = await runTest(
+      Effect.gen(function* () {
+        const driver = yield* TestDriver
+        const ada = yield* createBot("Ada")
+        yield* driver.setBehavior(ada.id, behavior(yield* BackgroundTasks, new Map()))
+        const repo = yield* TaskRepo
+        yield* Effect.orDie(
+          repo.upsert({
+            id: "tsk_lost" as TaskId,
+            botId: ada.id,
+            conversationId: ada.directConversationId,
+            title: "Train times search",
+            brief: "search",
+            status: "running",
+            createdAt: 0,
+            updatedAt: 0,
+            startedAt: 0,
+          }),
+        )
+        // boot A: recovery fails the task, then the brain is stopped before `recover` (no restart, no report)
+        const first = yield* Effect.orDie((yield* BootRecovery).run)
+        const afterFirst = Option.getOrThrow(yield* Effect.orDie(repo.get("tsk_lost" as TaskId)))
+        // boot B: its recovery finds the task again although it is no longer running
+        const second = yield* Effect.orDie((yield* BootRecovery).run)
+        yield* (yield* BackgroundTasks).recover(second)
+        yield* settled(ada.directConversationId, 1)
+        // boot C: nothing is left over
+        const third = yield* Effect.orDie((yield* BootRecovery).run)
+        return {
+          first,
+          afterFirst,
+          second,
+          third,
+          task: yield* taskById("tsk_lost" as TaskId),
+          handles: yield* driver.turns,
+        }
+      }),
+      appLayer(),
+    )
+    expect(out.first.interruptedTasks.map((t) => t.id)).toEqual(["tsk_lost" as TaskId])
+    expect(out.afterFirst).toMatchObject({ status: "failed", awaitingRecovery: true })
+    expect(out.second.interruptedTasks.map((t) => t.id)).toEqual(["tsk_lost" as TaskId])
+    expect(out.task).toMatchObject({ status: "succeeded", restarts: 1 })
+    expect(out.task.awaitingRecovery).toBeUndefined()
+    expect(out.third.interruptedTasks).toEqual([])
+    expect(out.handles.at(-1)!.input.text).toStartWith('[Result of "Train times search"]')
   })
 
   test("deleting a group stops the work started there (untold); deleting the bot stops and removes its tasks", async () => {

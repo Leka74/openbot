@@ -104,6 +104,12 @@ export const makeSqlTurnRepo = Effect.gen(function* () {
         WHERE status IN ('queued', 'running', 'waiting') ORDER BY started_at, id`
       return yield* decodeAll("TurnRepo.listActive", rows)
     }).pipe(repoOp("TurnRepo.listActive")),
+    listSince: (sinceMs) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json FROM turns WHERE started_at >= ${sinceMs}
+          ORDER BY started_at, id`
+        return yield* decodeAll("TurnRepo.listSince", rows)
+      }).pipe(repoOp("TurnRepo.listSince")),
     deleteByConversation: (conversationId) =>
       sql`DELETE FROM turns WHERE conversation_id = ${conversationId}`.pipe(
         Effect.asVoid,

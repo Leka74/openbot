@@ -108,8 +108,9 @@ const UNFINISHED_TOOL_STATUSES: ReadonlyArray<string> = ["pending", "awaiting-ap
  * 2. every active turn → `interrupted`; finalize its streaming entries and unfinished tool calls;
  * 3. every pending request → `expired` (`not_resumable`) and its pending card → `expired`;
  * 4. every running routine run → `interrupted`;
- * 5. every queued / running background task → `failed` ("interrupted by a restart"), its unfinished
- *    steps finalized;
+ * 5. every queued / running background task → `failed` ("interrupted by a restart",
+ *    `awaitingRecovery`), its unfinished steps finalized; tasks an earlier boot left
+ *    `awaitingRecovery` are reported again;
  * 6. revoke every MCP token (no harness session survives a restart).
  */
 export const runBootRecovery = (options: {
@@ -201,11 +202,22 @@ export const runBootRecovery = (options: {
       if (touched) yield* routines.upsert({ ...routine, lastRunStatus: "interrupted", updatedAt: now })
     }
 
-    // 5. background tasks
+    // 5. background tasks, and those an earlier boot failed but never ran again or reported: a brain
+    //    stopped right after its boot recovery must not lose them
     const interruptedTasks: Array<Task> = []
+    for (const task of yield* tasks.list({ statuses: ["failed"] })) {
+      if (task.awaitingRecovery === true) interruptedTasks.push(task)
+    }
     for (const task of yield* tasks.list({ statuses: ["queued", "running"] })) {
       const { progress: _progress, waiting: _waiting, ...rest } = task
-      const next: Task = { ...rest, status: "failed", error: TASK_RESTART_ERROR, endedAt: now, updatedAt: now }
+      const next: Task = {
+        ...rest,
+        status: "failed",
+        error: TASK_RESTART_ERROR,
+        endedAt: now,
+        updatedAt: now,
+        awaitingRecovery: true,
+      }
       yield* tasks.upsert(next)
       interruptedTasks.push(next)
       for (const step of yield* tasks.steps(task.id)) {

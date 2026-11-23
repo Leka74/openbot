@@ -5,8 +5,10 @@
  *   group, routine runs, bot-to-bot DMs): opened lazily on the first turn (placement → MCP binding →
  *   instructions → `driver.openSession`, resuming the bot's stored native session when the driver
  *   can), reopened when the bot's harness settings or rendered instructions change, dropped on
- *   `SessionClosed`, compacted after 10 idle minutes when its context is large (setting
- *   `compactIdleBots`), and closed after 15 idle minutes (the runner is then evicted).
+ *   `SessionClosed`, compacted when its context is large (setting `compactIdleBots`): right after a
+ *   turn that ended normally with `busyCompactMinTokens` or more (before the next queued delivery:
+ *   a bot woken every few minutes is never idle long enough), or after 10 idle minutes with
+ *   `idleCompactMinTokens` or more; and closed after 15 idle minutes (the runner is then evicted).
  * - Every turn belongs to exactly ONE conversation (its delivery's): its replies, tool calls, cards
  *   and activity land there, and its text says where it comes from (origin tags, see
  *   `renderTurnText`).
@@ -14,7 +16,9 @@
  *   when idle; it steers into the running turn only when that turn is in the SAME conversation
  *   (`mode` steer/auto with `capabilities.steer`); otherwise it queues (one turn each). Background
  *   bot messages never interrupt a busy bot: they wait in the queue and are batched into the next
- *   turn of THEIR conversation (never into another conversation's turn), and wake an idle bot.
+ *   turn of THEIR conversation (never into another conversation's turn). They wake the bot only
+ *   `botWakeDebounce` after the first of them queued, so a burst of teammates' replies is one turn;
+ *   a waking delivery of their conversation takes them along at once.
  * - Approvals (`approve`): in the context of the running turn (cards in its conversation); native
  *   requests carry the session's placement workspace, gateway tool requests the claims' workspace,
  *   so ApprovalService can apply the bot's autonomy.
@@ -115,6 +119,17 @@ export interface RunnerOptions {
    */
   readonly idleCompactAfter: Duration.Input
   readonly idleCompactMinTokens: number
+  /**
+   * A turn that ended normally with at least this much context is compacted right then (setting
+   * `compactIdleBots`), while the cache is warm and before the next queued delivery: a bot that is
+   * woken every few minutes never reaches `idleCompactAfter`.
+   */
+  readonly busyCompactMinTokens: number
+  /**
+   * Background messages from other bots wait this long after the first of them queued before they
+   * wake the bot (one turn for a burst of replies); a waking delivery takes them along at once.
+   */
+  readonly botWakeDebounce: Duration.Input
   /** After `session.interrupt`, force the turn to end after this long without `TurnInterrupted`. */
   readonly interruptGrace: Duration.Input
   /** Consecutive open failures before the bot's activity becomes `error` (§6: 3). */
@@ -125,6 +140,8 @@ export const DEFAULT_RUNNER_OPTIONS: RunnerOptions = {
   idleTimeout: Duration.minutes(15),
   idleCompactAfter: Duration.minutes(10),
   idleCompactMinTokens: 100_000,
+  busyCompactMinTokens: 160_000,
+  botWakeDebounce: Duration.seconds(45),
   interruptGrace: Duration.seconds(10),
   maxOpenFailures: 3,
 }
@@ -244,6 +261,8 @@ export interface NotedAddress {
 /** A queued delivery. Waking deliveries own a turn id (and a `queued` Turn record); background ones batch. */
 interface Queued {
   readonly arrival: number
+  /** When it queued (`Clock`): background deliveries wake the bot `botWakeDebounce` after the first. */
+  readonly queuedAt: number
   readonly delivery: Delivery
   readonly turnId: TurnId | undefined
 }
@@ -275,6 +294,8 @@ interface OpenSession {
   readonly scope: Scope.Closeable
   readonly placement: ResolvedPlacement
   readonly instructionsHash: string
+  /** `RenderedInstructions.reopenHash` at open: what a live session is compared against. */
+  readonly reopenHash: string
   readonly signature: string
   readonly ingest: SessionIngest
   readonly closed: Deferred.Deferred<string>
@@ -311,6 +332,7 @@ const triggerOf = (delivery: Delivery): Turn["trigger"] => {
     case "system-resume":
     case "task-result":
     case "introduction":
+    case "handoff-check":
       return "system"
   }
 }
@@ -621,6 +643,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
             scope,
             placement,
             instructionsHash: instructions.hash,
+            reopenHash: instructions.reopenHash ?? instructions.hash,
             signature: config.signature,
             ingest,
             closed,
@@ -691,7 +714,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
           const closed = yield* Deferred.isDone(current.closed)
           if (!closed && current.driver === driver && current.signature === config.signature) {
             const instructions = yield* deps.renderer.render({ bot, placement: current.placement })
-            if (instructions.hash === current.instructionsHash) return current
+            if ((instructions.reopenHash ?? instructions.hash) === current.reopenHash) return current
           }
           yield* dropSession(closed ? "closed" : "reconfigured")
         }
@@ -1375,7 +1398,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
             if (delivery.sourceEntryId !== undefined)
               state.shown.get(delivery.conversationId)?.delete(delivery.sourceEntryId)
             const turnId = yield* deps.ids.turnId
-            items.push({ arrival: 0, delivery, turnId })
+            items.push({ arrival: 0, queuedAt: 0, delivery, turnId })
             yield* writeTurn({
               id: turnId,
               conversationId: delivery.conversationId,
@@ -1401,6 +1424,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         }),
       )
 
+    /** Runs a turn to its end; returns how it ended. */
     const runTurn = (active: ActiveTurn, work: Effect.Effect<TurnTerminal> = executeTurn(active)) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -1419,6 +1443,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
             yield* Effect.logError(`BotRunner ${botId}: turn crashed`, exit.cause)
           }
           yield* finishTurn(active, terminal)
+          return terminal
         }),
       )
 
@@ -1506,16 +1531,22 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
 
     // ------------------------------------------------------------------ the loop
 
+    const debounceMs = Duration.toMillis(Duration.fromInputUnsafe(deps.options.botWakeDebounce))
+
     /**
-     * The next turn: the oldest queued delivery, plus every queued BACKGROUND delivery of the same
-     * conversation (batched with attribution lines). Other conversations wait their turn.
+     * The next turn: the oldest queued delivery that may start, plus every queued BACKGROUND delivery
+     * of the same conversation (batched with attribution lines). Other conversations wait their turn.
+     * A background delivery may start once `botWakeDebounce` has passed since it queued; while only
+     * such deliveries wait, the result is the number of ms until the first of them may start.
      */
     const takeNext = locked(
       Effect.gen(function* () {
         if (state.closed) return "exit" as const
         if (state.active !== undefined || state.control || deps.held()) return undefined
-        const head = state.queue[0]
-        if (head === undefined) return undefined
+        if (state.queue.length === 0) return undefined
+        const now = yield* Clock.currentTimeMillis
+        const head = state.queue.find((q) => q.turnId !== undefined || now - q.queuedAt >= debounceMs)
+        if (head === undefined) return Math.min(...state.queue.map((q) => q.queuedAt)) + debounceMs - now
         const conversationId = head.delivery.conversationId
         const taken = state.queue.filter(
           (q) => q === head || (q.turnId === undefined && q.delivery.conversationId === conversationId),
@@ -1550,33 +1581,42 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
 
     let self: Runner | undefined
 
-    /** Going idle with a large context: compact now, while the harness's prompt cache is warm. */
-    const compactBeforeSleep = Effect.gen(function* () {
-      const open = state.session
-      if (
-        open === undefined ||
-        deps.held() ||
-        !open.driver.capabilities.compact ||
-        (yield* Deferred.isDone(open.closed))
-      )
-        return
-      if (!(yield* Effect.map(settings, (s) => s.compactIdleBots))) return
-      const usage = yield* open.session.contextUsage
-      if (usage === undefined || usage.usedTokens < deps.options.idleCompactMinTokens) return
-      yield* Effect.logInfo("compacting an idle bot's context", { botId, usedTokens: usage.usedTokens })
-      // Defined below; a delivery arriving meanwhile waits for it (or makes it a Conflict: skipped).
-      const compacted = yield* Effect.result(Effect.suspend(() => compactSession))
-      if (compacted._tag === "Failure")
-        return yield* Effect.logWarning(`BotRunner ${botId}: idle compaction skipped`, compacted.failure)
-      const bot = yield* orDie(deps.bots.get(botId))
-      if (Option.isNone(bot)) return
-      yield* Effect.ignore(
-        deps.conversationService.appendEvent({
-          conversationId: bot.value.directConversationId,
-          event: { type: "session-changed", botId, action: "compacted" },
-        }),
-      )
-    })
+    /**
+     * A large context (setting `compactIdleBots`): compact now, while the harness's prompt cache is
+     * warm. `idle`: going idle (a delivery arriving meanwhile makes it a Conflict: skipped); `busy`:
+     * right after a turn, before the queued deliveries (they wait for it).
+     */
+    const compactIfLarge = (when: "idle" | "busy") =>
+      Effect.gen(function* () {
+        const open = state.session
+        if (
+          open === undefined ||
+          deps.held() ||
+          !open.driver.capabilities.compact ||
+          (yield* Deferred.isDone(open.closed))
+        )
+          return
+        if (!(yield* Effect.map(settings, (s) => s.compactIdleBots))) return
+        const usage = yield* open.session.contextUsage
+        const minTokens = when === "idle" ? deps.options.idleCompactMinTokens : deps.options.busyCompactMinTokens
+        if (usage === undefined || usage.usedTokens < minTokens) return
+        yield* Effect.logInfo(`compacting ${when === "idle" ? "an idle" : "a busy"} bot's context`, {
+          botId,
+          usedTokens: usage.usedTokens,
+        })
+        // Defined below.
+        const compacted = yield* Effect.result(Effect.suspend(() => compactWith({ beforeQueued: when === "busy" })))
+        if (compacted._tag === "Failure")
+          return yield* Effect.logWarning(`BotRunner ${botId}: ${when} compaction skipped`, compacted.failure)
+        const bot = yield* orDie(deps.bots.get(botId))
+        if (Option.isNone(bot)) return
+        yield* Effect.ignore(
+          deps.conversationService.appendEvent({
+            conversationId: bot.value.directConversationId,
+            event: { type: "session-changed", botId, action: "compacted" },
+          }),
+        )
+      })
 
     const idleMs = Duration.toMillis(Duration.fromInputUnsafe(deps.options.idleTimeout))
     const compactMs = Math.min(Duration.toMillis(Duration.fromInputUnsafe(deps.options.idleCompactAfter)), idleMs)
@@ -1586,12 +1626,18 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
       for (;;) {
         const next = yield* takeNext
         if (next === "exit") return
+        if (typeof next === "number") {
+          // Only background messages wait (botWakeDebounce); a waking delivery signals sooner.
+          yield* waitForWork(Math.max(1, next))
+          continue
+        }
         if (next !== undefined) {
-          yield* runTurn(next)
+          const terminal = yield* runTurn(next)
+          if (terminal._tag === "completed") yield* compactIfLarge("busy")
           continue
         }
         if (Option.isSome(yield* waitForWork(compactMs))) continue
-        yield* compactBeforeSleep
+        yield* compactIfLarge("idle")
         if (Option.isSome(yield* waitForWork(idleMs - compactMs))) continue
         const decision = yield* tryEvict
         if (decision === "busy") continue
@@ -1610,11 +1656,20 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         Effect.gen(function* () {
           if (state.closed) return "closed" as const
           const arrival = ++state.arrivals
-          const idle = state.active === undefined && !state.control && state.queue.length === 0 && !deps.held()
-          // `background` only means "don't interrupt a busy bot": an idle recipient wakes immediately.
-          if (!isWaking(delivery) && !idle) {
-            state.queue.push({ arrival, delivery, turnId: undefined })
+          const queuedAt = yield* Clock.currentTimeMillis
+          // (background deliveries still waiting out the debounce do not make the bot busy)
+          const idle =
+            state.active === undefined &&
+            !state.control &&
+            !state.queue.some((q) => q.turnId !== undefined || queuedAt - q.queuedAt >= debounceMs) &&
+            !deps.held()
+          // `background` means "don't interrupt a busy bot": it batches into the next turn of its
+          // conversation, and wakes an idle bot `botWakeDebounce` after the first one queued.
+          if (!isWaking(delivery)) {
+            state.queue.push({ arrival, queuedAt, delivery, turnId: undefined })
             yield* deps.outcomes.register(delivery.id)
+            // the loop starts waiting out the debounce
+            if (idle) yield* Queue.offer(signal, undefined)
             const receipt: DeliveryReceipt = { deliveryId: delivery.id, disposition: "batched" }
             return receipt
           }
@@ -1658,7 +1713,7 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
             yield* Effect.logWarning(`BotRunner ${botId}: steer failed; queueing`, steered.failure)
           }
           const turnId = delivery.turnId ?? (yield* deps.ids.turnId)
-          state.queue.push({ arrival, delivery, turnId })
+          state.queue.push({ arrival, queuedAt, delivery, turnId })
           yield* deps.outcomes.register(delivery.id)
           if (!idle) {
             yield* writeTurn({
@@ -1903,43 +1958,47 @@ export const makeRunner = (deps: RunnerDeps, botId: BotId): Effect.Effect<Runner
         }),
       )
 
-    const compactSession = Effect.gen(function* () {
-      yield* locked(
-        Effect.gen(function* () {
-          if (state.active !== undefined || state.control || state.queue.length > 0) return yield* yield* busyConflict()
-          state.control = true
-        }),
-      )
-      return yield* Effect.gen(function* () {
-        const bot = yield* Effect.flatMap(orDie(deps.bots.get(botId)), (b) =>
-          Option.isSome(b) ? Effect.succeed(b.value) : Effect.fail(new NotFound({ entity: "bot", id: botId })),
+    /** Compacts the native session; `beforeQueued`: even with deliveries queued (they wait for it). */
+    const compactWith = (options: { readonly beforeQueued: boolean }) =>
+      Effect.gen(function* () {
+        yield* locked(
+          Effect.gen(function* () {
+            if (state.active !== undefined || state.control || (!options.beforeQueued && state.queue.length > 0))
+              return yield* yield* busyConflict()
+            state.control = true
+          }),
         )
-        const open = yield* ensureSession(bot, bot.directConversationId).pipe(
-          Effect.mapError((e) => new HarnessUnavailable({ harness: bot.harness.kind, message: e.message })),
-        )
-        yield* open.session.compact.pipe(
-          Effect.mapError((e) => new HarnessUnavailable({ harness: bot.harness.kind, message: e.message })),
-        )
-        const usage: ContextUsage | undefined = yield* open.session.contextUsage
-        if (usage !== undefined) {
-          yield* updateSessionRow(deps.store, bot.directConversationId, botId, (_row, now) => ({
-            botId,
-            active: true,
-            contextUsage: usage,
-            updatedAt: now,
-          }))
-        }
-      }).pipe(
-        Effect.ensuring(
-          locked(
-            Effect.gen(function* () {
-              state.control = false
-              if (state.queue.length > 0) yield* Queue.offer(signal, undefined)
-            }),
+        return yield* Effect.gen(function* () {
+          const bot = yield* Effect.flatMap(orDie(deps.bots.get(botId)), (b) =>
+            Option.isSome(b) ? Effect.succeed(b.value) : Effect.fail(new NotFound({ entity: "bot", id: botId })),
+          )
+          const open = yield* ensureSession(bot, bot.directConversationId).pipe(
+            Effect.mapError((e) => new HarnessUnavailable({ harness: bot.harness.kind, message: e.message })),
+          )
+          yield* open.session.compact.pipe(
+            Effect.mapError((e) => new HarnessUnavailable({ harness: bot.harness.kind, message: e.message })),
+          )
+          const usage: ContextUsage | undefined = yield* open.session.contextUsage
+          if (usage !== undefined) {
+            yield* updateSessionRow(deps.store, bot.directConversationId, botId, (_row, now) => ({
+              botId,
+              active: true,
+              contextUsage: usage,
+              updatedAt: now,
+            }))
+          }
+        }).pipe(
+          Effect.ensuring(
+            locked(
+              Effect.gen(function* () {
+                state.control = false
+                if (state.queue.length > 0) yield* Queue.offer(signal, undefined)
+              }),
+            ),
           ),
-        ),
-      )
-    })
+        )
+      })
+    const compactSession = compactWith({ beforeQueued: false })
 
     self = {
       botId,

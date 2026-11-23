@@ -59,6 +59,7 @@ import {
   InstructionRendererLive,
   LiveHubLive,
   makeDataDir,
+  makeOrchestratorLayer,
   MAX_SENT_FILES,
   MemoryServiceLive,
   MessagingLive,
@@ -69,6 +70,7 @@ import {
   ProfileGuardLive,
   ProfileRemovalLive,
   RoutineSchedulerLive,
+  type RunnerOptions,
   SearchRepo,
   SearchServiceLive,
   SendFileLimits,
@@ -93,6 +95,7 @@ import { chmod, mkdir, unlink } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { WebAuth, WebAuthLayer } from "./auth.ts"
 import { DrainOnSignalLive } from "./drain.ts"
+import { recordBoot, stormHoldMs } from "./restartGuard.ts"
 import { OPENBOT_VERSION, ServerConfig, type ServerConfigShape } from "./config.ts"
 import {
   InternalAddressLive,
@@ -110,6 +113,7 @@ import { RpcHandlersLive } from "./rpc.ts"
 import { setShutdownPhase } from "./shutdown.ts"
 import { SkillsShLive } from "./skillsSh.ts"
 import { SlackConnectorLive } from "./slack/connector.ts"
+import { RoutineGateLive } from "./routineGate.ts"
 import { type SpeechToText, SpeechToTextLive } from "./stt/service.ts"
 import { VoiceCallsLive } from "./voice/service.ts"
 import { UpdatesLive, type UpdatesOptions } from "./updates.ts"
@@ -183,9 +187,32 @@ export const DataDirLockLive: Layer.Layer<never, StartupError, DataDir> = Layer.
 /** What boot recovery changed (published by `Orchestrator.recover` once the services are up). */
 export class BootReport extends Context.Service<BootReport, BootRecoveryReport>()("openbot/server/BootReport") {}
 
-export const BootReportLive: Layer.Layer<BootReport, StartupError, BootRecovery> = Layer.effect(
+/**
+ * In a restart storm (restartGuard.ts) boot recovery waits: a brain stopped again meanwhile has
+ * changed nothing, so the storm costs no restart budget and resumes nothing twice.
+ */
+const holdInRestartStorm = Effect.gen(function* () {
+  const config = yield* ServerConfig
+  const guard = config.restartGuard
+  if (guard === undefined) return
+  const now = Date.now()
+  const boots = yield* Effect.promise(() => recordBoot(config.dataDir, now))
+  const holdMs = stormHoldMs(boots, now, guard)
+  if (holdMs === 0) return
+  yield* Effect.logWarning("restart storm: waiting before resuming any work", {
+    bootsInWindow: boots.filter((t) => t > now - guard.stormWindowMs).length,
+    windowSeconds: Math.round(guard.stormWindowMs / 1000),
+    holdSeconds: Math.round(holdMs / 1000),
+  })
+  setShutdownPhase("waiting out a restart storm")
+  yield* Effect.sleep(holdMs)
+  setShutdownPhase("running")
+})
+
+export const BootReportLive: Layer.Layer<BootReport, StartupError, BootRecovery | ServerConfig> = Layer.effect(
   BootReport,
   Effect.gen(function* () {
+    yield* holdInRestartStorm
     const recovery = yield* BootRecovery
     const report = yield* recovery.run.pipe(
       Effect.mapError((error) => new StartupError({ message: `boot recovery failed: ${error.message}` })),
@@ -384,6 +411,8 @@ export interface ServerOptions {
   readonly voiceCalls?: { readonly dir: string; readonly sttDir: string } | undefined
   /** Updates from GitHub Releases (tests: a fake GitHub, no timer). */
   readonly updates?: Omit<UpdatesOptions, "dataDir"> | undefined
+  /** Bot runner timings (tests: a short `botWakeDebounce`); default `DEFAULT_RUNNER_OPTIONS`. */
+  readonly runner?: Partial<RunnerOptions> | undefined
   readonly quiet?: boolean | undefined
 }
 
@@ -473,7 +502,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(Layer.merge(HarnessProfilesLayer(options?.profiles), HarnessSignInsLayer())), // 8b: added accounts (profiles.ts)
       Layer.provideMerge(options?.drivers ?? harnessDrivers(config)), // 8
       Layer.provideMerge(RecoveredLive), // 7
-      Layer.provideMerge(OrchestratorLive), // 6
+      Layer.provideMerge(options?.runner === undefined ? OrchestratorLive : makeOrchestratorLayer(options.runner)), // 6
       Layer.provideMerge(BackgroundTasksLive), // 5b (D5.7)
       Layer.provideMerge(InstructionRendererLive),
       Layer.provideMerge(ApprovalServiceLive),
@@ -483,8 +512,14 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(MemoryServiceLive),
       Layer.provideMerge(level2),
       Layer.provideMerge(LiveHubLive),
-      // the owner's Slack (D3.4), each profile's tokens in its slack.json
-      Layer.provideMerge(SlackConnectorLive({ file: (id) => dataDir.profile(id).slack, apiUrl: config.slackApiUrl })),
+      // the owner's Slack (D3.4), each profile's tokens in its slack.json; routine gates:
+      // <data>/routine-gates/<routineId>, run before scheduled and catch-up runs (routineGate.ts)
+      Layer.provideMerge(
+        Layer.merge(
+          SlackConnectorLive({ file: (id) => dataDir.profile(id).slack, apiUrl: config.slackApiUrl }),
+          RoutineGateLive({ dir: `${dataDir.root}/routine-gates` }),
+        ),
+      ),
       Layer.provideMerge(Layer.merge(OwnerProfilesLive, ProfileGuardLive)),
       Layer.provideMerge(foundation),
     )

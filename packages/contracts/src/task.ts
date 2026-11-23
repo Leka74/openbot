@@ -43,6 +43,11 @@ export const Task = Schema.Struct({
   nativeSessionId: Schema.optionalKey(Schema.String),
   /** Times a restart cut it off and it ran again (at most `MAX_TASK_RESTARTS`). */
   restarts: Schema.optionalKey(NonNegativeInt),
+  /**
+   * Boot recovery failed it (a restart cut it off) and it has not run again or been reported yet. A
+   * brain stopped before doing either leaves this set, so the next boot picks the task up again.
+   */
+  awaitingRecovery: Schema.optionalKey(Schema.Boolean),
 })
 export type Task = typeof Task.Type
 

@@ -225,6 +225,19 @@ describe("show_ui and update_ui through the gateway", () => {
     })
     expect(textOf(updated)).toBe("Updated the card ent_7. Don't repeat it in your reply.")
     expect(h.messagingCalls.find((c) => c.method === "updateUi")?.input).toMatchObject({ entryId: "ent_7" })
+    // loose in its schema, checked like show_ui's card
+    const bad = await client.callTool({
+      name: "update_ui",
+      arguments: { entry_id: "ent_7", ...card([{ checklist: [{ label: "Build", status: "later" }] }]) },
+    })
+    expect(textOf(bad)).toBe(
+      "ERROR: Invalid arguments for update_ui: `blocks[0].checklist[0].status` must be one of: done, active, upcoming, failed.",
+    )
+    const twoKeys = await client.callTool({
+      name: "update_ui",
+      arguments: { entry_id: "ent_7", ...card([{ text: "a", link: { label: "b", url: "https://x.test" } }]) },
+    })
+    expect(textOf(twoKeys)).toContain("ERROR: Block 1 must have exactly one of")
 
     const task = await h.connect((await h.issue({ toolsets: ["bot"], taskId: "tsk_1" as never })).binding)
     const asked = await task.callTool({ name: "show_ui", arguments: card([{ text: "Pick?" }], send) })

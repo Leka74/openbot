@@ -20,6 +20,7 @@ export type Route =
   | { readonly kind: "chat"; readonly conversationId: ConversationId; readonly entryId?: EntryId | undefined }
   | { readonly kind: "new" }
   | { readonly kind: "search"; readonly filters: SearchFilters }
+  | { readonly kind: "ops" }
   | { readonly kind: "other" }
 
 const ID = /^[^/?#]+$/
@@ -90,6 +91,9 @@ export const searchHash = (filters: SearchFilters): string => {
   return query === "" ? "#/search" : `#/search?${query}`
 }
 
+/** The Ops view (the whole harness at a glance), over the whole window. */
+export const OPS_HASH = "#/ops"
+
 export const parseRoute = (hash: string): Route => {
   const chat = /^#\/c\/([^/?#]+)(?:\/e\/([^/?#]+))?/.exec(hash)
   if (chat) {
@@ -103,6 +107,7 @@ export const parseRoute = (hash: string): Route => {
     }
   }
   if (/^#\/new\b/.test(hash)) return { kind: "new" }
+  if (/^#\/ops\/?$/.test(hash)) return { kind: "ops" }
   const search = /^#\/search\/?(?:\?(.*))?$/.exec(hash)
   if (search) return { kind: "search", filters: parseSearch(search[1] ?? "") }
   return { kind: "other" }
@@ -119,6 +124,8 @@ export const routeHash = (route: Route): string => {
       return "#/new"
     case "search":
       return searchHash(route.filters)
+    case "ops":
+      return OPS_HASH
     case "other":
       return "#/"
   }

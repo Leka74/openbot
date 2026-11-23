@@ -118,4 +118,9 @@ describe("search routes", () => {
     expect(searchHash({ ...searchFilters("hi"), types: [...DEFAULT_SEARCH_TYPES].reverse() })).toBe("#/search?q=hi")
     expect(routeHash({ kind: "search", filters: searchFilters("a b") })).toBe("#/search?q=a+b")
   })
+  test("the Ops view has its own hash", () => {
+    expect(parseRoute("#/ops")).toEqual({ kind: "ops" })
+    expect(routeHash({ kind: "ops" })).toBe("#/ops")
+    expect(parseRoute("#/opsx")).toEqual({ kind: "other" })
+  })
 })

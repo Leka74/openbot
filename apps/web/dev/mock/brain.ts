@@ -8,6 +8,7 @@ import { Effect, Stream, SubscriptionRef } from "effect"
 import {
   MAIN_PROFILE_ID,
   AlreadyAnswered,
+  type Millis,
   type ApprovalRule,
   type Attachment,
   type AttachmentId,
@@ -2325,6 +2326,48 @@ export class MockBrain {
         })(),
       "rules.delete": ({ ruleId }) => sync(() => void this.rules.delete(ruleId))(),
       "usage.byBot": () => Effect.succeed([...this.usage.values()]),
+      // the Ops view: a deterministic, plausible week so the charts have something to draw
+      "stats.overview": ({ sinceMs, bucketMs }) =>
+        Effect.sync(() => {
+          const count = Math.max(1, Math.min(500, Math.ceil((this.now() - sinceMs) / bucketMs)))
+          const wave = (i: number, k: number) => Math.abs(Math.sin(i * 0.37 + k) + Math.sin(i * 0.11 + k * 2)) / 2
+          const buckets = Array.from({ length: count }, (_, i) => {
+            const turns = Math.round(wave(i, 1) * 14)
+            const tasks = Math.round(wave(i, 3) * 4)
+            return {
+              at: (sinceMs + i * bucketMs) as Millis,
+              turns,
+              turnsFailed: i % 9 === 0 ? Math.min(turns, 1) : 0,
+              tasks,
+              tasksFailed: i % 17 === 0 ? Math.min(tasks, 1) : 0,
+              costUsd: turns * 0.31 + tasks * 0.9,
+              tokens: turns * 41_000 + tasks * 120_000,
+            }
+          })
+          const byBot = [...this.roster.state.bots.values()].map((b, i) => ({
+            botId: b.id,
+            turns: Math.max(1, 40 - i * 6),
+            turnsFailed: i === 1 ? 2 : 0,
+            tasks: Math.max(0, 9 - i),
+            tasksFailed: 0,
+            costUsd: Math.round((18.4 / (i + 1)) * 100) / 100,
+            tokens: Math.round(2_400_000 / (i + 1)),
+            turnP50Ms: 21_000 + i * 7_000,
+          }))
+          return {
+            sinceMs,
+            bucketMs,
+            buckets,
+            byBot,
+            byModel: [
+              { model: "claude-opus-5-5", harness: "claude" as const, costUsd: 31.2, tokens: 3_900_000, records: 210 },
+              { model: "gpt-6", harness: "codex" as const, costUsd: 9.7, tokens: 1_600_000, records: 88 },
+              { model: "claude-haiku-5-5", harness: "claude" as const, costUsd: 1.1, tokens: 900_000, records: 61 },
+            ],
+            turnP50Ms: 24_000,
+            turnP90Ms: 96_000,
+          }
+        }),
       // background tasks (D5.7): the offline mock runs none
       "tasks.list": () => Effect.succeed([]),
     }

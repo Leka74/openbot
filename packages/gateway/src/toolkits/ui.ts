@@ -2,7 +2,8 @@
  * UiToolkit (generative UI): `show_ui` posts a `ui` card, `update_ui` replaces one, both through
  * `UiCardService`. Tool schemas can't hold unions, so a block is an object with exactly one
  * per-type key (`{"table": {...}}`); the handler turns it into the contract's tagged block, decodes
- * it with `UiCardInput` and checks the caps.
+ * it with `UiCardInput` and checks the caps. `update_ui` lists only loose card fields (the full
+ * schema is in every bot's prompt once, with `show_ui`) and decodes them with `show_ui`'s params.
  */
 import { type AttachmentId, type EntryId, UiCardInput } from "@openbot/contracts"
 import {
@@ -181,6 +182,7 @@ const cardFields = {
   ),
 }
 type CardArgs = p.Infer<typeof cardFields>
+const cardParams = p.params(cardFields)
 
 /** One block's arguments as the contract's tagged block (undecoded). */
 const blockOf = (block: BlockArgs, nextImage: () => AttachmentId | undefined): unknown => {
@@ -310,7 +312,7 @@ const showUi = defineTool({
   name: "show_ui",
   toolset: "bot",
   description: `Post a native card in this conversation instead of a prose answer when you compare options, report a status or plan with numbers, lay out a schedule, or let the owner pick from options you worked out (a \`choice\` block and an action, rather than ask_user). Plain answers and explanations stay plain text, never a card. Blocks render top to bottom; each block is an object with exactly one key: text (markdown), fields, table, options (side by side, \`pick\` marks your recommendation), stats, checklist, timeline, chart (bar or line; an area is a line with \`fill\`, for one series or a stacked whole, never many overlapping series; \`stacked\` piles series into totals), image (a file path), link (https only), choice or input. \`fallback\` is required: the card as plain text. With \`actions\` (required when there is a choice or an input), the owner's press (and their choice and input values) comes back to you once, as a new message; without, the card is display-only. Returns the card's entry id for update_ui. Caps: ${UI_LIMITS.blocks} blocks, ${UI_LIMITS.tableRows}×${UI_LIMITS.tableColumns} tables, ${UI_LIMITS.options} options, ${UI_LIMITS.chartSeries} series of ${UI_LIMITS.chartPoints} points, ${UI_LIMITS.actions} actions, ${UI_LIMITS.bytes / 1024} KB.`,
-  params: p.params(cardFields),
+  params: cardParams,
   annotations: { title: "Show a card", destructiveHint: false, openWorldHint: false },
   handler: (args, ctx) =>
     Effect.gen(function* () {
@@ -328,12 +330,25 @@ const updateUi = defineTool({
   name: "update_ui",
   toolset: "bot",
   description:
-    "Replace a card you posted with show_ui in this conversation, e.g. to move a checklist along or change a status. Pass its entry id and the whole new card (same fields as show_ui). A card the owner already answered can't change.",
-  params: p.params({ entry_id: p.text("The card's entry id (from show_ui)."), ...cardFields }),
+    "Replace a card you posted with show_ui in this conversation, e.g. to move a checklist along or change a status. Pass its entry id and the whole new card, with the same fields and block shapes as show_ui (its caps apply). A card the owner already answered can't change.",
+  params: p.params({
+    entry_id: p.text("The card's entry id (from show_ui)."),
+    title: p.optional(p.string()),
+    subtitle: p.optional(p.string()),
+    collapsed: p.optional(p.boolean()),
+    blocks: p.array(p.anyObject(), "Blocks as in show_ui: each an object with exactly one block key.", {
+      minItems: 1,
+    }),
+    actions: p.optional(p.array(p.anyObject(), "Buttons as in show_ui.")),
+    fallback: p.text("The card as plain text, as in show_ui."),
+  }),
   annotations: { title: "Update a card", destructiveHint: false, openWorldHint: false },
-  handler: ({ entry_id, ...args }, ctx) =>
+  handler: ({ entry_id, ...loose }, ctx) =>
     Effect.gen(function* () {
-      const card = yield* cardFromArgs(args, ctx)
+      // the card's own checks: show_ui's params (model-readable refusals), then the same path
+      const args = cardParams.decode(loose)
+      if (!args.ok) return yield* new ToolRefusal({ message: `Invalid arguments for update_ui: ${args.error}.` })
+      const card = yield* cardFromArgs(args.value, ctx)
       yield* (yield* UiCardService).update(ctx.tool, entry_id as EntryId, card)
       return textResult(`Updated the card ${entry_id}. Don't repeat it in your reply.`)
     }),

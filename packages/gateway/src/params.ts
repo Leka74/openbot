@@ -176,6 +176,19 @@ export const object = <F extends Fields>(fields: F, description?: string): Param
   decode: (value, path) => decodeObject(fields, value, path),
 })
 
+/**
+ * Any JSON object, passed on as it is (no `properties` in the schema): for a tool that checks it
+ * itself against a fuller definition, e.g. `update_ui` against `show_ui`'s.
+ */
+export const anyObject = (description?: string): Param<Readonly<Record<string, unknown>>> => ({
+  json: withDescription({ type: "object" }, description),
+  optional: false,
+  decode: (value, path) =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? ok(value as Readonly<Record<string, unknown>>)
+      : fail(`\`${path}\` must be an object`),
+})
+
 /** Marks a parameter optional; with `fallback`, an absent value decodes to it. */
 export const optional = <A>(param: Param<A, boolean>, fallback?: A): Param<A, true> => ({
   json: fallback === undefined || typeof fallback === "object" ? param.json : { ...param.json, default: fallback },

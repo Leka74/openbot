@@ -2,7 +2,8 @@
  * BotToolkit (D3.2, architecture §4.6): product tools that call core services. Every tool maps to
  * exactly one service method (docs/interfaces.md §6.2 table):
  *
- * message_bot → Messaging.messageBot · post_to_group → Messaging.postToGroup · handoff_task →
+ * message_bot → Messaging.messageBot · post_to_group → Messaging.postToGroup · create_group →
+ * ConversationService.createGroup (+ postToGroup for the kickoff) · handoff_task →
  * Messaging.handoffTask · list_bots → BotService.list · ask_user → ApprovalService.askUser ·
  * request_approval → ApprovalService.requestApproval · notify_user → Notifier.notify · remember /
  * forget → MemoryService.putFact / deleteFact · recall_memory → MemoryService.recall · create_routine
@@ -34,6 +35,7 @@ import {
   ApprovalService,
   BotService,
   botActor,
+  ConversationService,
   DataDir,
   formatBytes,
   IdGen,
@@ -57,6 +59,7 @@ export type BotToolkitServices =
   | CurrentProfile
   | Messaging
   | BotService
+  | ConversationService
   | ApprovalService
   | Notifier
   | MemoryService
@@ -95,7 +98,7 @@ const messageBot = defineTool({
     urgency: p.optional(
       p.literals(
         ["background", "urgent"],
-        "background (default): wakes the recipient now if it is idle, otherwise right after its current turn. urgent: the recipient reads it as soon as possible (folded into its current turn when it is working in the same chat, else right after it). Bots never cut each other off.",
+        "background (default): wakes an idle recipient within about a minute, batched with other updates for it into one turn (a busy one reads it after its current turn). urgent: the recipient reads it as soon as possible (folded into its current turn when it is working in the same chat, else right after it). Bots never cut each other off.",
       ),
       "background",
     ),
@@ -148,6 +151,61 @@ const postToGroup = defineTool({
         conversationId: args.conversation_id as ConversationId | undefined,
       })
       return textResult(`Posted to group ${result.conversationId} (entry ${result.entryId}).`)
+    }),
+})
+
+/** Group chats hold 2–6 bots (ConversationService.createGroup); the creator is always one of them. */
+const MAX_GROUP_MEMBERS = 6
+
+const createGroup = defineTool({
+  name: "create_group",
+  toolset: "bot",
+  description:
+    "Create a new group chat with other bots on the team; you are always a member, and the lead unless you name another. Use it when the owner asks for a group, or on your own when work needs several bots to share one thread (a project, a review, a recurring sync) and no existing group fits: check the groups you are in first and reuse one if it covers the work. The group appears in the owner's sidebar. Pass `kickoff` to post the first message (@mention members to wake them); without it the group starts empty. 2–6 bots in total, you included.",
+  params: p.params({
+    title: p.text('Group name, e.g. "Q4 pipeline review".'),
+    members: p.array(
+      p.text('A bot: its name (e.g. "@Scout") or id.'),
+      "The other bots to add (1–5; you are added automatically).",
+      { minItems: 1, maxItems: MAX_GROUP_MEMBERS - 1 },
+    ),
+    lead: p.optional(p.text("The lead bot (name or id), who answers messages nobody is @mentioned in. Default: you.")),
+    kickoff: p.optional(p.text("First message to post in the new group as you. @mention members to wake them.")),
+  }),
+  annotations: { title: "Create a group chat", destructiveHint: false, openWorldHint: false },
+  handler: (args, ctx) =>
+    Effect.gen(function* () {
+      const bots = yield* BotService
+      const conversations = yield* ConversationService
+      const self = ctx.claims.botId
+      const others = yield* Effect.forEach(args.members, (ref) => bots.resolve(ref))
+      const memberIds = [...new Set([self, ...others.map((b) => b.id)])]
+      if (memberIds.length < 2) {
+        return yield* Effect.fail(new ToolRefusal({ message: "Add at least one other bot to the group." }))
+      }
+      if (memberIds.length > MAX_GROUP_MEMBERS) {
+        return yield* Effect.fail(
+          new ToolRefusal({ message: `A group holds at most ${MAX_GROUP_MEMBERS} bots, you included.` }),
+        )
+      }
+      const lead = args.lead === undefined ? self : (yield* bots.resolve(args.lead)).id
+      if (!memberIds.includes(lead)) {
+        return yield* Effect.fail(new ToolRefusal({ message: "The lead must be one of the group's members." }))
+      }
+      const group = yield* conversations.createGroup({
+        title: args.title,
+        memberBotIds: memberIds,
+        leadBotId: lead,
+        clientNonce: ctx.tool.callId === undefined ? undefined : `create_group:${self}:${ctx.tool.callId}`,
+      })
+      const names = others.map((b) => `@${b.name}`).join(", ")
+      const created = `Created group "${group.title}" (${group.id}) with you, ${names}.`
+      if (args.kickoff === undefined || args.kickoff.trim() === "") {
+        return textResult(`${created} Post into it with post_to_group and conversation_id ${group.id}.`)
+      }
+      const messaging = yield* Messaging
+      const posted = yield* messaging.postToGroup(ctx.tool, { text: args.kickoff, conversationId: group.id })
+      return textResult(`${created} Kickoff posted (entry ${posted.entryId}).`)
     }),
 })
 
@@ -1332,6 +1390,7 @@ const sendFile = defineTool({
 export const BotToolkit: ReadonlyArray<AnyTool<BotToolkitServices>> = [
   messageBot,
   postToGroup,
+  createGroup,
   handoffTask,
   react,
   listBots,

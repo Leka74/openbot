@@ -242,6 +242,52 @@ export const ComputerStatus = Schema.Struct({
 })
 export type ComputerStatus = typeof ComputerStatus.Type
 
+/** One time bucket of `stats.overview` (the Ops view): what started in `[at, at + bucketMs)`. */
+export const StatsBucket = Schema.Struct({
+  at: Millis,
+  turns: NonNegativeInt,
+  turnsFailed: NonNegativeInt,
+  tasks: NonNegativeInt,
+  tasksFailed: NonNegativeInt,
+  costUsd: Schema.Number,
+  tokens: NonNegativeInt,
+})
+export type StatsBucket = typeof StatsBucket.Type
+
+export const StatsByBot = Schema.Struct({
+  botId: BotId,
+  turns: NonNegativeInt,
+  turnsFailed: NonNegativeInt,
+  tasks: NonNegativeInt,
+  tasksFailed: NonNegativeInt,
+  costUsd: Schema.Number,
+  tokens: NonNegativeInt,
+  /** Median wall time of its finished turns. */
+  turnP50Ms: Schema.optionalKey(Schema.Number),
+})
+export type StatsByBot = typeof StatsByBot.Type
+
+export const StatsByModel = Schema.Struct({
+  model: Schema.String,
+  harness: Schema.optionalKey(HarnessKindName),
+  costUsd: Schema.Number,
+  tokens: NonNegativeInt,
+  records: NonNegativeInt,
+})
+export type StatsByModel = typeof StatsByModel.Type
+
+/** `stats.overview`: turns, tasks and usage since `sinceMs`, bucketed for charts, for the active profile. */
+export const StatsOverview = Schema.Struct({
+  sinceMs: Millis,
+  bucketMs: Schema.Number,
+  buckets: Schema.Array(StatsBucket),
+  byBot: Schema.Array(StatsByBot),
+  byModel: Schema.Array(StatsByModel),
+  turnP50Ms: Schema.optionalKey(Schema.Number),
+  turnP90Ms: Schema.optionalKey(Schema.Number),
+})
+export type StatsOverview = typeof StatsOverview.Type
+
 export const BotUsage = Schema.Struct({
   botId: BotId,
   usage: Usage,
@@ -800,6 +846,12 @@ export class OpenBotRpcs extends RpcGroup.make(
     payload: { sinceMs: Schema.optionalKey(Millis) },
     success: Schema.Array(BotUsage),
     error: errors(),
+  }),
+  /** The Ops view's charts and tables; at most 500 buckets of at least a minute. */
+  Rpc.make("stats.overview", {
+    payload: { sinceMs: Millis, bucketMs: Schema.Number },
+    success: StatsOverview,
+    error: errors(InvalidInput),
   }),
 ) {}
 

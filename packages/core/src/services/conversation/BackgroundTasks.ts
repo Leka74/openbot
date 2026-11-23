@@ -25,8 +25,9 @@
  *   conversation (its DM when it left that conversation), so the bot reports in its own words. Work
  *   started on a voice call reports on the call while it lasts (a `voice` delivery: `CallPresence`).
  *   A task the bot stopped itself, or one stopped because its bot / group was deleted, is not reported.
- * - Restart: boot recovery fails queued/running tasks ("interrupted by a restart"); `recover`
- *   publishes them and tells each bot once the drivers are registered.
+ * - Restart: boot recovery fails queued/running tasks ("interrupted by a restart", `awaitingRecovery`);
+ *   `recover` runs them again (or tells each bot) once the drivers are registered, and only then
+ *   clears the flag: a brain stopped in between leaves them to the next boot.
  *
  * Layer 5b (services.ts): never calls the Orchestrator.
  */
@@ -1116,6 +1117,7 @@ const makeBackgroundTasks = (options: BackgroundTasksOptions) =>
           status: "queued",
           error: undefined,
           endedAt: undefined,
+          awaitingRecovery: undefined,
           restarts: (task.restarts ?? 0) + 1,
           updatedAt: now,
         })
@@ -1138,6 +1140,10 @@ const makeBackgroundTasks = (options: BackgroundTasksOptions) =>
         yield* pump(task.botId)
       })
 
+    /**
+     * Each task stays `awaitingRecovery` until it is queued again or its report is handed on: a brain
+     * stopped before that leaves it for the next boot. One task failing does not skip the others.
+     */
     const recover = (bootReport: BootRecoveryReport) =>
       Effect.forEach(
         bootReport.interruptedTasks,
@@ -1145,7 +1151,8 @@ const makeBackgroundTasks = (options: BackgroundTasksOptions) =>
           Effect.gen(function* () {
             const bot = yield* orDie(bots.get(task.botId))
             if (Option.isSome(bot) && (task.restarts ?? 0) < MAX_TASK_RESTARTS) return yield* restart(task)
-            yield* publish(task)
+            const { awaitingRecovery: _awaiting, ...told } = task
+            yield* publish(told)
             const steps = yield* orDie(repo.steps(task.id))
             const last = [...steps]
               .reverse()
@@ -1153,10 +1160,13 @@ const makeBackgroundTasks = (options: BackgroundTasksOptions) =>
                 (s): s is Extract<TranscriptEntry, { kind: "message" }> =>
                   s.kind === "message" && s.role === "bot" && s.text.trim() !== "",
               )
-            yield* report(task, last?.text)
-          }),
+            yield* report(told, last?.text)
+            yield* orDie(repo.upsert(told))
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError(`BackgroundTasks.recover failed for ${task.id}`, cause)),
+          ),
         { discard: true },
-      ).pipe(Effect.catchCause((cause) => Effect.logError("BackgroundTasks.recover failed", cause)))
+      )
 
     // Running tasks stop with the layer (shutdown): boot recovery reports them next time.
     yield* Effect.addFinalizer(() => Effect.sync(() => lives.clear()))

@@ -265,7 +265,15 @@ describe("Claude session (fake query)", () => {
         expect((options.settings as Record<string, unknown>).autoMemoryDirectory).toBeUndefined()
         expect(options.plugins).toBeUndefined() // no skills library yet
         expect(options.disallowedTools).toEqual(
-          expect.arrayContaining(["SendMessage", "CronCreate", "ScheduleWakeup", "RemoteTrigger", "PushNotification"]),
+          expect.arrayContaining([
+            "SendMessage",
+            "CronCreate",
+            "ScheduleWakeup",
+            "RemoteTrigger",
+            "PushNotification",
+            "Workflow",
+            "ReportFindings",
+          ]),
         )
         expect(options.tools).toBeUndefined()
         expect(options.resume).toBeUndefined()
@@ -276,6 +284,9 @@ describe("Claude session (fake query)", () => {
         expect(env.CLAUDECODE).toBeUndefined()
         expect(env.HOME).toBe("/home/x")
         expect(env.CLAUDE_AGENT_SDK_CLIENT_APP).toStartWith("openbot/")
+        // tool output caps (the brain's own values would win)
+        expect(env.BASH_MAX_OUTPUT_LENGTH).toBe("20000")
+        expect(env.MAX_MCP_OUTPUT_TOKENS).toBe("15000")
         // tokens never reach the CLI command line: only setMcpServers (stdin) carries them
         const argvVisible = JSON.stringify({ ...options, canUseTool: undefined, abortController: undefined })
         expect(argvVisible).not.toContain("secret-token-xyz")
@@ -533,6 +544,18 @@ describe("Claude session (fake query)", () => {
         })
         expect(h.fake().options.tools).toEqual([])
         expect((h.fake().options.env as Record<string, string>).OPENBOT_NODE).toBe("nod_1")
+      }),
+    ))
+
+  test("the brain's own tool output caps win over the defaults", () =>
+    run(
+      Effect.gen(function* () {
+        const h = yield* setup({
+          config: { env: { PATH: "/usr/bin", HOME: "/home/x", BASH_MAX_OUTPUT_LENGTH: "50000" } },
+        })
+        const env = h.fake().options.env as Record<string, string>
+        expect(env.BASH_MAX_OUTPUT_LENGTH).toBe("50000")
+        expect(env.MAX_MCP_OUTPUT_TOKENS).toBe("15000")
       }),
     ))
 

@@ -1,7 +1,7 @@
 // Request/response reads that have no live feed. Each refetches when a command (commands.ts) or a live
 // event (keys.ts) invalidates its reactivity key. Families are keyed by primitives so the same
 // arguments always return the same atom.
-import type { BotId, ConversationId, HarnessKindName, RoutineId, TaskId } from "@openbot/contracts"
+import type { BotId, ConversationId, HarnessKindName, Millis, RoutineId, TaskId } from "@openbot/contracts"
 import { Atom } from "effect/reactivity"
 import { Keys } from "./keys.ts"
 import { OpenBotClient } from "./rpc.ts"
@@ -101,6 +101,16 @@ export const rulesAtom = Atom.family((botId: BotId | "*") =>
 export const usageAtom = Atom.family((sinceMs: number) =>
   OpenBotClient.query("usage.byBot", sinceMs > 0 ? { sinceMs } : {}, { reactivityKeys: [Keys.usage] }),
 )
+
+/** The Ops view's bucketed stats; keyed `"<sinceMs>:<bucketMs>"` (round `sinceMs` so the key is stable). The view polls it. */
+export const statsAtom = Atom.family((key: `${number}:${number}`) => {
+  const [sinceMs, bucketMs] = key.split(":").map(Number) as [number, number]
+  return OpenBotClient.query(
+    "stats.overview",
+    { sinceMs: sinceMs as Millis, bucketMs },
+    { reactivityKeys: [Keys.usage] },
+  )
+})
 
 /** The bot's live-view status (Details › Computer). */
 export const computerStatusAtom = Atom.family((botId: BotId) =>

@@ -17,9 +17,12 @@
  * | (env only) | `OPENBOT_SKILLS_SH_URL` | `https://skills.sh` (the skills catalog; tests point it at a fake) |
  * | (env only) | `OPENBOT_SLACK_API_URL` | `https://slack.com/api` (Slack's Web API; tests point it at a fake) |
  * | (env only) | `OPENBOT_HARK_URL` | `https://hark.ryan.ceo` (iPhone notifications; tests point it at a fake) |
+ * | (env only) | `OPENBOT_BOT_WAKE_DEBOUNCE_MS` | 45000 (background bot messages wake their recipient after this; e2e tests: 50) |
+ * | (env only) | `OPENBOT_RESTART_GUARD` | on (`off` disables restartGuard.ts; set by main.ts, not `parseCommand`) |
  */
 import { KnownHarnessKinds } from "@openbot/contracts"
 import { Context, Layer } from "effect"
+import type { RestartGuardOptions } from "./restartGuard.ts"
 
 /** Brain version (mirrors apps/server/package.json). Sent in `node.hello` and `session.info`. */
 export const OPENBOT_VERSION = "0.0.0"
@@ -58,6 +61,8 @@ export interface ServerConfigShape {
   readonly harkUrl?: string | undefined
   /** An unused bot desktop sleeps after this long, ms (0 = never); absent = 10 min. */
   readonly desktopIdleMs?: number | undefined
+  /** Restart storms and too-frequent drains (restartGuard.ts); absent = off (tests). */
+  readonly restartGuard?: RestartGuardOptions | undefined
 }
 
 export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShape>()("openbot/server/ServerConfig") {

@@ -20,13 +20,14 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react"
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import type { Attachment } from "@openbot/contracts"
 import { Icon, Portal, cn } from "@openbot/ui"
 import {
   aspectRatioOf,
   attachmentKind,
   downloadUrl,
+  opensAsPage,
   extensionLabel,
   type FileFamily,
   fileFamily,
@@ -35,6 +36,7 @@ import {
   previewKind,
 } from "./attachments.ts"
 import { FilePreview } from "./FilePreview.tsx"
+import { desktopApp } from "../app/notifications.ts"
 
 const FAMILY_ICONS: Record<FileFamily, typeof File> = {
   image: FileImage,
@@ -50,6 +52,17 @@ const FAMILY_ICONS: Record<FileFamily, typeof File> = {
 
 const metaLine = (a: Attachment): string =>
   [extensionLabel(a.name), formatBytes(a.byteSize)].filter((s) => s !== "").join(" · ")
+
+/**
+ * HTML opens in the system browser, not a desktop-app window: the desktop app keeps OpenBot's own
+ * links in its windows, so this goes through its bridge. In a browser the link's new tab does it.
+ */
+const openPageInBrowser = (e: MouseEvent<HTMLAnchorElement>, a: Attachment): void => {
+  const open = desktopApp()?.openApproval
+  if (!opensAsPage(a) || open === undefined) return
+  e.preventDefault()
+  open(new URL(a.url, window.location.origin).href)
+}
 
 /** Small round icon link (download / open). */
 function IconLink({
@@ -131,11 +144,12 @@ function FileCard({
       ) : (
         <div className="flex min-w-0 flex-1 flex-col">{label}</div>
       )}
-      {kind === "pdf" && (
+      {(kind === "pdf" || opensAsPage(attachment)) && (
         <a
           href={attachment.url}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(e) => openPageInBrowser(e, attachment)}
           className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm text-fg hairline border-line-secondary hover:bg-hover"
         >
           Open

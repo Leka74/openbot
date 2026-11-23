@@ -26,6 +26,8 @@ export interface DesktopBridge {
   readonly onUpdate?: (listener: (state: unknown) => void) => () => void
   readonly checkForUpdates?: () => Promise<unknown>
   readonly installUpdate?: () => void
+  /** Opens one of OpenBot's own URLs in the system browser (built for approvals); absent in older copies. */
+  readonly openApproval?: (url: string) => void
   /** Whether the owner is using this computer ("active" | "idle" | "locked" | "unknown"); absent in older copies. */
   readonly idleState?: () => Promise<string>
   /** The quick send panel's controls (apps/desktop/src/quickSend.ts); absent in older copies. */

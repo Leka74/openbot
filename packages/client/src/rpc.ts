@@ -21,6 +21,7 @@ export class OpenBotClient extends AtomRpc.Service<OpenBotClient>()("@openbot/cl
     const owner = nextProtocolOwner()
     return RpcClient.layerProtocolSocket({
       pingInterval: config.pingInterval,
+      pingTimeout: config.pingTimeout,
       // Fail calls fast while offline (t3code style); the protocol keeps reconnecting on its own
       // schedule and replica streams re-subscribe after the next connect.
       retryTransientErrors: false,
