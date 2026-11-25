@@ -4,6 +4,8 @@ import type { ReactNode } from "react"
 
 const ICONS = {
   back: { ios: "chevron.left", web: "arrow_back_ios_new" },
+  sidebar: { ios: "sidebar.left", web: "left_panel_open" },
+  chats: { ios: "bubble.left.and.bubble.right", web: "forum" },
   more: { ios: "ellipsis", web: "more_horiz" },
   plus: { ios: "plus", web: "add" },
   search: { ios: "magnifyingglass", web: "search" },

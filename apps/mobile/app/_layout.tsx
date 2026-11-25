@@ -30,7 +30,7 @@ function Root(): ReactNode {
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg } }}>
       <Stack.Protected guard={connection !== null}>
         <Stack.Screen name="index" />
-        <Stack.Screen name="chat/[id]" />
+        <Stack.Screen name="chat" />
         <Stack.Screen name="web" options={{ presentation: "modal" }} />
       </Stack.Protected>
       <Stack.Protected guard={connection === null}>

@@ -1,5 +1,6 @@
-// A chat (Grok iOS): floating glass back button, the Bot's name pill and a "…" menu over the
-// transcript; the glass composer at the bottom. Rows come from the shared `layoutTranscript`.
+// A chat (Grok iOS): the native bar with Back, the Bot's name and a "…" menu over the transcript
+// (on the iPhone Duo's cover screen, Back and the actions sit in the side strip); the glass composer
+// at the bottom. Rows come from the shared `layoutTranscript`.
 import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import {
   activityPhrase,
@@ -28,28 +29,26 @@ import {
   transcriptOf,
 } from "@openbot/contracts"
 import { Exit } from "effect"
-import { router, useLocalSearchParams } from "expo-router"
-import { type ReactElement, type ReactNode, useEffect } from "react"
-import {
-  ActionSheetIOS,
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native"
+import { Stack, useLocalSearchParams } from "expo-router"
+import { useHeaderHeight } from "expo-router/react-navigation"
+import { type ReactElement, type ReactNode, useEffect, useRef, useState } from "react"
+import { Alert, AppState, FlatList, KeyboardAvoidingView, Platform, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Composer } from "../../src/chat/Composer.tsx"
 import { RowView, StatusLine } from "../../src/chat/Rows.tsx"
 import { failureText, useRoster, valueOr } from "../../src/data.ts"
-import { openWeb } from "../../src/nav.ts"
+import { useIsBesideSidebar } from "../../src/home/ChatSidebar.tsx"
+import { leaveChat, openWeb } from "../../src/nav.ts"
 import { useConnection } from "../../src/runtime.tsx"
 import { useTheme } from "../../src/theme.ts"
 import { Avatar, AvatarStack } from "../../src/ui/Avatar.tsx"
-import { Glass, GlassCircle } from "../../src/ui/glass.tsx"
+import {
+  type BarItem,
+  NativeBarItems,
+  railItems,
+  useBarLivesInSideRail,
+  useBottomEdgeInset,
+} from "../../src/ui/NativeBar.tsx"
 
 const ACTIVE = new Set(["queued", "running", "waiting"])
 
@@ -60,6 +59,19 @@ type Item =
 export default function Chat(): ReactNode {
   const { id } = useLocalSearchParams<{ id: string }>()
   const conversationId = (id ?? "") as ConversationId
+  return <ChatScreen key={conversationId} conversationId={conversationId} />
+}
+
+const useAppActive = (): boolean => {
+  const [active, setActive] = useState(AppState.currentState === "active")
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => setActive(next === "active"))
+    return () => subscription.remove()
+  }, [])
+  return active
+}
+
+function ChatScreen({ conversationId }: { readonly conversationId: ConversationId }): ReactNode {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const connection = useConnection()
@@ -89,19 +101,30 @@ export default function Chat(): ReactNode {
     : (primary?.name ?? summary?.title ?? "")
   const settings = roster.state.settings ?? DEFAULT_SETTINGS
 
-  // read once it is on screen
+  const appActive = useAppActive()
   const unread = summary?.unreadCount ?? 0
   useEffect(() => {
-    if (unread > 0 && state.synchronized) {
+    if (unread > 0 && state.synchronized && appActive) {
       const t = setTimeout(() => markRead({ conversationId }), 500)
       return () => clearTimeout(t)
     }
     return undefined
-  }, [unread, state.synchronized, conversationId, markRead])
+  }, [unread, state.synchronized, appActive, conversationId, markRead])
+
+  const loadingOlder = useRef(false)
+  const hasMoreBefore = state.hasMoreBefore
+  const loadOlderOnce = () => {
+    if (!hasMoreBefore || loadingOlder.current) return
+    loadingOlder.current = true
+    void loadOlder(conversationId).finally(() => {
+      loadingOlder.current = false
+    })
+  }
 
   const stateEntries = state.entries
   const stateTurns = state.turns
   const showSteps = settings.showSteps
+  const showCompactions = settings.showCompactions
   const entries = transcriptOf({ entries: stateEntries })
   const nonces = new Set(entries.flatMap((e) => (e.kind === "message" && e.clientNonce ? [e.clientNonce] : [])))
   const pending: ReadonlyArray<PendingMessage> = outbox
@@ -113,14 +136,7 @@ export default function Chat(): ReactNode {
       status: o.status,
       error: o.error,
     }))
-  const rows = layoutTranscript({
-    entries,
-    turns: stateTurns,
-    pending,
-    showSteps,
-    showCompactions: settings.showCompactions,
-    direct: !isGroup,
-  })
+  const rows = layoutTranscript({ entries, turns: stateTurns, pending, showSteps, showCompactions, direct: !isGroup })
   const turns = [...stateTurns.values()].filter((t) => ACTIVE.has(t.status)).sort((a, b) => a.startedAt - b.startedAt)
   const statuses = chatStatuses({
     conversationId,
@@ -135,7 +151,6 @@ export default function Chat(): ReactNode {
   )
   const working = statuses.some((s) => s.kind === "turn")
 
-  // inverted list: newest first
   const items: ReadonlyArray<Item> = [
     ...[...statuses].reverse().map((s, i): Item => ({ kind: "status", status: s, key: `status-${s.botId}-${i}` })),
     ...[...rows].reverse().map((row): Item => ({ kind: "row", row })),
@@ -156,28 +171,60 @@ export default function Chat(): ReactNode {
     !isGroup &&
     primary !== undefined &&
     (roster.state.nodes.get(primary.hostNodeId)?.capabilities ?? []).some((c) => /^(desktop|screen|browser)@/.test(c))
-  const menu = () => {
-    const options = [...(hasScreen ? [`${primary!.name}'s computer`] : []), "Open in web app", "Cancel"]
-    const run = (i: number) => {
-      const label = options[i]
-      if (label === `${primary?.name}'s computer`) openWeb(`#/computer/${encodeURIComponent(primary!.id)}`, label)
-      if (label === "Open in web app") openWeb(`#/c/${encodeURIComponent(conversationId)}`, title)
-    }
-    if (Platform.OS === "ios")
-      ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex: options.length - 1 }, run)
-    else
-      Alert.alert(title, undefined, [
-        ...options.slice(0, -1).map((t, i) => ({ text: t, onPress: () => run(i) })),
-        { text: "Cancel", style: "cancel" as const },
-      ])
+  const actions = [
+    ...(hasScreen && primary !== undefined
+      ? [
+          {
+            title: `${primary.name}'s computer`,
+            icon: "display" as const,
+            onPress: () => openWeb(`#/computer/${encodeURIComponent(primary.id)}`, `${primary.name}'s computer`),
+          },
+        ]
+      : []),
+    {
+      title: "Open in web app",
+      icon: "globe" as const,
+      onPress: () => openWeb(`#/c/${encodeURIComponent(conversationId)}`, title),
+    },
+  ]
+  const besideSidebar = useIsBesideSidebar()
+  const barInSideRail = useBarLivesInSideRail()
+  const bottomInset = useBottomEdgeInset()
+  const headerHeight = useHeaderHeight()
+  const backItems: ReadonlyArray<BarItem> = besideSidebar
+    ? []
+    : [{ kind: "button", icon: "chevron.left", label: "Back", onPress: leaveChat }]
+  const titleItem: BarItem = {
+    kind: "view",
+    label: title,
+    element: (
+      <View style={styles.titleRow}>
+        {isGroup ? (
+          <AvatarStack avatars={members.map((m) => m.avatar)} size={30} outline={theme.bg} />
+        ) : (
+          <Avatar avatar={primary?.avatar} size={30} />
+        )}
+        <Text numberOfLines={1} style={[styles.title, { color: theme.fg }]}>
+          {title}
+        </Text>
+      </View>
+    ),
   }
+  const railActions: ReadonlyArray<BarItem> = actions.map((action) => ({
+    kind: "button",
+    icon: action.icon,
+    label: action.title,
+    onPress: action.onPress,
+  }))
 
+  const botById = roster.botById
+  const requests = state.requests
   const ctx = {
     theme,
     connection,
     group: isGroup,
-    botById: (b: string | undefined) => roster.botById(b),
-    requestFor: (e: Parameters<typeof requestForCard>[0]) => requestForCard(e, state.requests),
+    botById,
+    requestFor: (e: Parameters<typeof requestForCard>[0]) => requestForCard(e, requests),
     primary,
     retry: (clientNonce: string) => retry({ conversationId, clientNonce }),
   }
@@ -193,12 +240,27 @@ export default function Chat(): ReactNode {
     emptyState = <Text style={[styles.loading, { color: theme.fgTertiary }]}>Loading…</Text>
   }
 
-  const top = insets.top + 6
+  const sideInsets = { paddingLeft: insets.left, paddingRight: insets.right }
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.bg }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <Stack.Screen
+        options={{
+          headerShown: true,
+          headerTransparent: true,
+          headerShadowVisible: false,
+          headerBackVisible: false,
+          title: "",
+          headerTitle: () => null,
+        }}
+      />
+      <NativeBarItems
+        leading={[...(barInSideRail ? [] : backItems), titleItem]}
+        trailing={barInSideRail ? [] : [{ kind: "menu", icon: "ellipsis", label: "More", actions }]}
+        bottom={barInSideRail ? railItems(railActions, backItems) : []}
+      />
       <FlatList
         inverted
         data={failed ? [] : items}
@@ -210,17 +272,20 @@ export default function Chat(): ReactNode {
             <StatusLine bot={roster.botById(item.status.botId)} text={statusText(item.status)} theme={theme} />
           )
         }
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: top + 64 }}
+        contentContainerStyle={{
+          paddingLeft: 16 + insets.left,
+          paddingRight: 16 + insets.right,
+          paddingTop: 12,
+          paddingBottom: Math.max(headerHeight, insets.top) + 12,
+        }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onEndReachedThreshold={0.4}
-        onEndReached={() => {
-          if (state.hasMoreBefore) void loadOlder(conversationId)
-        }}
+        onEndReached={loadOlderOnce}
         ListEmptyComponent={emptyState}
       />
       {!failed && (
-        <View style={{ paddingBottom: Math.max(insets.bottom, 10), paddingTop: 6 }}>
+        <View style={{ paddingBottom: Math.max(bottomInset, 10), paddingTop: 6, ...sideInsets }}>
           <Composer
             conversationId={conversationId}
             theme={theme}
@@ -240,58 +305,12 @@ export default function Chat(): ReactNode {
           />
         </View>
       )}
-
-      {/* floating header */}
-      <View style={[styles.header, { top }]} pointerEvents="box-none">
-        <GlassCircle
-          icon="back"
-          label="Back"
-          onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
-        />
-        <Pressable
-          onPress={menu}
-          accessibilityRole="button"
-          accessibilityLabel={`${title}, options`}
-          style={styles.titleWrap}
-        >
-          <Glass interactive style={styles.titlePill}>
-            {isGroup ? (
-              <AvatarStack avatars={members.map((m) => m.avatar)} size={26} outline={theme.elevated} />
-            ) : (
-              <Avatar avatar={primary?.avatar} size={26} />
-            )}
-            <Text numberOfLines={1} style={[styles.title, { color: theme.fg }]}>
-              {title}
-            </Text>
-          </Glass>
-        </Pressable>
-        <GlassCircle icon="more" label="More" onPress={menu} />
-      </View>
     </KeyboardAvoidingView>
   )
 }
 
 const styles = StyleSheet.create({
-  header: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  titleWrap: { flexShrink: 1 },
-  titlePill: {
-    height: 44,
-    borderRadius: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingLeft: 10,
-    paddingRight: 16,
-    maxWidth: 240,
-  },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 8, maxWidth: 240 },
   title: { fontSize: 17, fontWeight: "600", flexShrink: 1 },
   loading: { textAlign: "center", marginVertical: 40, fontSize: 15, transform: [{ scaleY: -1 }] },
 })

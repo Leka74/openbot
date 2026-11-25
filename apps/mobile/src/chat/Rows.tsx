@@ -4,7 +4,7 @@
 import { type BubbleItem, formatTimestamp, type Row } from "@openbot/app-model"
 import type { Bot, RuntimeRequest, TranscriptEntryOf } from "@openbot/contracts"
 import { Image } from "expo-image"
-import { type ReactNode, useEffect, useState } from "react"
+import { memo, type ReactNode, useEffect, useState } from "react"
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native"
 import type { Connection } from "../session.ts"
 import { sessionHeaders } from "../session.ts"
@@ -27,7 +27,62 @@ export interface RowContext {
   readonly retry: (clientNonce: string) => void
 }
 
-export function RowView({ row, ctx }: { readonly row: Row; readonly ctx: RowContext }): ReactNode {
+interface RowViewProps {
+  readonly row: Row
+  readonly ctx: RowContext
+}
+
+const sameList = <A,>(a: ReadonlyArray<A>, b: ReadonlyArray<A>, same: (x: A, y: A) => boolean) =>
+  a.length === b.length && a.every((x, i) => same(x, b[i]!))
+
+const identical = <A,>(x: A, y: A) => x === y
+
+const sameBubble = (a: BubbleItem, b: BubbleItem) =>
+  a.kind === "entry"
+    ? b.kind === "entry" && a.entry === b.entry
+    : b.kind === "pending" &&
+      a.pending.clientNonce === b.pending.clientNonce &&
+      a.pending.text === b.pending.text &&
+      a.pending.status === b.pending.status &&
+      a.pending.error === b.pending.error
+
+const sameRow = (a: Row, b: Row): boolean => {
+  if (a.key !== b.key || a.type !== b.type) return false
+  switch (a.type) {
+    case "timestamp":
+      return a.at === (b as typeof a).at
+    case "new-divider":
+      return true
+    case "group": {
+      const g = b as typeof a
+      return (
+        a.side === g.side &&
+        a.botId === g.botId &&
+        a.addressee === g.addressee &&
+        sameList(a.items, g.items, sameBubble)
+      )
+    }
+    case "exchange": {
+      const x = b as typeof a
+      return a.peerBotId === x.peerBotId && a.ownerBotId === x.ownerBotId && sameList(a.entries, x.entries, identical)
+    }
+    case "steps": {
+      const t = b as typeof a
+      return (
+        a.turnId === t.turnId &&
+        a.failed === t.failed &&
+        sameList(a.steps, t.steps, identical) &&
+        sameList(a.decisions, t.decisions, identical)
+      )
+    }
+    default:
+      return a.entry === (b as typeof a).entry
+  }
+}
+
+export const RowView = memo(RowContent, (a: RowViewProps, b: RowViewProps) => a.ctx === b.ctx && sameRow(a.row, b.row))
+
+function RowContent({ row, ctx }: RowViewProps): ReactNode {
   const { theme } = ctx
   switch (row.type) {
     case "timestamp":
