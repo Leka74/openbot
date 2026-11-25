@@ -1,5 +1,6 @@
 // Root: the session (keychain), the OpenBot client for it, and the screens. Not connected → only the
 // connect screen; connected → Home, chats and the web pages.
+import "../src/polyfills.ts"
 import { Stack } from "expo-router"
 import { StatusBar } from "expo-status-bar"
 import type { ReactNode } from "react"
@@ -29,8 +30,8 @@ function Root(): ReactNode {
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg } }}>
       <Stack.Protected guard={connection !== null}>
         <Stack.Screen name="index" />
-        <Stack.Screen name="chat/[id]" />
-        <Stack.Screen name="web" options={{ presentation: "modal" }} />
+        <Stack.Screen name="chat" />
+        <Stack.Screen name="web" options={{ presentation: "modal", headerShown: true, title: "" }} />
       </Stack.Protected>
       <Stack.Protected guard={connection === null}>
         <Stack.Screen name="connect" />

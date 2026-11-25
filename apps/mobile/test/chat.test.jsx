@@ -9,7 +9,6 @@ import { AsyncResult } from "effect/reactivity"
 const conversationId = "cnv_missing"
 let result
 let outbox
-const back = mock(() => {})
 const alert = mock(() => {})
 let onStop
 let stopExit
@@ -29,13 +28,12 @@ mock.module("@effect/atom-react", () => ({
 
 const Container = ({ children }) => createElement("div", null, children)
 mock.module("react-native", () => ({
-  ActionSheetIOS: {},
   Alert: { alert },
+  AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
   FlatList: ({ data, ListEmptyComponent }) =>
     createElement("div", null, data.length === 0 ? ListEmptyComponent : "Transcript"),
   KeyboardAvoidingView: Container,
   Platform: { OS: "ios" },
-  Pressable: Container,
   StyleSheet: { create: (styles) => styles },
   Text: Container,
   View: Container,
@@ -43,11 +41,13 @@ mock.module("react-native", () => ({
 }))
 mock.module("expo-router", () => ({
   useLocalSearchParams: () => ({ id: conversationId }),
-  router: { canGoBack: () => true, back, replace: mock(() => {}) },
+  Stack: { Screen: () => null },
 }))
+mock.module("expo-router/react-navigation", () => ({ useHeaderHeight: () => 0 }))
 mock.module("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) }))
 mock.module("../src/runtime.tsx", () => ({ useConnection: () => ({}) }))
-mock.module("../src/nav.ts", () => ({ openWeb: mock(() => {}) }))
+mock.module("../src/nav.ts", () => ({ leaveChat: mock(() => {}), openWeb: mock(() => {}) }))
+mock.module("../src/home/ChatSidebar.tsx", () => ({ useIsBesideSidebar: () => false }))
 mock.module("../src/chat/Composer.tsx", () => ({
   Composer: (props) => {
     onStop = props.onStop
@@ -56,9 +56,11 @@ mock.module("../src/chat/Composer.tsx", () => ({
 }))
 mock.module("../src/chat/Rows.tsx", () => ({ RowView: () => null, StatusLine: () => null }))
 mock.module("../src/ui/Avatar.tsx", () => ({ Avatar: () => null, AvatarStack: () => null }))
-mock.module("../src/ui/glass.tsx", () => ({
-  Glass: Container,
-  GlassCircle: ({ label, onPress }) => createElement("button", { onClick: onPress }, label),
+mock.module("../src/ui/NativeBar.tsx", () => ({
+  NativeBarItems: ({ leading }) =>
+    leading.map((item) => (item.kind === "button" ? createElement("button", { key: item.label }, item.label) : null)),
+  useBarLivesInSideRail: () => false,
+  useBottomEdgeInset: () => 0,
 }))
 
 const { default: Chat } = await import("../app/chat/[id].tsx")

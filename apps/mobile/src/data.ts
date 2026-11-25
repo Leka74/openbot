@@ -4,7 +4,7 @@ import { rosterAtom } from "@openbot/client"
 import { type Bot, type BotId, emptyRosterState, type RosterState } from "@openbot/contracts"
 import { Exit } from "effect"
 import { AsyncResult } from "effect/reactivity"
-import { useMemo } from "react"
+import { useCallback, useMemo } from "react"
 
 export const valueOr = <A, E>(result: AsyncResult.AsyncResult<A, E>, fallback: A): A =>
   AsyncResult.isSuccess(result) ? result.value : fallback
@@ -21,10 +21,12 @@ export const useRoster = (): RosterView => {
   const result = useAtomValue(rosterAtom)
   const state = valueOr(result, emptyRosterState)
   const loaded = AsyncResult.isSuccess(result) && state.cursor !== undefined
-  return useMemo(
-    () => ({ state, loaded, botById: (id) => (id === undefined ? undefined : state.bots.get(id as BotId)) }),
-    [state, loaded],
+  const bots = state.bots
+  const botById = useCallback(
+    (id: BotId | string | undefined) => (id === undefined ? undefined : bots.get(id as BotId)),
+    [bots],
   )
+  return useMemo(() => ({ state, loaded, botById }), [state, loaded, botById])
 }
 
 export const failureText = (exit: Exit.Exit<unknown, unknown>): string => {

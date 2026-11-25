@@ -4,16 +4,7 @@ import { CameraView, useCameraPermissions } from "expo-camera"
 import * as Clipboard from "expo-clipboard"
 import { Image } from "expo-image"
 import { type ReactNode, useRef, useState } from "react"
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native"
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useSession } from "../src/runtime.tsx"
 import { connect, parseConnectInput } from "../src/session.ts"
@@ -77,18 +68,30 @@ export default function Connect(): ReactNode {
           icon="close"
           label="Cancel"
           onPress={() => setScanning(false)}
-          style={{ position: "absolute", top: insets.top + 8, left: 16 }}
+          style={{ position: "absolute", top: insets.top + 8, left: 16 + insets.left }}
         />
       </View>
     )
   }
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    <ScrollView
       style={{ flex: 1, backgroundColor: theme.bg }}
+      contentContainerStyle={[
+        styles.body,
+        {
+          paddingTop: insets.top + 48,
+          paddingBottom: insets.bottom + 24,
+          paddingLeft: 28 + insets.left,
+          paddingRight: 28 + insets.right,
+        },
+      ]}
+      contentInsetAdjustmentBehavior="never"
+      automaticallyAdjustKeyboardInsets
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
     >
-      <View style={[styles.body, { paddingTop: insets.top + 64, paddingBottom: insets.bottom + 24 }]}>
+      <View style={styles.column}>
         <Image source={require("../assets/icon.png")} style={styles.logo} />
         <Text style={[styles.title, { color: theme.fg }]}>Connect to your OpenBot</Text>
         <Text style={[styles.lead, { color: theme.fgSecondary }]}>
@@ -148,12 +151,13 @@ export default function Connect(): ReactNode {
         {error !== undefined && <Text style={[styles.error, { color: theme.dangerFg }]}>{error}</Text>}
         {busy && text === "" && <ActivityIndicator style={{ marginTop: 16 }} color={theme.fg} />}
       </View>
-    </KeyboardAvoidingView>
+    </ScrollView>
   )
 }
 
 const styles = StyleSheet.create({
-  body: { flex: 1, alignItems: "center", paddingHorizontal: 28 },
+  body: { flexGrow: 1, alignItems: "center" },
+  column: { width: "100%", maxWidth: 440, alignItems: "center" },
   logo: { width: 72, height: 72, borderRadius: 18, marginBottom: 24 },
   title: { fontSize: 26, fontWeight: "700", textAlign: "center", letterSpacing: -0.4 },
   lead: { fontSize: 16, lineHeight: 22, textAlign: "center", marginTop: 10, marginBottom: 32 },

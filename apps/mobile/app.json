@@ -7,7 +7,6 @@
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.leka74.openbot"
@@ -33,7 +32,14 @@
         {
           "photosPermission": "OpenBot lets you send photos to your Bots."
         }
-      ]
-    ]
+      ],
+      "expo-image",
+      "expo-status-bar",
+      "expo-web-browser",
+      "expo-font"
+    ],
+    "experiments": {
+      "reactCompiler": true
+    }
   }
 }
