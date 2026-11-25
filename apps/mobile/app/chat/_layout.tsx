@@ -1,9 +1,8 @@
 import { Stack, useGlobalSearchParams } from "expo-router"
 import { type ReactNode, useState } from "react"
 import { StyleSheet, useWindowDimensions, View } from "react-native"
-import Animated from "react-native-reanimated"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { BesideSidebarContext, ChatSidebar, sidebarResize } from "../../src/home/ChatSidebar.tsx"
+import { BesideSidebarContext, ChatSidebar } from "../../src/home/ChatSidebar.tsx"
 import { useTheme } from "../../src/theme.ts"
 
 const narrowestWidthWithSidebar = 640
@@ -26,11 +25,11 @@ export default function ChatLayout(): ReactNode {
         />
       )}
       <BesideSidebarContext.Provider value={showsSidebar}>
-        <Animated.View layout={sidebarResize} style={styles.chat}>
+        <View style={styles.chat}>
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg } }}>
             <Stack.Screen name="[id]" options={showsSidebar ? { animation: "none" } : undefined} />
           </Stack>
-        </Animated.View>
+        </View>
       </BesideSidebarContext.Provider>
     </View>
   )

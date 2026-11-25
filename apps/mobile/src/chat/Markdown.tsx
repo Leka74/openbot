@@ -323,7 +323,7 @@ const block = (t: Token, ctx: Ctx, key: string, depth = 0, image?: MarkdownImage
               <Text style={[text, { minWidth: list.ordered ? 20 : 12, color: ctx.theme.fgSecondary }]}>
                 {item.task ? (item.checked ? "☑" : "☐") : list.ordered ? `${start + i}.` : "•"}
               </Text>
-              <View style={{ flex: 1, gap: 4, opacity: item.task && item.checked ? 0.65 : 1 }}>
+              <View style={{ flexShrink: 1, gap: 4, opacity: item.task && item.checked ? 0.65 : 1 }}>
                 {item.tokens.map((c, j) =>
                   c.type === "text"
                     ? inlineRows((c as Tokens.Text).tokens ?? [c], ctx, `${key}.${i}.${j}`, image)

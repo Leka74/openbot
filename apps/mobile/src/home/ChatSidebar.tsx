@@ -1,7 +1,7 @@
 import { buildSidebar, type SidebarItem } from "@openbot/app-model"
 import { createContext, type ReactNode, useContext, useMemo } from "react"
 import { FlatList, Pressable, SectionList, StyleSheet, Text, View } from "react-native"
-import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated"
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRoster } from "../data.ts"
 import { leaveChat, switchChat } from "../nav.ts"
@@ -12,7 +12,6 @@ import { Row, rowConversationId, StatusDot } from "./Home.tsx"
 
 export const sidebarWidth = 300
 export const collapsedSidebarWidth = 76
-export const sidebarResize = LinearTransition.duration(240)
 const contentIn = FadeIn.duration(180).delay(60)
 const contentOut = FadeOut.duration(120)
 
@@ -75,8 +74,7 @@ export function ChatSidebar({
   )
 
   return (
-    <Animated.View
-      layout={sidebarResize}
+    <View
       style={[
         styles.sidebar,
         {
@@ -123,7 +121,7 @@ export function ChatSidebar({
           />
         </Animated.View>
       )}
-    </Animated.View>
+    </View>
   )
 }
 
