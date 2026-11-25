@@ -31,7 +31,7 @@ function Root(): ReactNode {
       <Stack.Protected guard={connection !== null}>
         <Stack.Screen name="index" />
         <Stack.Screen name="chat" />
-        <Stack.Screen name="web" options={{ presentation: "modal" }} />
+        <Stack.Screen name="web" options={{ presentation: "modal", headerShown: true, title: "" }} />
       </Stack.Protected>
       <Stack.Protected guard={connection === null}>
         <Stack.Screen name="connect" />

@@ -1,6 +1,6 @@
-// A chat (Grok iOS): the native bar with Back, the Bot's name and a "…" menu over the transcript
-// (on the iPhone Duo's cover screen, Back and the actions sit in the side strip); the glass composer
-// at the bottom. Rows come from the shared `layoutTranscript`.
+// A chat (Grok iOS): the native bar with Back, the Bot's name and its computer over the full-width
+// transcript (on the iPhone Duo's cover screen, Back and the computer sit at the top of the side strip);
+// the glass composer at the bottom. Rows come from the shared `layoutTranscript`.
 import { useAtomSet, useAtomValue } from "@effect/atom-react"
 import {
   activityPhrase,
@@ -42,15 +42,11 @@ import { leaveChat, openWeb } from "../../src/nav.ts"
 import { useConnection } from "../../src/runtime.tsx"
 import { useTheme } from "../../src/theme.ts"
 import { Avatar, AvatarStack } from "../../src/ui/Avatar.tsx"
-import {
-  type BarItem,
-  NativeBarItems,
-  railItems,
-  useBarLivesInSideRail,
-  useBottomEdgeInset,
-} from "../../src/ui/NativeBar.tsx"
+import { type BarItem, NativeBarItems, useBarLivesInSideRail, useBottomEdgeInset } from "../../src/ui/NativeBar.tsx"
 
 const ACTIVE = new Set(["queued", "running", "waiting"])
+
+const transparent = (hex: string) => `${hex.slice(0, 7)}00`
 
 type Item =
   | { readonly kind: "row"; readonly row: Row }
@@ -181,11 +177,6 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
           },
         ]
       : []),
-    {
-      title: "Open in web app",
-      icon: "globe" as const,
-      onPress: () => openWeb(`#/c/${encodeURIComponent(conversationId)}`, title),
-    },
   ]
   const besideSidebar = useIsBesideSidebar()
   const barInSideRail = useBarLivesInSideRail()
@@ -210,7 +201,7 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
       </View>
     ),
   }
-  const railActions: ReadonlyArray<BarItem> = actions.map((action) => ({
+  const actionItems: ReadonlyArray<BarItem> = actions.map((action) => ({
     kind: "button",
     icon: action.icon,
     label: action.title,
@@ -240,7 +231,9 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
     emptyState = <Text style={[styles.loading, { color: theme.fgTertiary }]}>Loading…</Text>
   }
 
-  const sideInsets = { paddingLeft: insets.left, paddingRight: insets.right }
+  const rightInset = barInSideRail ? 0 : insets.right
+  const sideInsets = { paddingLeft: insets.left, paddingRight: rightInset }
+  const barBottom = Math.max(headerHeight, insets.top + 52)
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.bg }}
@@ -256,11 +249,7 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
           headerTitle: () => null,
         }}
       />
-      <NativeBarItems
-        leading={[...(barInSideRail ? [] : backItems), titleItem]}
-        trailing={barInSideRail ? [] : [{ kind: "menu", icon: "ellipsis", label: "More", actions }]}
-        bottom={barInSideRail ? railItems(railActions, backItems) : []}
-      />
+      <NativeBarItems leading={[...backItems, titleItem]} trailing={actionItems} />
       <FlatList
         inverted
         data={failed ? [] : items}
@@ -274,15 +263,25 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
         }
         contentContainerStyle={{
           paddingLeft: 16 + insets.left,
-          paddingRight: 16 + insets.right,
+          paddingRight: 16 + rightInset,
           paddingTop: 12,
-          paddingBottom: Math.max(headerHeight, insets.top) + 12,
+          paddingBottom: barBottom + 12,
         }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onEndReachedThreshold={0.4}
         onEndReached={loadOlderOnce}
         ListEmptyComponent={emptyState}
+      />
+      <View
+        pointerEvents="none"
+        style={[
+          styles.topFade,
+          {
+            height: barBottom + 28,
+            experimental_backgroundImage: `linear-gradient(to bottom, ${theme.bg} ${Math.round((barBottom / (barBottom + 28)) * 100)}%, ${transparent(theme.bg)})`,
+          },
+        ]}
       />
       {!failed && (
         <View style={{ paddingBottom: Math.max(bottomInset, 10), paddingTop: 6, ...sideInsets }}>
@@ -310,6 +309,7 @@ function ChatScreen({ conversationId }: { readonly conversationId: ConversationI
 }
 
 const styles = StyleSheet.create({
+  topFade: { position: "absolute", top: 0, left: 0, right: 0 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 8, maxWidth: 240 },
   title: { fontSize: 17, fontWeight: "600", flexShrink: 1 },
   loading: { textAlign: "center", marginVertical: 40, fontSize: 15, transform: [{ scaleY: -1 }] },
