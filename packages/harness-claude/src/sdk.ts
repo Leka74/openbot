@@ -19,6 +19,12 @@ export interface ClaudeQueryHandle extends AsyncIterator<unknown, void> {
   readonly setMcpServers: (servers: Record<string, unknown>) => Promise<unknown>
   readonly initializationResult: () => Promise<unknown>
   readonly getContextUsage: () => Promise<unknown>
+  /**
+   * The structured data behind `/usage` (SDK `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`:
+   * experimental, so quota.ts parses the answer defensively). Absent on SDKs and fakes without it.
+   */
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?:
+    ((opts?: { readonly skipBehaviors?: boolean }) => Promise<unknown>) | undefined
 }
 
 export interface ClaudeQueryParams {

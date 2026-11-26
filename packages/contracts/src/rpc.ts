@@ -43,7 +43,14 @@ import {
   RoutineTriggerInput,
   Section,
 } from "./domain.ts"
-import { HarnessProfile, HarnessProfileCandidate, HarnessSignInStart, HarnessStatus, ModelInfo } from "./harness.ts"
+import {
+  HarnessProfile,
+  HarnessProfileCandidate,
+  HarnessQuota,
+  HarnessSignInStart,
+  HarnessStatus,
+  ModelInfo,
+} from "./harness.ts"
 import { BotMemory, MemoryFact, MemoryFactId, MemoryFactInput } from "./memory.ts"
 import { ApprovalRule, ApprovalRuleInput, BotAutonomy, ProjectFolders } from "./policy.ts"
 import { UiValues } from "./card.ts"
@@ -541,6 +548,15 @@ export class OpenBotRpcs extends RpcGroup.make(
   // harnesses
   /** One status per (kind, profile) of every registered harness (D2.6; no model call). */
   Rpc.make("harnesses.status", { success: Schema.Array(HarnessStatus), error: errors() }),
+  /**
+   * Plan limits of every harness account with the Bots on it (Settings › Usage). Each account's own
+   * CLI is asked (no model call); answers are kept for a minute unless `refresh` is set.
+   */
+  Rpc.make("harnesses.quota", {
+    payload: { refresh: Schema.optionalKey(Schema.Boolean) },
+    success: Schema.Array(HarnessQuota),
+    error: errors(),
+  }),
   /** Models of a harness; `profileId` absent = the default profile. */
   Rpc.make("harnesses.models", {
     payload: { kind: HarnessKindName, profileId: Schema.optionalKey(Schema.String) },

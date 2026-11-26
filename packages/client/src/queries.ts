@@ -31,6 +31,12 @@ export const harnessModelsAtom = (kind: HarnessKindName, profileId?: string | un
 /** Harness accounts (profiles): each harness's default first, then the ones the owner added. */
 export const harnessProfilesAtom = OpenBotClient.query("harnesses.profiles", {}, { reactivityKeys: [Keys.harnesses] })
 
+/**
+ * Plan limits of every harness account with its Bots (Settings › Usage). The brain keeps each
+ * account's answer for a minute; `refreshQuota` (commands.ts) asks the accounts again.
+ */
+export const harnessQuotaAtom = OpenBotClient.query("harnesses.quota", {}, { reactivityKeys: [Keys.harnessQuota] })
+
 /** Config dirs on the brain machine that look like logins of `kind` and are not accounts yet. */
 export const harnessDiscoverAtom = Atom.family((kind: HarnessKindName) =>
   OpenBotClient.query("harnesses.discover", { kind }, { reactivityKeys: [Keys.harnesses] }),

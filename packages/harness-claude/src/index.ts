@@ -15,6 +15,7 @@ export {
 export { cleanEnv, DISALLOWED_NATIVE_TOOLS, PREAPPROVED_TOOLS } from "./config.ts"
 export { ClaudeEventPipeline, type PipelineOptions, type PipelineOutput } from "./normalize.ts"
 export { parseAccountInfo, parseAuth, parseInitialization, parseModels } from "./probe.ts"
+export { parseUsage, runQuota } from "./quota.ts"
 export {
   canonicalClaudeDir,
   type ClaudeConfigDirCandidate,

@@ -29,6 +29,8 @@ import {
   DEFAULT_SETTINGS,
   defaultBotAvatar,
   type EntryId,
+  type HarnessLimitHit,
+  type HarnessQuotaReport,
   type HarnessStatus,
   Forbidden,
   InvalidInput,
@@ -205,6 +207,9 @@ export class MockBrain {
   readonly sends = new Map<string, SendResult>()
   readonly usage = new Map<string, BotUsage>()
   harnesses: HarnessStatus[] = []
+  /** Plan limits per account, keyed `<kind>/<profileId>` (`harnesses.quota`); accounts without one report none. */
+  readonly quotaReports = new Map<string, Omit<HarnessQuotaReport, "checkedAt">>()
+  limitHits: HarnessLimitHit[] = []
   origin = "http://127.0.0.1:4321"
   firstRun = false
   private seq = 0
@@ -2072,6 +2077,30 @@ export class MockBrain {
           ),
         ),
       "harnesses.status": () => Effect.succeed(this.harnesses),
+      "harnesses.quota": () =>
+        Effect.sync(() => {
+          const bots = [...this.roster.state.bots.values()]
+          return this.harnesses.map((h) => {
+            const profileId = h.profileId ?? "default"
+            const mine = bots.filter(
+              (b) => b.harness.kind === h.kind && (b.harness.profileId ?? "default") === profileId,
+            )
+            return {
+              kind: h.kind,
+              profileId,
+              profileLabel: h.profileLabel ?? "Default",
+              ...(this.quotaReports.get(`${h.kind}/${profileId}`) ?? {
+                windows: [],
+                problem: `${h.displayName ?? h.kind} does not report plan limits to OpenBot.`,
+              }),
+              ...(h.account ? { account: h.account } : {}),
+              checkedAt: this.now(),
+              botIds: mine.map((b) => b.id),
+              otherProfileBots: 0,
+              limitHits: this.limitHits.filter((hit) => mine.some((b) => b.id === hit.botId)),
+            }
+          })
+        }),
       "harnesses.models": ({ kind }) => Effect.succeed(MODELS[kind] ?? []),
       // accounts (profiles) derived from the seeded statuses; add/remove edit `harnesses`
       "harnesses.profiles": ({ kind }) =>

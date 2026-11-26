@@ -88,6 +88,7 @@ const V1_RPCS = [
   "skills.preview",
   "skills.install",
   "harnesses.status",
+  "harnesses.quota",
   "harnesses.models",
   "harnesses.profiles",
   "harnesses.addProfile",

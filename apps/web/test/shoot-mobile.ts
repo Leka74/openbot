@@ -396,6 +396,18 @@ export const SCENES: ReadonlyArray<Scene> = [
     },
   },
   {
+    name: "23-settings-usage",
+    device: IPHONE,
+    run: async (page, shot) => {
+      await page.getByRole("button", { name: "Account" }).tap()
+      await page.getByRole("menuitem", { name: /Settings/ }).tap()
+      await page.getByTestId("settings-nav-usage").tap()
+      await page.getByTestId("quota-account").first().waitFor()
+      await settle(page)
+      await shot()
+    },
+  },
+  {
     name: "13-forms",
     device: IPHONE,
     route: "#/c/cnv_travel",

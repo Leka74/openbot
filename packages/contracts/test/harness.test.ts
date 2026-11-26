@@ -7,6 +7,7 @@ import {
   HarnessEvent,
   HarnessItem,
   HarnessProfile,
+  HarnessQuota,
   HarnessRequest,
   HarnessRequestResolution,
   HarnessStatus,
@@ -14,6 +15,10 @@ import {
   ModelInfo,
   normalizeProfileId,
   profileIdOf,
+  quotaLevel,
+  quotaWarnings,
+  quotaWindowApplies,
+  type BotId,
   type TurnId,
 } from "../src/index.ts"
 
@@ -257,5 +262,67 @@ describe("harness accounts (profiles)", () => {
         Schema.decodeUnknownResult(HarnessProfile)({ id: "", kind: "claude", label: "x", createdAt: 1 }),
       ),
     ).toBe(true)
+  })
+})
+
+describe("plan limits", () => {
+  const NOW = 1_000_000
+
+  test("quotaLevel: near from 80%, out from 100%, ok again once the window has reset", () => {
+    expect(quotaLevel({ usedPercent: 79.9 }, NOW)).toBe("ok")
+    expect(quotaLevel({ usedPercent: 80 }, NOW)).toBe("near")
+    expect(quotaLevel({ usedPercent: 100, resetsAt: NOW + 1 }, NOW)).toBe("out")
+    expect(quotaLevel({ usedPercent: 104 }, NOW)).toBe("out")
+    expect(quotaLevel({ usedPercent: 100, resetsAt: NOW }, NOW)).toBe("ok")
+  })
+
+  test("quotaWindowApplies: a model window only limits the Bots that name its family", () => {
+    expect(quotaWindowApplies({ kind: "session" }, undefined)).toBe(true)
+    expect(quotaWindowApplies({ kind: "week" }, "claude-opus-5-5")).toBe(true)
+    expect(quotaWindowApplies({ kind: "week-model", model: "Opus" }, "claude-opus-5-5")).toBe(true)
+    expect(quotaWindowApplies({ kind: "week-model", model: "Opus" }, "claude-sonnet-5-5")).toBe(false)
+    // the harness default model is not guessed
+    expect(quotaWindowApplies({ kind: "week-model", model: "Opus" }, undefined)).toBe(false)
+  })
+
+  test("quotaWarnings: used-up windows first, each with the Bots it limits", () => {
+    const [a, b] = ["bot_a" as BotId, "bot_b" as BotId]
+    const models: Record<string, string | undefined> = { bot_a: "claude-opus-5-5", bot_b: undefined }
+    const warnings = quotaWarnings(
+      {
+        botIds: [a, b],
+        windows: [
+          { kind: "session", usedPercent: 12, resetsAt: NOW + 10 },
+          { kind: "week", usedPercent: 86, resetsAt: NOW + 20 },
+          { kind: "week-model", model: "Opus", usedPercent: 100, resetsAt: NOW + 20 },
+        ],
+      },
+      (id) => models[id],
+      NOW,
+    )
+    expect(warnings.map((w) => [w.level, w.window.kind, w.botIds])).toEqual([
+      ["out", "week-model", [a]],
+      ["near", "week", [a, b]],
+    ])
+    expect(quotaWarnings({ botIds: [a], windows: [] }, () => undefined, NOW)).toEqual([])
+  })
+
+  test("HarnessQuota round-trips", () => {
+    const quota = Schema.decodeUnknownSync(HarnessQuota)({
+      kind: "claude",
+      profileId: "default",
+      profileLabel: "Default",
+      windows: [
+        { kind: "session", usedPercent: 100, resetsAt: 5 },
+        { kind: "week-model", model: "Opus", usedPercent: 3.5 },
+      ],
+      account: { email: "a@b.c", plan: "team" },
+      extraUsage: false,
+      checkedAt: 4,
+      botIds: ["bot_a"],
+      otherProfileBots: 1,
+      limitHits: [{ botId: "bot_a", at: 3, message: "You've hit your session limit" }],
+    })
+    expect(json(HarnessQuota).decode(json(HarnessQuota).encode(quota))).toEqual(quota)
   })
 })
