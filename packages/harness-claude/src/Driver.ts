@@ -22,6 +22,7 @@ import { Effect, Layer, Option, Ref } from "effect"
 import { cleanEnv, DEFAULT_MCP_TIMEOUT_MS } from "./config.ts"
 import { bunReadFile, type ReadFile } from "./input.ts"
 import { PROBE_TIMEOUT_MS, runProbe } from "./probe.ts"
+import { runQuota } from "./quota.ts"
 import { type ClaudeProfile, profileEnv } from "./profile.ts"
 import { type ClaudeQueryFunction, defaultQuery } from "./sdk.ts"
 import { HARNESS, ledgerHooks, openClaudeSession, type SessionDeps } from "./Session.ts"
@@ -147,6 +148,13 @@ export const makeClaudeDriver = (config: ClaudeHarnessConfig, deps: DriverDeps):
             message: result.status.problems[0] ?? "Claude models are unavailable.",
           }),
         )
+      }),
+      quota: runQuota({
+        query,
+        env,
+        executable,
+        cwd: tmpdir(),
+        timeoutMs: config.probeTimeoutMs ?? PROBE_TIMEOUT_MS,
       }),
       openSession: (input) => {
         const profile = deps.dataDir.profile(input.bot.ownerProfileId)

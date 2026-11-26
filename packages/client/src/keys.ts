@@ -11,6 +11,8 @@ export const Keys = {
   skills: "skills",
   rules: "rules",
   harnesses: "harnesses",
+  /** Plan limits per harness account (Settings › Usage). */
+  harnessQuota: "harness-quota",
   usage: "usage",
   computer: "computer",
   requests: "requests",

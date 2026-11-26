@@ -170,6 +170,16 @@ export const SCENES: ReadonlyArray<Shot> = [
     },
   },
   { name: "50-settings", route: "#/c/cnv_chief", act: async (page) => void (await openComputers(page)) },
+  // plan limits per harness account above the per-Bot table
+  {
+    name: "51-settings-usage",
+    route: "#/c/cnv_chief",
+    act: async (page) => {
+      await openComputers(page)
+      await page.getByTestId("settings-nav-usage").click()
+      await page.getByTestId("quota-account").first().waitFor()
+    },
+  },
   // skills (D5.5): the library, the editor, the skills.sh import, a Bot's Library tab
   { name: "60-skills", route: "#/c/cnv_chief", act: async (page) => void (await openSkills(page)) },
   {

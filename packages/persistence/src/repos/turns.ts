@@ -104,6 +104,13 @@ export const makeSqlTurnRepo = Effect.gen(function* () {
         WHERE status IN ('queued', 'running', 'waiting') ORDER BY started_at, id`
       return yield* decodeAll("TurnRepo.listActive", rows)
     }).pipe(repoOp("TurnRepo.listActive")),
+    // SQLite takes the bare columns of a MAX() aggregate from the row that holds the maximum.
+    lastFinishedByBot: (sinceMs) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PayloadRow>`SELECT id, payload_json, MAX(started_at) AS last_at FROM turns
+          WHERE status IN ('completed', 'failed') AND started_at >= ${Math.floor(sinceMs)} GROUP BY bot_id`
+        return yield* decodeAll("TurnRepo.lastFinishedByBot", rows)
+      }).pipe(repoOp("TurnRepo.lastFinishedByBot")),
     deleteByConversation: (conversationId) =>
       sql`DELETE FROM turns WHERE conversation_id = ${conversationId}`.pipe(
         Effect.asVoid,

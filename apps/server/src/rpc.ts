@@ -54,6 +54,7 @@ import { OPENBOT_VERSION, ServerConfig } from "./config.ts"
 import { Hark } from "./hark.ts"
 import { Ntfy } from "./ntfy.ts"
 import { HarnessProfiles } from "./profiles.ts"
+import { HarnessQuotas } from "./quotas.ts"
 import { HarnessSignIns } from "./signIns.ts"
 import { SpeechToText } from "./stt/service.ts"
 import { VoiceCalls } from "./voice/service.ts"
@@ -170,6 +171,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
     const harnesses = yield* HarnessRegistry
     const profiles = yield* HarnessProfiles
     const signIns = yield* HarnessSignIns
+    const quotas = yield* HarnessQuotas
     const nodes = yield* NodeDirectory
     const nodeAdmin = yield* NodeAdmin
     const computer = yield* ComputerPort
@@ -371,6 +373,7 @@ export const RpcHandlersLive = OpenBotRpcs.toLayer(
 
         // ---------------------------------------------------------------- harnesses
         "harnesses.status": () => owner("harnesses.status", profiles.status(probeDriver)),
+        "harnesses.quota": ({ refresh }) => owner("harnesses.quota", quotas.list(refresh)),
         "harnesses.models": ({ kind, profileId }) =>
           owner(
             "harnesses.models",

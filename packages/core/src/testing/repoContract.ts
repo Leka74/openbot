@@ -474,6 +474,25 @@ export const repoContractCases: ReadonlyArray<RepoContractCase> = [
   ),
 
   contractCase(
+    "TurnRepo: the last finished turn of each bot",
+    Effect.gen(function* () {
+      const repo = yield* TurnRepo
+      const failure = { code: "usage-limit", message: "You've hit your session limit", retryable: false } as const
+      yield* repo.upsert(makeTurn({ id: turnId("trn_1"), startedAt: 10, status: "failed", failure }))
+      yield* repo.upsert(makeTurn({ id: turnId("trn_2"), startedAt: 20, status: "completed" }))
+      yield* repo.upsert(makeTurn({ id: turnId("trn_3"), startedAt: 30, status: "running" }))
+      yield* repo.upsert(
+        makeTurn({ id: turnId("trn_4"), startedAt: 15, status: "failed", failure, botId: botId("bot_b") }),
+      )
+      yield* repo.upsert(makeTurn({ id: turnId("trn_5"), startedAt: 5, status: "completed", botId: botId("bot_c") }))
+      const last = yield* repo.lastFinishedByBot(10)
+      yield* equal(ids(last).sort(), ["trn_2", "trn_4"], "newest finished per bot, since")
+      yield* equal(last.find((t) => t.id === "trn_4")?.failure?.code, "usage-limit", "whole turn")
+      yield* equal(ids(yield* repo.lastFinishedByBot(31)), [], "nothing finished since")
+    }),
+  ),
+
+  contractCase(
     "RoutineRepo: CRUD and only the newest 20 runs kept",
     Effect.gen(function* () {
       const repo = yield* RoutineRepo

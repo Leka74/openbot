@@ -16,6 +16,7 @@ import type {
   ConversationId,
   HarnessEvent,
   HarnessKind,
+  HarnessQuotaReport,
   HarnessRequest,
   HarnessRequestResolution,
   HarnessStatus,
@@ -181,6 +182,11 @@ export interface HarnessDriver {
   /** Installed? version? auth/account label? Never fails; no model call (D2.6). */
   readonly probe: Effect.Effect<HarnessStatus>
   readonly listModels: Effect.Effect<ReadonlyArray<ModelInfo>, HarnessError>
+  /**
+   * The account's plan limits as the harness reports them (Claude: the data behind `/usage`). Never
+   * fails; no model call. Absent = the harness has no such report.
+   */
+  readonly quota?: Effect.Effect<HarnessQuotaReport> | undefined
   /** The session lives until the provided scope closes. */
   readonly openSession: (input: OpenSessionInput) => Effect.Effect<HarnessSession, HarnessError, Scope.Scope>
   /** Stops what the driver keeps for a deleted owner profile (its server); absent = nothing kept. */

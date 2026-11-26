@@ -1,6 +1,7 @@
 // Settings › Usage (grok-bot-ui-activity.md F.10.5, OpenBot version): tokens, turns and estimated
 // cost per Bot over a period (usage.byBot), sorted by spend; the harness column names the account a
-// Bot bills when it is not the harness's default one.
+// Bot bills when it is not the harness's default one. Above the table: each account's plan limits
+// (PlanLimits.tsx).
 import { botsAtom, harnessProfilesAtom, sessionInfoAtom, usageAtom } from "@openbot/client"
 import type { Bot } from "@openbot/contracts"
 import { normalizeProfileId } from "@openbot/contracts"
@@ -17,6 +18,7 @@ import {
   useRosterValue,
 } from "../details/kit.tsx"
 import { GroupLabel, PageHeader, SettingsCard } from "./layout.tsx"
+import { PlanLimits } from "./PlanLimits.tsx"
 import { UpdatesCard } from "./Updates.tsx"
 
 type Period = "7d" | "30d" | "all"
@@ -103,6 +105,7 @@ export function UsagePage(): ReactNode {
           </div>
         ))}
       </div>
+      <PlanLimits />
       <GroupLabel>Bots</GroupLabel>
       <SettingsCard testId="usage-table">
         <div className={cn(COLUMNS, "border-b-[0.5px] border-line-tertiary px-4 py-2 text-xs text-fg-secondary")}>

@@ -398,6 +398,8 @@ export class TurnRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<Turn>, RepoError>
     /** Turns whose status is queued | running | waiting, oldest first. */
     readonly listActive: Effect.Effect<ReadonlyArray<Turn>, RepoError>
+    /** The last finished (completed or failed) turn of every bot that finished one since `sinceMs`. */
+    readonly lastFinishedByBot: (sinceMs: number) => Effect.Effect<ReadonlyArray<Turn>, RepoError>
     /** Deletes every turn of a conversation (conversation deleted). */
     readonly deleteByConversation: (conversationId: ConversationId) => Effect.Effect<void, RepoError>
   }

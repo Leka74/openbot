@@ -2,7 +2,7 @@
 // owner's and the Bots' bubbles with attachments, cards, collapsed steps, events, bot-to-bot
 // exchanges, notices, and each working Bot's status line.
 import { type BubbleItem, formatTimestamp, type Row } from "@openbot/app-model"
-import type { Bot, RuntimeRequest, TranscriptEntryOf } from "@openbot/contracts"
+import type { Attachment, Bot, RuntimeRequest, TranscriptEntryOf } from "@openbot/contracts"
 import { Image } from "expo-image"
 import { memo, type ReactNode, useEffect, useState } from "react"
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native"
@@ -13,6 +13,7 @@ import { Avatar } from "../ui/Avatar.tsx"
 import { Icon } from "../ui/Icon.tsx"
 import { CardView } from "./Cards.tsx"
 import { Markdown } from "./Markdown.tsx"
+import { imageBox } from "./photos.ts"
 
 type MessageEntry = TranscriptEntryOf<"message">
 type EventEntry = TranscriptEntryOf<"event">
@@ -197,26 +198,18 @@ function Bubble({
       {images.length > 0 && (
         <View style={[styles.images, { justifyContent: user ? "flex-end" : "flex-start" }]}>
           {images.map((a) => (
-            <Image
+            <AttachmentImage
               key={a.id}
-              source={{ uri: `${ctx.connection.origin}/api/attachments/${a.id}`, headers }}
-              style={[
-                styles.image,
-                { aspectRatio: a.width && a.height ? a.width / a.height : 1, backgroundColor: theme.elevated },
-              ]}
-              contentFit="cover"
-              transition={150}
+              attachment={a}
+              uri={`${ctx.connection.origin}/api/attachments/${a.id}`}
+              headers={headers}
+              theme={theme}
             />
           ))}
         </View>
       )}
       {files.map((a) => (
-        <View key={a.id} style={[styles.file, { backgroundColor: theme.elevated, borderColor: theme.lineTertiary }]}>
-          <Icon name="file" size={18} color={theme.iconSecondary} />
-          <Text numberOfLines={1} style={{ color: theme.fg, fontSize: 15, flexShrink: 1 }}>
-            {a.name}
-          </Text>
-        </View>
+        <FileChip key={a.id} name={a.name} theme={theme} />
       ))}
       {e.text.trim() !== "" &&
         (user ? (
@@ -231,6 +224,55 @@ function Bubble({
           </View>
         ))}
     </View>
+  )
+}
+
+function FileChip({ name, theme }: { readonly name: string; readonly theme: Theme }): ReactNode {
+  return (
+    <View style={[styles.file, { backgroundColor: theme.elevated, borderColor: theme.lineTertiary }]}>
+      <Icon name="file" size={18} color={theme.iconSecondary} />
+      <Text numberOfLines={1} style={{ color: theme.fg, fontSize: 15, flexShrink: 1 }}>
+        {name}
+      </Text>
+    </View>
+  )
+}
+
+/**
+ * An image of a message, in a box of explicit size (photos.ts). Phone uploads carry no dimensions:
+ * those come from the loaded image. One that cannot be loaded shows as a file, not as an empty gap.
+ */
+function AttachmentImage({
+  attachment: a,
+  uri,
+  headers,
+  theme,
+}: {
+  readonly attachment: Attachment
+  readonly uri: string
+  readonly headers: Record<string, string>
+  readonly theme: Theme
+}): ReactNode {
+  const [loaded, setLoaded] = useState<{ readonly width: number; readonly height: number }>()
+  const [failed, setFailed] = useState(false)
+  if (failed) return <FileChip name={a.name} theme={theme} />
+  const known = a.width !== undefined && a.height !== undefined
+  return (
+    <Image
+      source={{ uri, headers }}
+      style={[
+        styles.image,
+        imageBox(known ? a.width : loaded?.width, known ? a.height : loaded?.height),
+        { backgroundColor: theme.elevated },
+      ]}
+      contentFit="cover"
+      transition={150}
+      accessibilityLabel={a.name}
+      onLoad={(e) => {
+        if (!known) setLoaded({ width: e.source.width, height: e.source.height })
+      }}
+      onError={() => setFailed(true)}
+    />
   )
 }
 
@@ -375,7 +417,7 @@ const styles = StyleSheet.create({
   bubble: { borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10 },
   botBubble: { paddingVertical: 12 },
   images: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  image: { width: 220, maxHeight: 320, borderRadius: 18 },
+  image: { borderRadius: 18 },
   file: {
     flexDirection: "row",
     alignItems: "center",

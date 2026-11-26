@@ -36,9 +36,9 @@ const STREAM_TAGS: ReadonlySet<string> = new Set<StreamTag>([
 
 /** What each mutating RPC invalidates. Read-only RPCs are absent. */
 export const COMMAND_INVALIDATES: Partial<Record<CommandTag, ReadonlyArray<ReactivityKey>>> = {
-  "bots.create": [Keys.session, Keys.botContext],
-  "bots.update": [Keys.botContext, Keys.computer],
-  "bots.delete": [Keys.session, Keys.botContext, Keys.routines, Keys.usage],
+  "bots.create": [Keys.session, Keys.botContext, Keys.harnessQuota],
+  "bots.update": [Keys.botContext, Keys.computer, Keys.harnessQuota],
+  "bots.delete": [Keys.session, Keys.botContext, Keys.routines, Keys.usage, Keys.harnessQuota],
   "bots.newSession": [Keys.botContext],
   "bots.compact": [Keys.botContext],
   "profiles.create": [],
@@ -83,10 +83,12 @@ export const COMMAND_INVALIDATES: Partial<Record<CommandTag, ReadonlyArray<React
   "computer.lease": [Keys.computer],
   "computer.reset": [Keys.computer],
   "settings.update": [Keys.settings],
-  "harnesses.addProfile": [Keys.harnesses],
-  "harnesses.removeProfile": [Keys.harnesses],
+  "harnesses.addProfile": [Keys.harnesses, Keys.harnessQuota],
+  "harnesses.removeProfile": [Keys.harnesses, Keys.harnessQuota],
+  // a read, run as a command with `refresh: true`: the accounts are asked again, then the meter refetches
+  "harnesses.quota": [Keys.harnessQuota],
   "harnesses.startSignIn": [],
-  "harnesses.completeSignIn": [Keys.harnesses],
+  "harnesses.completeSignIn": [Keys.harnesses, Keys.harnessQuota],
   "harnesses.cancelSignIn": [],
   "rules.upsert": [Keys.rules],
   "rules.delete": [Keys.rules],

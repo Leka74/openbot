@@ -1111,6 +1111,25 @@ export const seed = (brain: MockBrain, now = Date.now()) => {
     source: { kind: "skills.sh", id: "anthropics/skills/pdf", hash: "3f9c2e1" },
     files: pdf.files.map((f) => f.path).filter((f) => f !== "SKILL.md"),
   })
+  // plan limits: the default Claude account has used up its session, the work one is close to its week
+  const HOUR = 60 * MIN
+  brain.quotaReports.set("claude/default", {
+    windows: [
+      { kind: "session", usedPercent: 100, resetsAt: now + 80 * MIN },
+      { kind: "week", usedPercent: 61, resetsAt: now + 52 * HOUR },
+      { kind: "week-model", model: "Opus", usedPercent: 38, resetsAt: now + 52 * HOUR },
+    ],
+    extraUsage: false,
+  })
+  brain.quotaReports.set("claude/hpf_work", {
+    windows: [
+      { kind: "session", usedPercent: 34, resetsAt: now + 3 * HOUR },
+      { kind: "week", usedPercent: 86, resetsAt: now + 30 * HOUR },
+      { kind: "week-model", model: "Sonnet", usedPercent: 100, resetsAt: now + 30 * HOUR },
+    ],
+    extraUsage: false,
+  })
+  brain.limitHits = [{ botId: ids.chief!.bot, at: at(12), message: "You've hit your session limit · resets 3:20pm" }]
   for (const b of BOTS) {
     const id = ids[b.key]!.bot
     brain.usage.set(id, {

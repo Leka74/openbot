@@ -2,7 +2,7 @@
 // keyed by a stable native key; core (TurnIngest) allocates EntryIds and revisions, persists and
 // publishes them. SDK types never appear here.
 import { Schema } from "effect"
-import { HarnessKindName, NodeId, NonEmptyString, NonNegativeInt, TurnId, Usage } from "./base.ts"
+import { BotId, HarnessKindName, Millis, NodeId, NonEmptyString, NonNegativeInt, TurnId, Usage } from "./base.ts"
 import { ApprovalSurface } from "./policy.ts"
 import { DecisionId, Question } from "./runtime-request.ts"
 import { FileChange, NoticeLevel, ToolCommand, ToolKind, ToolMcpRef, ToolOutput } from "./transcript.ts"
@@ -135,6 +135,112 @@ export const describeAccount = (account: HarnessAccount | undefined): string | u
   if (who === undefined) return account.plan
   return account.plan !== undefined ? `${who} (${account.plan})` : who
 }
+
+// ---------------------------------------------------------------------------- quota (plan limits)
+/**
+ * One limit window of an account's plan: `session` (Claude: the rolling 5 hours), `week` (7 days,
+ * every model) or `week-model` (7 days, one model family).
+ */
+export const HarnessQuotaWindow = Schema.Struct({
+  kind: Schema.Literals(["session", "week", "week-model"]),
+  /** The model family of a `week-model` window, as the provider names it ("Fable", "Opus"). */
+  model: Schema.optionalKey(Schema.String),
+  /** 0-100 (the provider may report more than 100). */
+  usedPercent: Schema.Number,
+  /** When the window resets (epoch ms); absent when the provider gives none (nothing used yet). */
+  resetsAt: Schema.optionalKey(Schema.Number),
+})
+export type HarnessQuotaWindow = typeof HarnessQuotaWindow.Type
+
+/**
+ * An account's plan limits as the harness itself reports them (`HarnessDriver.quota`; Claude: the
+ * data behind `/usage`). The harness's own CLI asks its provider with its own login: OpenBot never
+ * reads a credential for it. Never a token.
+ */
+export const HarnessQuotaReport = Schema.Struct({
+  /** Empty when the account has no plan limits (API key, Bedrock, Vertex…) or the report failed (`problem`). */
+  windows: Schema.Array(HarnessQuotaWindow),
+  account: Schema.optionalKey(HarnessAccount),
+  /** Paid extra usage is on: reaching a plan limit does not stop the account. */
+  extraUsage: Schema.optionalKey(Schema.Boolean),
+  /** Why there are no windows ("Claude is not signed in.", "This account has no plan limits."). */
+  problem: Schema.optionalKey(Schema.String),
+  checkedAt: Schema.Number,
+})
+export type HarnessQuotaReport = typeof HarnessQuotaReport.Type
+
+/** A Bot whose last turn ended on the provider's limit message (the fallback signal of `harnesses.quota`). */
+export const HarnessLimitHit = Schema.Struct({
+  botId: BotId,
+  at: Millis,
+  /** The provider's own text ("You've hit your session limit · resets 3pm"). */
+  message: Schema.String,
+})
+export type HarnessLimitHit = typeof HarnessLimitHit.Type
+
+/** `harnesses.quota`: the plan limits of one (kind, profile) with the Bots that run on it. */
+export const HarnessQuota = Schema.Struct({
+  kind: HarnessKindName,
+  profileId: Schema.String,
+  profileLabel: Schema.String,
+  ...HarnessQuotaReport.fields,
+  /** Bots of the owner's active profile on this account. */
+  botIds: Schema.Array(BotId),
+  /** Bots of the owner's other profiles on this account. */
+  otherProfileBots: NonNegativeInt,
+  /** Bots of `botIds` whose last finished turn failed on a usage limit, newest first. */
+  limitHits: Schema.Array(HarnessLimitHit),
+})
+export type HarnessQuota = typeof HarnessQuota.Type
+
+/** From this share of a window on, an account counts as near its limit. */
+export const QUOTA_NEAR_PERCENT = 80
+
+/** `ok` below `QUOTA_NEAR_PERCENT`, `out` from 100; a window whose reset time has passed is `ok`. */
+export const quotaLevel = (
+  window: Pick<HarnessQuotaWindow, "usedPercent" | "resetsAt">,
+  now: number,
+): "ok" | "near" | "out" =>
+  window.resetsAt !== undefined && window.resetsAt <= now
+    ? "ok"
+    : window.usedPercent >= 100
+      ? "out"
+      : window.usedPercent >= QUOTA_NEAR_PERCENT
+        ? "near"
+        : "ok"
+
+/**
+ * Whether a window limits a Bot running `model`. `session` and `week` limit every Bot of the
+ * account; a `week-model` window only the Bots whose model id names its family. A Bot on the harness
+ * default model is not matched to a family: OpenBot does not know what the default resolves to.
+ */
+export const quotaWindowApplies = (
+  window: Pick<HarnessQuotaWindow, "kind" | "model">,
+  model: string | undefined,
+): boolean =>
+  window.kind !== "week-model" ||
+  (model !== undefined && window.model !== undefined && model.toLowerCase().includes(window.model.toLowerCase()))
+
+export interface QuotaWarning {
+  readonly level: "near" | "out"
+  readonly window: HarnessQuotaWindow
+  /** The Bots of the account the window limits. */
+  readonly botIds: ReadonlyArray<BotId>
+}
+
+/** The windows of an account that are near or at their limit, used-up ones first. */
+export const quotaWarnings = (
+  quota: Pick<HarnessQuota, "windows" | "botIds">,
+  modelOf: (botId: BotId) => string | undefined,
+  now: number,
+): ReadonlyArray<QuotaWarning> =>
+  quota.windows
+    .flatMap((window): ReadonlyArray<QuotaWarning> => {
+      const level = quotaLevel(window, now)
+      if (level === "ok") return []
+      return [{ level, window, botIds: quota.botIds.filter((id) => quotaWindowApplies(window, modelOf(id))) }]
+    })
+    .sort((a, b) => Number(b.level === "out") - Number(a.level === "out"))
 
 export const ModelInfo = Schema.Struct({
   id: NonEmptyString,

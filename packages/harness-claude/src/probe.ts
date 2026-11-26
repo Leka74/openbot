@@ -8,7 +8,7 @@
  */
 import type { HarnessAccount, HarnessCapabilities, HarnessStatus, ModelInfo } from "@openbot/contracts"
 import { Clock, Effect, Option } from "effect"
-import type { ClaudeQueryFunction } from "./sdk.ts"
+import type { ClaudeQueryFunction, ClaudeQueryHandle } from "./sdk.ts"
 
 export const PROBE_TIMEOUT_MS = 25_000
 
@@ -157,12 +157,7 @@ export const readCliVersion = async (
   }
 }
 
-export interface ProbeInput {
-  readonly query: ClaudeQueryFunction
-  readonly env: Record<string, string | undefined>
-  readonly executable?: string | undefined
-  readonly cwd?: string | undefined
-  readonly timeoutMs?: number | undefined
+export interface ProbeInput extends IdleQueryInput {
   readonly capabilities: HarnessCapabilities
   /** Version fallback when the initialize response has none (default: `readCliVersion(executable)`). */
   readonly cliVersion?: (() => Promise<string | undefined>) | undefined
@@ -178,64 +173,90 @@ const waitForAbort = (signal: AbortSignal): Promise<void> =>
     ? Promise.resolve()
     : new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
 
-/** Never fails; never calls the model. */
-export const runProbe = (input: ProbeInput): Effect.Effect<ProbeResult> =>
-  Effect.gen(function* () {
-    const timeoutMs = input.timeoutMs ?? PROBE_TIMEOUT_MS
-    type Outcome = { readonly init?: unknown; readonly error?: unknown }
-    const outcome: Outcome = yield* Effect.callback<Outcome>((resume) => {
-      const abort = new AbortController()
-      let handle: ReturnType<ClaudeQueryFunction> | undefined
-      const cleanup = () => {
-        if (!abort.signal.aborted) abort.abort()
-        try {
-          handle?.close()
-        } catch {
-          // already closed
-        }
-      }
+export interface IdleQueryInput {
+  readonly query: ClaudeQueryFunction
+  readonly env: Record<string, string | undefined>
+  readonly executable?: string | undefined
+  readonly cwd?: string | undefined
+  readonly timeoutMs?: number | undefined
+}
+
+export type IdleQueryOutcome<A> = { readonly value: A } | { readonly error: unknown }
+
+/**
+ * Starts a `query()` whose prompt never yields (nothing reaches the API), hands the initialized
+ * query to `use`, then aborts and closes it. Never fails: errors and the timeout come back as `error`.
+ */
+export const withIdleQuery = <A>(
+  input: IdleQueryInput,
+  use: (handle: ClaudeQueryHandle, init: unknown) => Promise<A>,
+): Effect.Effect<IdleQueryOutcome<A>> => {
+  const timeoutMs = input.timeoutMs ?? PROBE_TIMEOUT_MS
+  return Effect.callback<IdleQueryOutcome<A>>((resume) => {
+    const abort = new AbortController()
+    let handle: ClaudeQueryHandle | undefined
+    const cleanup = () => {
+      if (!abort.signal.aborted) abort.abort()
       try {
-        handle = input.query({
-          // Never yields: no prompt reaches the API.
-          // oxlint-disable-next-line require-yield
-          prompt: (async function* (): AsyncGenerator<never> {
-            await waitForAbort(abort.signal)
-          })(),
-          options: {
-            persistSession: false,
-            settingSources: [],
-            strictMcpConfig: true,
-            mcpServers: {},
-            settings: { disableAllHooks: true },
-            env: input.env,
-            abortController: abort,
-            stderr: () => {},
-            ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-            ...(input.executable !== undefined ? { pathToClaudeCodeExecutable: input.executable } : {}),
-          },
-        })
-        handle.initializationResult().then(
-          (init) => {
+        handle?.close()
+      } catch {
+        // already closed
+      }
+    }
+    try {
+      const started = input.query({
+        // Never yields: no prompt reaches the API.
+        // oxlint-disable-next-line require-yield
+        prompt: (async function* (): AsyncGenerator<never> {
+          await waitForAbort(abort.signal)
+        })(),
+        options: {
+          persistSession: false,
+          settingSources: [],
+          strictMcpConfig: true,
+          mcpServers: {},
+          settings: { disableAllHooks: true },
+          env: input.env,
+          abortController: abort,
+          stderr: () => {},
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.executable !== undefined ? { pathToClaudeCodeExecutable: input.executable } : {}),
+        },
+      })
+      handle = started
+      started
+        .initializationResult()
+        .then((init) => use(started, init))
+        .then(
+          (value) => {
             cleanup()
-            resume(Effect.succeed({ init }))
+            resume(Effect.succeed({ value }))
           },
           (error: unknown) => {
             cleanup()
             resume(Effect.succeed({ error }))
           },
         )
-      } catch (error) {
-        cleanup()
-        resume(Effect.succeed({ error }))
-      }
-      return Effect.sync(cleanup)
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: timeoutMs,
-        orElse: (): Effect.Effect<Outcome> =>
-          Effect.succeed({ error: new Error(`Claude did not answer within ${Math.round(timeoutMs / 1000)} s`) }),
-      }),
-    )
+    } catch (error) {
+      cleanup()
+      resume(Effect.succeed({ error }))
+    }
+    return Effect.sync(cleanup)
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: (): Effect.Effect<IdleQueryOutcome<A>> =>
+        Effect.succeed({ error: new Error(`Claude did not answer within ${Math.round(timeoutMs / 1000)} s`) }),
+    }),
+  )
+}
+
+/** Never fails; never calls the model. */
+export const runProbe = (input: ProbeInput): Effect.Effect<ProbeResult> =>
+  Effect.gen(function* () {
+    const idle = yield* withIdleQuery(input, (_handle, init) => Promise.resolve(init))
+    const outcome: { readonly init?: unknown; readonly error?: unknown } =
+      "value" in idle ? { init: idle.value } : { error: idle.error }
     const checkedAt = yield* Clock.currentTimeMillis
     const base = { kind: "claude", displayName: "Claude", capabilities: input.capabilities, checkedAt } as const
     if (outcome.error !== undefined || outcome.init === undefined) {
