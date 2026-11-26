@@ -241,6 +241,42 @@ export const LOGIN_SCRIPT = `"use strict";
 })();
 `
 
+/**
+ * The service worker (`GET /sw.js`) of Web Push (webPush.ts): it shows every push as a
+ * notification (WebKit revokes the subscription of a worker that shows none), one per chat, and a click
+ * opens its chat.
+ */
+export const SERVICE_WORKER = `"use strict";
+// a new version takes over at once; a client must be controlled for navigate(), also one opened
+// before push was turned on
+self.addEventListener("install", function () {
+  self.skipWaiting();
+});
+self.addEventListener("activate", function (event) {
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener("push", function (event) {
+  var n = event.data ? event.data.json() : {};
+  event.waitUntil(self.registration.showNotification(n.title || "OpenBot", {
+    body: n.body,
+    tag: n.conversationId || n.id,
+    renotify: true,
+    requireInteraction: n.kind === "waiting",
+    data: { path: n.conversationId ? "/#/c/" + encodeURIComponent(n.conversationId) : "/" },
+  }));
+});
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  var url = new URL(event.notification.data.path, self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (open) {
+    if (open.length === 0) return self.clients.openWindow(url);
+    return open[0].focus().then(function (focused) { return focused.navigate(url); }).catch(function () {
+      return self.clients.openWindow(url);
+    });
+  }));
+});
+`
+
 export const unavailablePage = (detail: string): string =>
   shell(
     "OpenBot",

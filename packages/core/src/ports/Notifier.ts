@@ -1,6 +1,7 @@
 /**
- * `Notifier` port (architecture §3.5): OS/web notifications. v1 is web-only: the implementation
- * publishes a roster `notification` change (contracts `Notification`) to connected clients.
+ * `Notifier` port (architecture §3.5): OS/web notifications. The implementation publishes a roster
+ * `notification` change (contracts `Notification`) to connected clients; the brain's Hark, ntfy and
+ * Web Push follow the roster and push it to phones.
  */
 import type { BotId, ConversationId, Notification, NotificationKind } from "@openbot/contracts"
 import { Context, Effect } from "effect"

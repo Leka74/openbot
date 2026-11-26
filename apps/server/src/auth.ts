@@ -72,6 +72,8 @@ export interface WebAuthShape {
   readonly redeemWebCode: (code: string) => Effect.Effect<string | undefined>
   /** Redeems (and burns) a ticket. */
   readonly redeemTicket: (ticket: string) => Effect.Effect<Session | undefined>
+  /** Whether the session (by `Session.id`) is still signed in. */
+  readonly isLive: (sessionId: string) => Effect.Effect<boolean>
   /** Completes when the session is revoked (logout). */
   readonly revoked: (session: Session) => Effect.Effect<void>
   /**
@@ -319,6 +321,9 @@ export const makeWebAuth = (options: WebAuthOptions) =>
         return file.sessions.find((s) => s.id === entry.session.id && s.expiresAt > now)
       })
 
+    const isLive: WebAuthShape["isLive"] = (sessionId) =>
+      Effect.map(Clock.currentTimeMillis, (now) => file.sessions.some((s) => s.id === sessionId && s.expiresAt > now))
+
     const revoked: WebAuthShape["revoked"] = (owner) =>
       Effect.suspend(() => {
         let deferred = revocations.get(owner.id)
@@ -368,6 +373,7 @@ export const makeWebAuth = (options: WebAuthOptions) =>
         mintWebCode,
         redeemWebCode,
         redeemTicket,
+        isLive,
         revoked,
         authenticate,
         sessionCookie: (request, token) =>

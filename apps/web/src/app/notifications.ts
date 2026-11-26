@@ -4,7 +4,8 @@
 // In the desktop app (apps/desktop) they are on unless turned off and become the computer's own
 // notifications; in a browser they are opt-in (Settings › General) and need the browser's permission.
 // A notification for the chat you are looking at is not shown; clicking one opens its chat. It carries
-// the Bot's avatar as its icon (botIcon.ts).
+// the Bot's avatar as its icon (botIcon.ts). A browser that has push leaves them to the brain's pushes
+// (webPush.ts), which also arrive with OpenBot closed.
 import { useAtomSet } from "@effect/atom-react"
 import { commands } from "@openbot/client"
 import type { ConversationId, Notification as RosterNotification } from "@openbot/contracts"
@@ -12,6 +13,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react"
 import { botIconUrl } from "./botIcon.ts"
 import { useRoster } from "./data.ts"
 import { useSelection } from "./uiState.ts"
+import { pushSupport, refreshPush } from "./webPush.ts"
 
 /** `window.openbotDesktop`, set by the desktop app's preload (apps/desktop/src/preload.ts). */
 export interface DesktopBridge {
@@ -58,6 +60,9 @@ const changed = () => listeners.forEach((listener) => listener())
 
 export const notificationsSupported = (): boolean => typeof Notification !== "undefined"
 
+/** "Notifications on this device" means the brain's pushes here (Electron has no push service). */
+export const pushHere = (): boolean => desktopApp() === undefined && pushSupport() === "supported"
+
 export const notificationsEnabled = (): boolean => {
   if (!notificationsSupported()) return false
   const pref = localStorage.getItem(KEY)
@@ -76,10 +81,14 @@ export const setNotificationsEnabled = async (on: boolean): Promise<boolean> => 
 }
 
 export const useNotificationsEnabled = (): boolean =>
-  useSyncExternalStore((listener) => {
-    listeners.add(listener)
-    return () => void listeners.delete(listener)
-  }, notificationsEnabled)
+  useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener)
+      return () => void listeners.delete(listener)
+    },
+    notificationsEnabled,
+    notificationsEnabled,
+  )
 
 /** How often the desktop app tells the brain the owner is using this computer (presence.ts on the brain). */
 const PRESENCE_EVERY_MS = 30_000
@@ -133,6 +142,10 @@ export function useSystemNotifications(): void {
     view.current = { conversationId, select }
   }, [conversationId, select])
 
+  useEffect(() => {
+    if (pushHere()) void refreshPush().catch(() => {})
+  }, [])
+
   const notifications = roster.state.notifications
   useEffect(() => {
     if (!roster.loaded) return
@@ -144,7 +157,7 @@ export function useSystemNotifications(): void {
     for (const n of [...notifications].reverse()) {
       if (seen.current.has(n.id)) continue
       seen.current.add(n.id)
-      if (!notificationsEnabled()) continue
+      if (!notificationsEnabled() || pushHere()) continue
       const looking =
         document.visibilityState === "visible" &&
         document.hasFocus() &&
