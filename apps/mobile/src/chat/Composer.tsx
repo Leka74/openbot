@@ -1,5 +1,6 @@
 // The composer (Grok iOS): a glass "+" for photos, camera and files, a glass pill with the text and
-// the send button (stop while the Bot works). Files upload over the RPC socket before sending.
+// the send button (stop while the Bot works). Files upload over the RPC socket before sending;
+// photos are shrunk on the phone first (compress.ts).
 import { useAtomSet } from "@effect/atom-react"
 import { uploadFilesAtom, type UploadSource } from "@openbot/client"
 import { Exit } from "effect"
@@ -24,15 +25,7 @@ import {
 import type { Theme } from "../theme.ts"
 import { Glass, GlassCircle } from "../ui/glass.tsx"
 import { Icon } from "../ui/Icon.tsx"
-
-interface Picked {
-  readonly key: string
-  readonly uri: string
-  readonly name: string
-  readonly mime: string
-  readonly size: number
-  readonly image: boolean
-}
+import { compressPhoto, type Picked } from "./compress.ts"
 
 const sourceOf = (p: Picked): UploadSource => ({
   name: p.name,
@@ -76,6 +69,8 @@ export function Composer({ conversationId, placeholder, theme, working, onSend, 
         name: a.fileName ?? `photo-${Date.now()}-${i}.jpg`,
         mime: a.mimeType ?? "image/jpeg",
         size: a.fileSize ?? 0,
+        width: a.width,
+        height: a.height,
         image: a.type !== "video",
       })),
     )
@@ -93,6 +88,8 @@ export function Composer({ conversationId, placeholder, theme, working, onSend, 
         name: a.fileName ?? `photo-${Date.now()}.jpg`,
         mime: a.mimeType ?? "image/jpeg",
         size: a.fileSize ?? 0,
+        width: a.width,
+        height: a.height,
         image: true,
       },
     ])
@@ -128,7 +125,10 @@ export function Composer({ conversationId, placeholder, theme, working, onSend, 
     let ids: ReadonlyArray<string> = []
     if (picked.length > 0) {
       setUploading(true)
-      const exit = await upload(picked.map(sourceOf))
+      // one at a time: a decoded 48 MP photo is large in memory
+      const ready: Array<Picked> = []
+      for (const p of picked) ready.push(await compressPhoto(p))
+      const exit = await upload(ready.map(sourceOf))
       setUploading(false)
       if (Exit.isFailure(exit)) {
         const failure = exit.cause.reasons.find((r) => r._tag === "Fail") as
