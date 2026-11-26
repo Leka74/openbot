@@ -116,6 +116,7 @@ import { UpdatesLive, type UpdatesOptions } from "./updates.ts"
 import { OwnerPresence } from "./presence.ts"
 import { HarkLive } from "./hark.ts"
 import { NtfyLive } from "./ntfy.ts"
+import { WebPushLive } from "./webPush.ts"
 
 // ============================================================================ startup errors
 
@@ -413,7 +414,7 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
     CallPresence.layer,
     // browsers waiting to be allowed to sign in ("Sign in with another device")
     SignInRequests.layer,
-    // whether the owner is at a computer whose desktop app shows notifications (Hark and ntfy wait meanwhile)
+    // whether the owner is at a computer whose desktop app shows notifications (Hark, ntfy and Web Push wait meanwhile)
     OwnerPresence.layer,
   )
   const level2 = Layer.mergeAll(
@@ -479,7 +480,13 @@ export const ServerLive = (config: ServerConfigShape, options?: ServerOptions) =
       Layer.provideMerge(ApprovalServiceLive),
       Layer.provideMerge(SlackServiceLive), // Slack drafts (D3.4)
       Layer.provideMerge(HarkLive({ file: (id) => dataDir.profile(id).hark, baseUrl: config.harkUrl })), // iPhone notifications (D3.5)
-      Layer.provideMerge(NtfyLive({ file: (id) => dataDir.profile(id).ntfy })), // phone notifications (D3.6)
+      // phone notifications (D3.6), and with OpenBot closed (D3.7); merged: pipe takes 20 steps at most
+      Layer.provideMerge(
+        Layer.merge(
+          NtfyLive({ file: (id) => dataDir.profile(id).ntfy }),
+          WebPushLive({ file: `${dataDir.root}/web-push.json` }),
+        ),
+      ),
       Layer.provideMerge(MemoryServiceLive),
       Layer.provideMerge(level2),
       Layer.provideMerge(LiveHubLive),

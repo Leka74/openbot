@@ -7,9 +7,11 @@ import { type DesktopUpdateState, updateReady, useDesktopUpdate } from "../app/d
 import {
   desktopApp,
   notificationsSupported,
+  pushHere,
   setNotificationsEnabled,
   useNotificationsEnabled,
 } from "../app/notifications.ts"
+import { disablePush, enablePush, pushSupport, usePushSubscribed } from "../app/webPush.ts"
 import { CommandBlock } from "../details/kit.tsx"
 import { SettingsRow } from "./layout.tsx"
 
@@ -258,7 +260,16 @@ export function QuickSendRow(): ReactNode {
   )
 }
 
+const BLOCKED =
+  "This browser blocked notifications for OpenBot. Allow them in its site settings, then turn this on again."
+
+/** In the desktop app its own notifications; in a browser that has push the brain's pushes; otherwise in-page. */
 export function NotificationsRow(): ReactNode {
+  if (desktopApp() === undefined && pushSupport() !== "unsupported") return <PushRow />
+  return <InPageRow />
+}
+
+function InPageRow(): ReactNode {
   const enabled = useNotificationsEnabled()
   const [denied, setDenied] = useState(false)
   const inApp = desktopApp() !== undefined
@@ -280,11 +291,7 @@ export function NotificationsRow(): ReactNode {
         />
       }
     >
-      {denied && (
-        <p className="pt-2 text-sm text-warn-fg">
-          This browser blocked notifications for OpenBot. Allow them in its site settings, then turn this on again.
-        </p>
-      )}
+      {denied && <p className="pt-2 text-sm text-warn-fg">{BLOCKED}</p>}
       {desktopApp()?.platform === "darwin" && (
         <div className="flex flex-wrap items-center gap-2 pt-2 text-sm text-fg-secondary">
           <span>macOS hides them after a few seconds. Choose Alerts in System Settings to keep them on screen.</span>
@@ -299,6 +306,59 @@ export function NotificationsRow(): ReactNode {
           </PillButton>
         </div>
       )}
+    </SettingsRow>
+  )
+}
+
+/**
+ * The brain's pushes (webPush.ts); an iPhone has them only in OpenBot added to its Home Screen. The
+ * in-page notifications are turned on with them, and are what's left if subscribing fails.
+ */
+function PushRow(): ReactNode {
+  const subscribed = usePushSubscribed()
+  const enabled = useNotificationsEnabled()
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | undefined>(undefined)
+  const turnOn = async () => {
+    if (!(await setNotificationsEnabled(true))) return setProblem(BLOCKED)
+    await enablePush().catch((error: unknown) =>
+      setProblem(
+        `Couldn't turn on notifications with OpenBot closed (${error instanceof Error ? error.message : String(error)}). They still show while it's open.`,
+      ),
+    )
+  }
+  const turnOff = async () => {
+    await setNotificationsEnabled(false)
+    await disablePush()
+  }
+  const toggle = (next: boolean) => {
+    setBusy(true)
+    setProblem(undefined)
+    void (next ? turnOn() : turnOff())
+      .catch((error: unknown) =>
+        setProblem(`Couldn't turn them off: ${error instanceof Error ? error.message : String(error)}`),
+      )
+      .finally(() => setBusy(false))
+  }
+  return (
+    <SettingsRow
+      title="Notifications on this device"
+      description="Get your Bots' updates here even when OpenBot is closed: when they finish, need you or write to you. None arrive while you're using the desktop app."
+      control={
+        <Switch
+          checked={subscribed || enabled}
+          disabled={!pushHere() || busy}
+          onCheckedChange={toggle}
+          label="Notifications on this device"
+        />
+      }
+    >
+      {!pushHere() && (
+        <p className="pt-2 text-sm text-fg-secondary" data-testid="push-home-screen">
+          On iPhone, add OpenBot to your Home Screen first: tap Share, then Add to Home Screen, and open it from there.
+        </p>
+      )}
+      {problem !== undefined && <p className="pt-2 text-sm text-warn-fg">{problem}</p>}
     </SettingsRow>
   )
 }

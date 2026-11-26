@@ -14,6 +14,8 @@
  *   that signs its in-app web view in, `GET /api/auth/login?code=&next=`).
  * - `GET /api/attachments/:id` (cookie + Origin).
  * - `GET /api/favicon?host=` (cookie + Origin): a linked site's icon, fetched and cached by the brain.
+ * - Web Push (webPush.ts): `GET /sw.js` (its service worker), `GET /api/push/key` and
+ *   `POST`/`DELETE /api/push/subscription` (cookie + Origin; the subscription is tied to the session).
  * - `/ws/computer/:botId`, `/ws/terminal/:botId` (brain-nodes viewers, same auth as `/rpc`).
  * - `/ws/voice/:botId`: a voice call with a Bot (experiment; same auth as `/rpc`).
  * - `/node`, `POST /node/pair`, `/node/stream/:id` (brain-nodes; node signatures, codes, one-time tokens).
@@ -27,7 +29,7 @@ import { DesktopRoutes } from "./desktop.ts"
 import { type AttachmentId, type BotId, OpenBotRpcs } from "@openbot/contracts"
 import { AttachmentStore, BotRepo, DataDir, LiveHub, Notifier, OwnerProfiles, SignInRequests } from "@openbot/core"
 import { McpGateway } from "@openbot/gateway"
-import { Effect, Layer, Option, Stream } from "effect"
+import { Effect, Layer, Option, Schema, Stream } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { WebAuth, searchParamsOf, sessionTokenOf } from "./auth.ts"
@@ -35,7 +37,16 @@ import { faviconHost, makeFavicons, NO_ICON, recolorMonoSvg } from "./favicons.t
 import { ServerConfig } from "./config.ts"
 import { PublicListener } from "./listeners.ts"
 import { VoiceCalls } from "./voice/service.ts"
-import { LOGIN_PAGE_CSP, LOGIN_SCRIPT, loginPage, makeWebApp, PAGE_HEADERS, unavailablePage } from "./web.ts"
+import {
+  LOGIN_PAGE_CSP,
+  LOGIN_SCRIPT,
+  loginPage,
+  makeWebApp,
+  PAGE_HEADERS,
+  SERVICE_WORKER,
+  unavailablePage,
+} from "./web.ts"
+import { PushSubscriptionInput, WebPush } from "./webPush.ts"
 
 /** `HttpRouter.use`, spelled out (a layer that adds routes to the ambient router). */
 const routes = <E, R>(add: (router: HttpRouter.HttpRouter) => Effect.Effect<void, E, R>) =>
@@ -595,6 +606,63 @@ export const FaviconRoutes = routes(
   }),
 )
 
+// ============================================================================ Web Push
+
+const decodeSubscription = Schema.decodeUnknownEffect(PushSubscriptionInput)
+const decodeEndpoint = Schema.decodeUnknownEffect(Schema.Struct({ endpoint: Schema.String }))
+
+export const WebPushRoutes = routes(
+  Effect.fnUntraced(function* (router) {
+    const auth = yield* WebAuth
+    const push = yield* WebPush
+    yield* router.add(
+      "GET",
+      "/sw.js",
+      Effect.succeed(
+        HttpServerResponse.text(SERVICE_WORKER, {
+          contentType: "text/javascript; charset=utf-8",
+          headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
+        }),
+      ),
+    )
+    yield* router.add(
+      "GET",
+      "/api/push/key",
+      Effect.gen(function* () {
+        const result = yield* auth.authenticate(yield* HttpServerRequest.HttpServerRequest)
+        if (!result.ok) return json({ error: result.reason }, result.status)
+        return json({ publicKey: push.publicKey })
+      }),
+    )
+    yield* router.add(
+      "POST",
+      "/api/push/subscription",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const result = yield* auth.authenticate(request)
+        if (!result.ok) return json({ error: result.reason }, result.status)
+        const input = yield* Effect.option(Effect.flatMap(request.json, decodeSubscription))
+        if (Option.isNone(input)) return json({ error: "not a push subscription" }, 400)
+        yield* push.subscribe(result.session.id, input.value)
+        return HttpServerResponse.empty({ status: 204 })
+      }),
+    )
+    yield* router.add(
+      "DELETE",
+      "/api/push/subscription",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const result = yield* auth.authenticate(request)
+        if (!result.ok) return json({ error: result.reason }, result.status)
+        const input = yield* Effect.option(Effect.flatMap(request.json, decodeEndpoint))
+        if (Option.isNone(input)) return json({ error: "no endpoint" }, 400)
+        yield* push.unsubscribe(input.value.endpoint)
+        return HttpServerResponse.empty({ status: 204 })
+      }),
+    )
+  }),
+)
+
 // ============================================================================ web app
 
 export const WebRoutes = routes(
@@ -712,6 +780,7 @@ export const PublicRoutes = Layer.mergeAll(
   AuthRoutes,
   AttachmentRoutes,
   FaviconRoutes,
+  WebPushRoutes,
   WebRoutes,
   ViewerRoutesLive,
   VoiceRoute,

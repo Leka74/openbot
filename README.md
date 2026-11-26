@@ -279,9 +279,22 @@ it from Slack's suggestions) does the same, e.g. "@OpenBot remind me of this tom
 that off under Connect apps › Slack. Both need live messages on. An app created before
 this option existed needs its manifest updated once: Connect apps › Slack has the steps.
 
+### Web Push: notifications on your iPhone with no app to install
+
+OpenBot can push its notifications to a browser itself, with no account anywhere. On an iPhone (iOS 16.4
+or later):
+
+1. Open OpenBot's https address (the one you gave `--public-origin`) in Safari, then Share › Add to Home Screen.
+2. Open OpenBot from the Home Screen and sign in (the printed login link, or "Sign in with another device").
+3. Turn on Settings › General › Notifications on this device, and allow notifications.
+
+Every notification then arrives on the phone, also with OpenBot closed, and none while you are at a
+computer whose OpenBot desktop app shows them. Tapping one opens that chat. It works the same in Chrome,
+Firefox and Safari on a computer.
+
 ### Hark: notifications on your iPhone
 
-Until the OpenBot iPhone app has push notifications, [Hark](https://hark.ryan.ceo) can bring them to
+[Hark](https://hark.ryan.ceo) can also bring them to
 your phone. Install Hark on the iPhone, create a service called OpenBot in Hark's web dashboard
 (hark.ryan.ceo; the app has no such option), and paste its webhook URL under Connect apps › Hark. OpenBot sends a test notification, then pushes every notification it makes (or only the ones
 where a Bot needs you), grouped by Bot. Tapping one opens that chat, through the address you gave
