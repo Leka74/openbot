@@ -310,22 +310,33 @@ function InPageRow(): ReactNode {
   )
 }
 
-/** The brain's pushes (webPush.ts); an iPhone has them only in OpenBot added to its Home Screen. */
+/**
+ * The brain's pushes (webPush.ts); an iPhone has them only in OpenBot added to its Home Screen. The
+ * in-page notifications are turned on with them, and are what's left if subscribing fails.
+ */
 function PushRow(): ReactNode {
-  const on = usePushSubscribed()
+  const subscribed = usePushSubscribed()
+  const enabled = useNotificationsEnabled()
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | undefined>(undefined)
+  const turnOn = async () => {
+    if (!(await setNotificationsEnabled(true))) return setProblem(BLOCKED)
+    await enablePush().catch((error: unknown) =>
+      setProblem(
+        `Couldn't turn on notifications with OpenBot closed (${error instanceof Error ? error.message : String(error)}). They still show while it's open.`,
+      ),
+    )
+  }
+  const turnOff = async () => {
+    await setNotificationsEnabled(false)
+    await disablePush()
+  }
   const toggle = (next: boolean) => {
     setBusy(true)
     setProblem(undefined)
-    void (next ? enablePush() : disablePush().then(() => true))
-      .then((took) => {
-        if (!took) setProblem(BLOCKED)
-      })
+    void (next ? turnOn() : turnOff())
       .catch((error: unknown) =>
-        setProblem(
-          `Couldn't turn them ${next ? "on" : "off"}: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+        setProblem(`Couldn't turn them off: ${error instanceof Error ? error.message : String(error)}`),
       )
       .finally(() => setBusy(false))
   }
@@ -335,7 +346,7 @@ function PushRow(): ReactNode {
       description="Get your Bots' updates here even when OpenBot is closed: when they finish, need you or write to you. None arrive while you're using the desktop app."
       control={
         <Switch
-          checked={on}
+          checked={subscribed || enabled}
           disabled={!pushHere() || busy}
           onCheckedChange={toggle}
           label="Notifications on this device"

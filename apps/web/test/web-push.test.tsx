@@ -1,12 +1,13 @@
 // "Notifications on this device" (Settings › General) with push (app/webPush.ts): the row's states (no
-// push in this browser: in-page, an iPhone outside the Home Screen, off, on), and a subscription the
-// browser already has is given to the brain again when OpenBot starts.
+// push in this browser: in-page, an iPhone outside the Home Screen, off, on, on with only the in-page
+// ones), and a subscription the browser already has is given to the brain again when OpenBot starts.
 import { afterEach, describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
+import { notificationsEnabled } from "../src/app/notifications.ts"
 import { pushSubscribed, pushSupport, refreshPush } from "../src/app/webPush.ts"
 import { NotificationsRow } from "../src/settings/DesktopApp.tsx"
 
-const original = { navigator: globalThis.navigator, fetch: globalThis.fetch }
+const original = { navigator: globalThis.navigator, fetch: globalThis.fetch, localStorage: globalThis.localStorage }
 
 const browser = (options: {
   readonly userAgent: string
@@ -46,6 +47,8 @@ afterEach(() => {
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: original.navigator })
   globalThis.fetch = original.fetch
   delete (globalThis as { PushManager?: unknown }).PushManager
+  delete (globalThis as { Notification?: unknown }).Notification
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: original.localStorage })
 })
 
 describe("Notifications on this device, with push", () => {
@@ -94,5 +97,18 @@ describe("Notifications on this device, with push", () => {
     const html = renderToStaticMarkup(<NotificationsRow />)
     expect(html).toContain('aria-checked="true"')
     expect(html).not.toContain("Home Screen first")
+  })
+
+  test("not subscribed, it reads on while the in-page notifications are on (subscribing failed)", async () => {
+    browser({ userAgent: CHROME, push: true, subscription: null })
+    await refreshPush()
+    Object.assign(globalThis, { Notification: { permission: "granted" } })
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem: (key: string) => (key === "openbot.notifications" ? "on" : null) },
+    })
+    expect(pushSubscribed()).toBe(false)
+    expect(notificationsEnabled()).toBe(true)
+    expect(renderToStaticMarkup(<NotificationsRow />)).toContain('aria-checked="true"')
   })
 })
